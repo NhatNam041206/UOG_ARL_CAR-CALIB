@@ -149,3 +149,37 @@ def test_vp_center_deg_shifts_the_straight_ahead_reference() -> None:
         vp_angle=78.0, left_intercept=40, right_intercept=600, frame_width=640,
     )
     assert state == "TRACKING_COAST"
+
+
+def test_offset_danger_uses_pd_when_it_steers_the_same_way_harder() -> None:
+    # Car right of lane centre and yawed right (VP left): PD left beats the nudge.
+    controller = _ratio_controller()
+    angle, state = controller.compute_steering(
+        vp_angle=60.0, left_intercept=-250, right_intercept=300, frame_width=640,
+    )
+    assert state == "DANGER_LEFT"
+    assert angle == pytest.approx(120.0)
+    assert controller.last_command_source == "DANGER_PD"
+
+
+def test_offset_danger_uses_pd_when_car_already_heads_back() -> None:
+    # Car left of lane centre (nudge right) but already yawed hard right
+    # (VP left of the reference): PD straightens it left; adding more right
+    # (the nudge) would drive it across the lane.
+    controller = _ratio_controller()
+    angle, state = controller.compute_steering(
+        vp_angle=36.0, left_intercept=292, right_intercept=743, frame_width=640,
+    )
+    assert state == "DANGER_RIGHT"
+    assert angle > 90.0
+    assert controller.last_command_source == "DANGER_PD"
+
+
+def test_offset_danger_keeps_nudge_when_heading_is_small() -> None:
+    controller = _ratio_controller()
+    angle, state = controller.compute_steering(
+        vp_angle=92.0, left_intercept=-250, right_intercept=300, frame_width=640,
+    )
+    assert state == "DANGER_LEFT"
+    assert angle == pytest.approx(97.0)
+    assert controller.last_command_source == "NUDGE"

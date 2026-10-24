@@ -54,6 +54,8 @@ class SteeringController:
         self._max_offset = abs(float(max_offset))
         self._tracking_active = False
         self._last_error = 0.0
+        # What produced the last command: PD, COAST, NUDGE, DANGER_PD or HOLD.
+        self.last_command_source = "HOLD"
 
     def compute_steering(
         self,
@@ -71,10 +73,14 @@ class SteeringController:
         if vp_angle is None or left_intercept is None or right_intercept is None:
             self._tracking_active = False
             self._last_error = 0.0
+            self.last_command_source = "HOLD"
             return center, "GAPPING"
 
         # Stage 3: Danger Zone override (bypass PD)
         danger = self._danger_state(left_intercept, right_intercept, frame_width)
+        self.last_command_source = "NUDGE"
+        if danger is not None and self._danger_offset_ratio > 0.0:
+            return self._danger_command(danger, float(vp_angle), lo, hi), danger
         if danger == "DANGER_LEFT":
             self._tracking_active = False
             self._last_error = 0.0
@@ -90,17 +96,44 @@ class SteeringController:
         if abs_error <= self._inner_thresh:
             self._tracking_active = False
             self._last_error = 0.0
+            self.last_command_source = "COAST"
             return center, "TRACKING_COAST"
 
         if abs_error > self._outer_thresh:
             self._tracking_active = True
 
         if not self._tracking_active:
+            self.last_command_source = "COAST"
             return center, "TRACKING_COAST"
+
+        self.last_command_source = "PD"
 
         pd_correction = self._apply_pd(error)
         steering_angle = max(lo, min(hi, center - pd_correction))
         return steering_angle, "TRACKING_PD"
+
+    def _danger_command(self, danger: str, vp_angle: float, lo: float, hi: float) -> float:
+        """Combine the danger nudge with the heading PD (lane-offset rule only).
+
+        The fixed nudge alone is weaker than PD when the car is also yawed
+        toward the near line, and it fights PD when the car already points
+        back toward the lane centre. So: if PD steers the same way harder,
+        use PD; if PD steers the other way with a heading error past the
+        outer threshold (car already heading back), use PD; else nudge.
+        """
+        center = self._center
+        nudge_off = self._nudge_deg if danger == "DANGER_LEFT" else -self._nudge_deg
+        error = vp_angle - self._vp_center_deg
+        pd_off = max(lo, min(hi, center - self._apply_pd(error))) - center
+        self._tracking_active = False
+        same_way = pd_off * nudge_off > 0
+        if (same_way and abs(pd_off) > abs(nudge_off)) or (
+            pd_off * nudge_off < 0 and abs(error) > self._outer_thresh
+        ):
+            self.last_command_source = "DANGER_PD"
+            return center + pd_off
+        self.last_command_source = "NUDGE"
+        return center + nudge_off
 
     def _danger_state(
         self,

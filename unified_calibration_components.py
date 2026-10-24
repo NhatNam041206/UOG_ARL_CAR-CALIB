@@ -634,6 +634,7 @@ class TelemetryLogger:
             "width_error_px",
             "vp_row",
             "lane_offset_ratio",
+            "command_source",
         ]
 
         self._draw_overlay_fn: Any = None
@@ -851,6 +852,10 @@ class TelemetryLogger:
                         else None
                     ),
                     "vp_location": telemetry_data.get("vp_location", "missing"),
+                    "lane_offset_ratio": telemetry_data.get("lane_offset_ratio"),
+                    "vp_row": telemetry_data.get("vp_row"),
+                    "vp_center_deg": telemetry_data.get("vp_center_deg"),
+                    "command_source": telemetry_data.get("command_source"),
                 },
             )
         else:
@@ -1188,6 +1193,8 @@ class UnifiedCalibrator:
                 "expected_lane_width_px": self._expected_lane_width_px,
                 "width_error_px": width_error_px,
                 "vp_row": round(self._vision.vp_row, 1),
+                "vp_center_deg": self._steering._vp_center_deg,
+                "command_source": self._steering.last_command_source,
                 "lane_offset_ratio": (
                     None if lane_offset_ratio is None else round(lane_offset_ratio, 4)
                 ),
