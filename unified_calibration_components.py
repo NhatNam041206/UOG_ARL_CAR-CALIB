@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from config.settings import _get_bool, _get_float, _get_int, _get_str
-from control.steering_controller import SteeringController
+from control.steering_controller import SteeringController, lane_center_offset_ratio
 from models.robot_state import FSMState, PIDConstants, RobotState
 from runtime.overlay_drawer import OverlayDrawer
 
@@ -145,6 +145,8 @@ class ConfigManager:
         self._vp_inner_thresh = _get_float("VP_INNER_THRESH", 3.0)
         self._vp_outer_thresh = _get_float("VP_OUTER_THRESH", 5.0)
         self._danger_margin_px = _get_int("DANGER_MARGIN_PX", 100)
+        self._danger_offset_ratio = _get_float("DANGER_OFFSET_RATIO", 0.25)
+        self._vp_center_deg = _get_float("VP_CENTER_DEG", 90.0)
         self._danger_nudge_deg = _get_float("DANGER_NUDGE_DEG", 5.0)
 
     def get_system_configs(self) -> dict:
@@ -171,6 +173,14 @@ class ConfigManager:
         """Return danger margin in pixels and fixed nudge angle in degrees."""
         return self._danger_margin_px, self._danger_nudge_deg
 
+    def get_vp_center_deg(self) -> float:
+        """Return the VP angle that means the car points straight down the lane."""
+        return self._vp_center_deg
+
+    def get_danger_offset_ratio(self) -> float:
+        """Return the lane-centre offset (fraction of lane width) that triggers danger."""
+        return self._danger_offset_ratio
+
 
 class VisionProcessor:
     """Frame pre-processor and Stage-1 line extractor."""
@@ -192,9 +202,18 @@ class VisionProcessor:
         self._hough_min_line_length = _get_int("VISION_HOUGH_MIN_LINE_LENGTH", 40)
         self._hough_max_line_gap = _get_int("VISION_HOUGH_MAX_LINE_GAP", 20)
         self._min_abs_slope = _get_float("VISION_MIN_ABS_SLOPE", 0.3)
-        # Image row where lane lines converge (camera pitch is fixed). Default
-        # is the median VP row measured on the Pi5 car camera at 640x480.
+        # Nominal image row where lane lines converge. Camera pitch shifts
+        # between runs (mount, load, acceleration), so the row actually used
+        # is tracked from the detected VP within +-vp_search_px of this one.
         self._vp_horizon_y = _get_float("VISION_VP_HORIZON_Y", -518.0)
+        self._vp_search_px = max(0.0, _get_float("VISION_VP_SEARCH_PX", 200.0))
+        self._vp_track_alpha = min(1.0, max(0.0, _get_float("VISION_VP_TRACK_ALPHA", 0.2)))
+        self._vp_row_offset = 0.0
+
+    @property
+    def vp_row(self) -> float:
+        """Image row currently used to group lane lines (nominal + tracked offset)."""
+        return self._vp_horizon_y + self._vp_row_offset
 
     def _apply_trapezoid_mask(self, edges: np.ndarray) -> np.ndarray:
         """Zero out edges outside a trapezoid narrowing from bottom to top width."""
@@ -330,7 +349,52 @@ class VisionProcessor:
             if line[0] == line[2]
             or abs((line[3] - line[1]) / (line[2] - line[0])) >= self._min_abs_slope
         ]
-        family = self._dominant_family(longitudinal, frame_width)
+        anchor = self.vp_row
+        for row in self._vp_search_rows(anchor):
+            pair = self._select_pair(longitudinal, frame_width, frame_height, row)
+            if pair is not None:
+                self._track_vp_row(pair)
+                return pair
+        return None
+
+    def _vp_search_rows(self, anchor: float) -> list[float]:
+        """Return candidate VP rows, nearest the tracked row first."""
+        rows = [anchor]
+        if self._vp_search_px <= 0:
+            return rows
+        lo = self._vp_horizon_y - self._vp_search_px
+        hi = self._vp_horizon_y + self._vp_search_px
+        step = VP_SEARCH_STEP_PX
+        k = 1
+        while k * step <= 2 * self._vp_search_px:
+            for row in (anchor - k * step, anchor + k * step):
+                if lo <= row <= hi:
+                    rows.append(row)
+            k += 1
+        return rows
+
+    def _track_vp_row(self, pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]]) -> None:
+        """Move the tracked VP row toward the VP of the selected pair."""
+        if self._vp_search_px <= 0:
+            self._vp_row_offset = 0.0
+            return
+        vp = GeometryCalculator.calculate_vanishing_point(*pair)
+        if vp is None:
+            return
+        measured = float(vp[1]) - self._vp_horizon_y
+        if abs(measured) > self._vp_search_px:
+            return
+        offset = self._vp_row_offset + self._vp_track_alpha * (measured - self._vp_row_offset)
+        self._vp_row_offset = max(-self._vp_search_px, min(self._vp_search_px, offset))
+
+    def _select_pair(
+        self,
+        longitudinal: list[tuple[int, int, int, int]],
+        frame_width: int,
+        frame_height: int,
+        vp_row: float,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+        family = self._dominant_family(longitudinal, frame_width, vp_row)
         if not family:
             return None
 
@@ -370,12 +434,14 @@ class VisionProcessor:
         self,
         lines: list[tuple[int, int, int, int]],
         frame_width: int,
+        vp_row: float | None = None,
     ) -> list[tuple[int, int, int, int]]:
         """Return the lines whose horizon crossings cluster with the most length."""
+        row = self.vp_row if vp_row is None else vp_row
         votes = [
             (x_horizon, _line_length(line), line)
             for line in lines
-            if abs(x_horizon := _x_at_row(line, self._vp_horizon_y)) < 4 * frame_width
+            if abs(x_horizon := _x_at_row(line, row)) < 4 * frame_width
         ]
         best: list[tuple[float, float, tuple[int, int, int, int]]] = []
         best_length = 0.0
@@ -389,6 +455,7 @@ class VisionProcessor:
 
 # Lane-pair selection tolerances (pixels, 640x480 frame).
 VP_FAMILY_TOL_PX = 30.0
+VP_SEARCH_STEP_PX = 20.0
 LANE_CLUSTER_TOL_PX = 25.0
 LANE_MIN_GROUP_LENGTH_PX = 60.0
 
@@ -565,6 +632,8 @@ class TelemetryLogger:
             "lane_width_px",
             "expected_lane_width_px",
             "width_error_px",
+            "vp_row",
+            "lane_offset_ratio",
         ]
 
         self._draw_overlay_fn: Any = None
@@ -574,6 +643,7 @@ class TelemetryLogger:
             inner_thresh=self._inner_thresh,
             outer_thresh=self._outer_thresh,
             danger_margin_px=self._danger_margin_px,
+            danger_offset_ratio=config.get_danger_offset_ratio(),
             roi_height_pct=_get_float("ROI_HEIGHT_PCT", 0.6),
             roi_top_width_pct=_get_float("ROI_TOP_WIDTH_PCT", 0.75),
             roi_bottom_width_pct=_get_float("ROI_BOTTOM_WIDTH_PCT", 1.0),
@@ -915,6 +985,8 @@ class UnifiedCalibrator:
             outer_thresh=outer_thresh,
             center_angle=self._robot_state.servo_center_angle,
             max_offset=self._robot_state.max_steering_offset,
+            danger_offset_ratio=self._config.get_danger_offset_ratio(),
+            vp_center_deg=self._config.get_vp_center_deg(),
         )
         self._telemetry = TelemetryLogger(self._config) if telemetry_enabled else None
         self._target_hz = float(self._system_configs.get("MAIN_TARGET_HZ", 30.0))
@@ -931,6 +1003,7 @@ class UnifiedCalibrator:
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
             danger_margin_px=danger_margin,
+            danger_offset_ratio=self._config.get_danger_offset_ratio(),
             roi_height_pct=self._vision._roi_height_pct,
             roi_top_width_pct=self._vision._roi_top_width_pct,
             roi_bottom_width_pct=self._vision._roi_bottom_width_pct,
@@ -1061,7 +1134,7 @@ class UnifiedCalibrator:
             loop_ms = (time.perf_counter() - loop_start) * 1000.0
             target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
             overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
-            pid_error = 0.0 if vp_angle is None else float(vp_angle) - 90.0
+            pid_error = 0.0 if vp_angle is None else float(vp_angle) - self._steering._vp_center_deg
             derivative_error = pid_error - self._robot_state.pid_last_error
             pid_p = self._robot_state.pid.kp * pid_error
             pid_d = self._robot_state.pid.kd * derivative_error
@@ -1086,6 +1159,7 @@ class UnifiedCalibrator:
                 if lane_width_px is None or self._expected_lane_width_px is None
                 else float(lane_width_px) - self._expected_lane_width_px
             )
+            lane_offset_ratio = lane_center_offset_ratio(left_intercept, right_intercept, frame_w)
             telemetry_data: dict[str, Any] = {
                 "frame_num": frame_num,
                 "mono_timestamp": f"{time.perf_counter():.6f}",
@@ -1113,6 +1187,10 @@ class UnifiedCalibrator:
                 "lane_width_px": lane_width_px,
                 "expected_lane_width_px": self._expected_lane_width_px,
                 "width_error_px": width_error_px,
+                "vp_row": round(self._vision.vp_row, 1),
+                "lane_offset_ratio": (
+                    None if lane_offset_ratio is None else round(lane_offset_ratio, 4)
+                ),
                 "selected_left_line": selected_left_line,
                 "selected_right_line": selected_right_line,
                 "selected_left_slope": (

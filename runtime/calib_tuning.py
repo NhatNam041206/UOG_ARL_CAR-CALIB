@@ -56,11 +56,14 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("hough_max_line_gap", "Vision", "Hough max gap", "int", 0, 200, 1),
     TuneParam("min_abs_slope", "Vision", "Min abs slope", "float", 0.0, 5.0, 0.01),
     TuneParam("vp_horizon_y", "Vision", "VP horizon row", "int", -5000, 0, 1),
+    TuneParam("vp_search_px", "Vision", "VP row search", "int", 0, 1000, 1),
     TuneParam("pid_kp", "Steering", "PID Kp", "float", 0.0, 10.0, 0.01),
     TuneParam("pid_kd", "Steering", "PID Kd", "float", 0.0, 10.0, 0.01),
     TuneParam("vp_inner_thresh", "Steering", "VP inner", "float", 0.0, 45.0, 0.1),
     TuneParam("vp_outer_thresh", "Steering", "VP outer", "float", 0.0, 45.0, 0.1),
+    TuneParam("vp_center_deg", "Steering", "VP straight angle", "float", 45.0, 135.0, 0.1),
     TuneParam("danger_margin_px", "Steering", "Danger margin", "int", 0, 640, 1),
+    TuneParam("danger_offset_ratio", "Steering", "Danger lane offset", "float", 0.0, 0.5, 0.01),
     TuneParam("danger_nudge_deg", "Steering", "Danger nudge", "float", 0.0, 45.0, 0.1),
 )
 _PARAMS_BY_KEY = {param.key: param for param in PARAMS}
@@ -211,11 +214,14 @@ class CalibTuneManager:
             "hough_max_line_gap": int(vision._hough_max_line_gap),
             "min_abs_slope": float(vision._min_abs_slope),
             "vp_horizon_y": int(vision._vp_horizon_y),
+            "vp_search_px": int(vision._vp_search_px),
             "pid_kp": float(state.pid.kp),
             "pid_kd": float(state.pid.kd),
             "vp_inner_thresh": float(steering._inner_thresh),
             "vp_outer_thresh": float(steering._outer_thresh),
+            "vp_center_deg": float(steering._vp_center_deg),
             "danger_margin_px": int(steering._danger_margin),
+            "danger_offset_ratio": float(steering._danger_offset_ratio),
             "danger_nudge_deg": float(steering._nudge_deg),
         }
 
@@ -234,12 +240,16 @@ class CalibTuneManager:
         vision._hough_max_line_gap = int(values["hough_max_line_gap"])
         vision._min_abs_slope = float(values["min_abs_slope"])
         vision._vp_horizon_y = float(values["vp_horizon_y"])
+        vision._vp_search_px = float(values["vp_search_px"])
+        vision._vp_row_offset = 0.0
 
         state.pid.kp = float(values["pid_kp"])
         state.pid.kd = float(values["pid_kd"])
         steering._inner_thresh = float(values["vp_inner_thresh"])
         steering._outer_thresh = float(values["vp_outer_thresh"])
+        steering._vp_center_deg = float(values["vp_center_deg"])
         steering._danger_margin = int(values["danger_margin_px"])
+        steering._danger_offset_ratio = float(values["danger_offset_ratio"])
         steering._nudge_deg = float(values["danger_nudge_deg"])
         steering._tracking_active = False
         steering._last_error = 0.0
@@ -257,6 +267,7 @@ class CalibTuneManager:
             "inner_thresh": float(values["vp_inner_thresh"]),
             "outer_thresh": float(values["vp_outer_thresh"]),
             "danger_margin_px": int(values["danger_margin_px"]),
+            "danger_offset_ratio": float(values["danger_offset_ratio"]),
             "roi_height_pct": float(values["roi_height_pct"]),
             "roi_top_width_pct": float(values["roi_top_width_pct"]),
             "roi_bottom_width_pct": float(values["roi_bottom_width_pct"]),

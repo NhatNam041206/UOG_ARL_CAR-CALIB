@@ -420,7 +420,7 @@ Main output cua algorithm la `CalibrationResult`:
 | [`VisionProcessor.__init__()`](../unified_calibration_components.py#L167) | `unified_calibration_components.py` | `config.settings._get_*` | Load ROI, blur, Canny, Hough, min slope. |
 | [`VisionProcessor.process_frame()`](../unified_calibration_components.py#L178) | `unified_calibration_components.py` | `process_frame_debug()` | Convenience: chi tra `lines`. |
 | [`VisionProcessor.process_frame_debug()`](../unified_calibration_components.py#L183) | `unified_calibration_components.py` | `cv2.cvtColor`, `cv2.GaussianBlur`, `cv2.Canny`, `cv2.HoughLinesP` | Tra `(lines, vision_debug)`. Lines la list `(x1,y1,x2,y2)`. |
-| [`VisionProcessor._apply_geometric_filter()`](../unified_calibration_components.py#L243) | `unified_calibration_components.py` | `math.hypot` | Loc ho line doc theo diem cat hang chan troi `VISION_VP_HORIZON_Y`, chon line gan tam nhat moi ben. Neu thieu 1 ben -> `None`. |
+| [`VisionProcessor._apply_geometric_filter()`](../unified_calibration_components.py#L243) | `unified_calibration_components.py` | `math.hypot` | Loc ho line doc theo diem cat hang VP (bat dau tu hang dang track, quet trong `VISION_VP_HORIZON_Y` +/- `VISION_VP_SEARCH_PX`, buoc 20 px), chon line gan tam nhat moi ben; cap dau tien tim duoc cap nhat hang VP track (EMA `VISION_VP_TRACK_ALPHA`). Neu thieu 1 ben o moi hang -> `None`. |
 
 Vision data flow:
 
@@ -476,25 +476,25 @@ No VP/intercepts
   -> GAPPING
   -> servo = center
 
-left_intercept > danger_margin
-  -> DANGER_RIGHT
+offset = ((left + right) / 2 - frame_width / 2) / (right - left)
+DANGER_OFFSET_RATIO > 0 and offset < -DANGER_OFFSET_RATIO
+  -> DANGER_LEFT   (car right of lane centre)
   -> servo = center + nudge_deg
-
-right_intercept < frame_width - danger_margin
-  -> DANGER_LEFT
+DANGER_OFFSET_RATIO > 0 and offset > +DANGER_OFFSET_RATIO
+  -> DANGER_RIGHT  (car left of lane centre)
   -> servo = center - nudge_deg
 
-both danger
-  -> AMBIGUOUS_DANGER
-  -> servo = center
+DANGER_OFFSET_RATIO == 0 (legacy pixel rule)
+  left_intercept < danger_margin               -> DANGER_LEFT
+  right_intercept > frame_width - danger_margin -> DANGER_RIGHT
 
-abs(vp_angle - 90) <= inner_thresh
+abs(vp_angle - VP_CENTER_DEG) <= inner_thresh
   -> TRACKING_COAST
   -> servo = center
 
-abs(vp_angle - 90) > outer_thresh
+abs(vp_angle - VP_CENTER_DEG) > outer_thresh
   -> TRACKING_PD
-  -> servo = clamp(center + PD(error), center +/- max_offset)
+  -> servo = clamp(center - PD(error), center +/- max_offset)
 ```
 
 ### 3.5 Unified Frame Function

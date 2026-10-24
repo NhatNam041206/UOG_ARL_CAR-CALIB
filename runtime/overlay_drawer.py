@@ -31,6 +31,7 @@ class OverlayDrawer:
         inner_thresh: float = 3.0,
         outer_thresh: float = 10.0,
         danger_margin_px: int = 100,
+        danger_offset_ratio: float = 0.0,
         roi_height_pct: float = 0.6,
         roi_top_width_pct: float = 1.0,
         roi_bottom_width_pct: float = 1.0,
@@ -43,6 +44,7 @@ class OverlayDrawer:
         self.inner_thresh = float(inner_thresh)
         self.outer_thresh = float(outer_thresh)
         self.danger_margin_px = int(danger_margin_px)
+        self.danger_offset_ratio = float(danger_offset_ratio)
         self.roi_height_pct = float(roi_height_pct)
         self.roi_top_width_pct = float(roi_top_width_pct)
         self.roi_bottom_width_pct = float(roi_bottom_width_pct)
@@ -138,7 +140,8 @@ class OverlayDrawer:
         center_x = frame_w // 2
         self._draw_dashed_vertical_line(frame, center_x, 0, frame_h - 1, self.theme.white)
 
-        margin = max(0, min(self.danger_margin_px, frame_w))
+        # Lane-offset danger has no fixed pixel band; edge bands only for the legacy rule.
+        margin = 0 if self.danger_offset_ratio > 0 else max(0, min(self.danger_margin_px, frame_w))
         if margin > 0:
             self._fill_alpha_rect(frame, (0, 0), (margin, frame_h), self.theme.red, 0.16)
             self._fill_alpha_rect(frame, (max(0, frame_w - margin), 0), (frame_w, frame_h), self.theme.red, 0.16)
@@ -147,11 +150,23 @@ class OverlayDrawer:
             x1, y1, x2, y2 = line
             line_color = self.theme.green
             bottom_x = self._line_bottom_x(line)
-            if bottom_x is not None and (bottom_x < margin or bottom_x > (frame_w - margin)):
+            if margin > 0 and bottom_x is not None and (bottom_x < margin or bottom_x > (frame_w - margin)):
                 line_color = self.theme.red
             cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
         self._draw_vp_crosshair(frame, vp_coord)
+
+        if self.danger_offset_ratio > 0:
+            if left_intercept_x is not None and right_intercept_x is not None and right_intercept_x > left_intercept_x:
+                lane_w = right_intercept_x - left_intercept_x
+                lane_cx = (left_intercept_x + right_intercept_x) // 2
+                in_danger = abs(lane_cx - frame_w / 2.0) > self.danger_offset_ratio * lane_w
+                color = self.theme.red if in_danger else self.theme.green
+                for x in (left_intercept_x, right_intercept_x, lane_cx):
+                    self._draw_bottom_marker(frame, x, frame_h - 1, color)
+                band = int(round(self.danger_offset_ratio * lane_w))
+                cv2.line(frame, (lane_cx - band, frame_h - 20), (lane_cx + band, frame_h - 20), color, 2, cv2.LINE_AA)
+            return
 
         if left_intercept_x is not None:
             self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, self._marker_color(left_intercept_x, frame_w))
