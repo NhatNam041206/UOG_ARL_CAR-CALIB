@@ -60,6 +60,7 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("pair_hold_frames", "Vision", "Lane pair hold (frames)", "int", 0, 30, 1),
     TuneParam("pid_kp", "Steering", "PID Kp", "float", 0.0, 10.0, 0.01),
     TuneParam("pid_kd", "Steering", "PID Kd", "float", 0.0, 10.0, 0.01),
+    TuneParam("pid_lateral_gain", "Steering", "PID lateral gain", "float", 0.0, 300.0, 1.0),
     TuneParam("vp_inner_thresh", "Steering", "VP inner", "float", 0.0, 45.0, 0.1),
     TuneParam("vp_outer_thresh", "Steering", "VP outer", "float", 0.0, 45.0, 0.1),
     TuneParam("vp_center_deg", "Steering", "VP straight angle", "float", 45.0, 135.0, 0.1),
@@ -219,6 +220,7 @@ class CalibTuneManager:
             "pair_hold_frames": int(getattr(self._calibrator, "_pair_hold_frames", 0)),
             "pid_kp": float(state.pid.kp),
             "pid_kd": float(state.pid.kd),
+            "pid_lateral_gain": float(steering._lateral_gain),
             "vp_inner_thresh": float(steering._inner_thresh),
             "vp_outer_thresh": float(steering._outer_thresh),
             "vp_center_deg": float(steering._vp_center_deg),
@@ -248,6 +250,7 @@ class CalibTuneManager:
 
         state.pid.kp = float(values["pid_kp"])
         state.pid.kd = float(values["pid_kd"])
+        steering._lateral_gain = float(values["pid_lateral_gain"])
         steering._inner_thresh = float(values["vp_inner_thresh"])
         steering._outer_thresh = float(values["vp_outer_thresh"])
         steering._vp_center_deg = float(values["vp_center_deg"])

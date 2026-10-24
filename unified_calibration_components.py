@@ -147,6 +147,7 @@ class ConfigManager:
         self._danger_margin_px = _get_int("DANGER_MARGIN_PX", 100)
         self._danger_offset_ratio = _get_float("DANGER_OFFSET_RATIO", 0.25)
         self._vp_center_deg = _get_float("VP_CENTER_DEG", 90.0)
+        self._pid_lateral_gain = _get_float("PID_LATERAL_GAIN", 60.0)
         self._danger_nudge_deg = _get_float("DANGER_NUDGE_DEG", 5.0)
 
     def get_system_configs(self) -> dict:
@@ -172,6 +173,10 @@ class ConfigManager:
     def get_danger_margins(self) -> tuple[int, float]:
         """Return danger margin in pixels and fixed nudge angle in degrees."""
         return self._danger_margin_px, self._danger_nudge_deg
+
+    def get_pid_lateral_gain(self) -> float:
+        """Return PD error degrees per 1.0 lane-offset ratio (0 = heading only)."""
+        return self._pid_lateral_gain
 
     def get_vp_center_deg(self) -> float:
         """Return the VP angle that means the car points straight down the lane."""
@@ -994,6 +999,7 @@ class UnifiedCalibrator:
             max_offset=self._robot_state.max_steering_offset,
             danger_offset_ratio=self._config.get_danger_offset_ratio(),
             vp_center_deg=self._config.get_vp_center_deg(),
+            lateral_gain=self._config.get_pid_lateral_gain(),
         )
         self._telemetry = TelemetryLogger(self._config) if telemetry_enabled else None
         self._target_hz = float(self._system_configs.get("MAIN_TARGET_HZ", 30.0))
@@ -1156,7 +1162,14 @@ class UnifiedCalibrator:
             loop_ms = (time.perf_counter() - loop_start) * 1000.0
             target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
             overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
-            pid_error = 0.0 if vp_angle is None else float(vp_angle) - self._steering._vp_center_deg
+            pid_error = (
+                0.0
+                if vp_angle is None
+                else self._steering._tracking_error(
+                    float(vp_angle),
+                    lane_center_offset_ratio(left_intercept, right_intercept, frame_w),
+                )
+            )
             derivative_error = pid_error - self._robot_state.pid_last_error
             pid_p = self._robot_state.pid.kp * pid_error
             pid_d = self._robot_state.pid.kd * derivative_error

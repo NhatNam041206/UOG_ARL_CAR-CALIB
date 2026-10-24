@@ -31,6 +31,7 @@ def _fake_calibrator():
         _danger_margin=130,
         _danger_offset_ratio=0.25,
         _vp_center_deg=90.0,
+        _lateral_gain=60.0,
         _nudge_deg=10.0,
         _tracking_active=True,
         _last_error=12.0,

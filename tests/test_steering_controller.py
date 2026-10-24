@@ -183,3 +183,47 @@ def test_offset_danger_keeps_nudge_when_heading_is_small() -> None:
     assert state == "DANGER_LEFT"
     assert angle == pytest.approx(97.0)
     assert controller.last_command_source == "NUDGE"
+
+
+def _lateral_controller(gain: float = 60.0) -> SteeringController:
+    return SteeringController(
+        pid_constants=PIDConstants(kp=0.5, ki=0.0, kd=0.0),
+        danger_margin=130,
+        nudge_deg=8.0,
+        inner_thresh=3.0,
+        outer_thresh=5.0,
+        center_angle=90.0,
+        max_offset=90.0,
+        danger_offset_ratio=0.2,
+        lateral_gain=gain,
+    )
+
+
+def test_lateral_gain_stops_pd_steering_back_toward_the_line() -> None:
+    """Car just out of DANGER: right of centre (offset -0.15) and pointing back
+    left (VP right, +10). Heading-only PD steers right, toward the line again;
+    with the lateral term the error cancels and the car keeps heading back."""
+    args = dict(vp_angle=100.0, left_intercept=-44, right_intercept=516, frame_width=640)
+    angle, state = _lateral_controller(gain=0.0).compute_steering(**args)
+    assert state == "TRACKING_PD" and angle < 90.0
+    angle, state = _lateral_controller(gain=60.0).compute_steering(**args)
+    assert state == "TRACKING_COAST" and angle == pytest.approx(90.0)
+
+
+def test_lateral_gain_steers_back_to_centre_when_heading_is_straight() -> None:
+    # Car right of centre, heading straight: lateral term steers left.
+    angle, state = _lateral_controller().compute_steering(
+        vp_angle=90.0, left_intercept=-44, right_intercept=516, frame_width=640,
+    )
+    assert state == "TRACKING_PD" and angle > 90.0
+
+
+def test_danger_does_not_nudge_when_car_already_heads_back() -> None:
+    # Offset -0.25 (danger, nudge left) but car points left (VP right, +12).
+    controller = _lateral_controller()
+    angle, state = controller.compute_steering(
+        vp_angle=102.0, left_intercept=-100, right_intercept=460, frame_width=640,
+    )
+    assert state == "DANGER_LEFT"
+    assert controller.last_command_source == "DANGER_PD"
+    assert angle == pytest.approx(90.0 - 0.5 * (12.0 - 60.0 * 0.25))
