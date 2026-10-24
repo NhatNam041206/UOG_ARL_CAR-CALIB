@@ -71,6 +71,7 @@ class OverlayDrawer:
         vp_row = debug_packet.get("vp_row")
         vp_center = self._as_float(debug_packet.get("vp_center_deg"), 90.0)
         command_source = debug_packet.get("command_source")
+        pair_held = int(self._as_float(debug_packet.get("pair_held_frames"), 0.0))
 
         self._draw_floor_visuals(
             output,
@@ -92,6 +93,7 @@ class OverlayDrawer:
             vp_row=vp_row,
             vp_center=vp_center,
             command_source=command_source,
+            pair_held=pair_held,
         )
         if self.danger_offset_ratio > 0:
             self._draw_lane_offset_bar(
@@ -119,11 +121,14 @@ class OverlayDrawer:
         vp_row: Any = None,
         vp_center: float = 90.0,
         command_source: str | None = None,
+        pair_held: int = 0,
     ) -> None:
         panel_x = 8
         panel_y = 8
         panel_w = 330
         panel_h = 148 if self.danger_offset_ratio <= 0 else 236
+        if self.danger_offset_ratio > 0 and pair_held > 0:
+            panel_w = 400
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
         self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58)
@@ -150,6 +155,9 @@ class OverlayDrawer:
                 offset_text = f"LANE OFFSET: {lane_offset:+.2f} (limit +-{limit:.2f})"
                 offset_color = self.theme.red if over else self.theme.green
             row_text = "-" if vp_row is None else f"{self._as_float(vp_row, 0.0):.0f}"
+            if pair_held > 0:
+                offset_text += f"  HELD {pair_held}f"
+                offset_color = self.theme.yellow
             entries += [
                 (offset_text, offset_color),
                 (f"CMD SOURCE: {self._command_source(state, command_source)}", state_color),

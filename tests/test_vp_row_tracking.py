@@ -41,3 +41,27 @@ def test_tracked_row_stays_within_search_window() -> None:
     for _ in range(30):
         vision._apply_geometric_filter(lines, 640, 480)
     assert -618 <= vision.vp_row <= -418
+
+
+def test_calibrator_holds_last_pair_for_brief_dropouts() -> None:
+    import numpy as np
+    import unified_calibration_components as ucc
+    from unified_calibration_components import UnifiedCalibrator
+
+    # Draw with the module's own cv2: another test swaps sys.modules["cv2"].
+    cv2 = ucc.cv2
+
+    calibrator = UnifiedCalibrator(telemetry_enabled=False)
+    calibrator._vision._roi_height_pct = 1.0
+    calibrator._vision._vp_horizon_y = -380
+    calibrator._pair_hold_frames = 2
+    lane = np.full((480, 640, 3), 200, np.uint8)
+    for line in _lane_pair(300, -380, 40, 600):
+        cv2.line(lane, line[:2], line[2:], (40, 40, 40), 4)
+    blank = np.full((480, 640, 3), 200, np.uint8)
+
+    states = [calibrator.process_frame(f, i).telemetry for i, f in enumerate([lane, blank, blank, blank])]
+    assert states[0]["selected_pair_found"] == 1
+    assert [s["pair_held_frames"] for s in states[1:3]] == [1, 2]
+    assert states[1]["fsm_state"] != "GAPPING"
+    assert states[3]["fsm_state"] == "GAPPING"

@@ -635,6 +635,7 @@ class TelemetryLogger:
             "vp_row",
             "lane_offset_ratio",
             "command_source",
+            "pair_held_frames",
         ]
 
         self._draw_overlay_fn: Any = None
@@ -856,6 +857,7 @@ class TelemetryLogger:
                     "vp_row": telemetry_data.get("vp_row"),
                     "vp_center_deg": telemetry_data.get("vp_center_deg"),
                     "command_source": telemetry_data.get("command_source"),
+                    "pair_held_frames": telemetry_data.get("pair_held_frames"),
                 },
             )
         else:
@@ -1004,6 +1006,11 @@ class UnifiedCalibrator:
         self._stream_enabled = bool(self._stream_configs.get("MAIN_HTTPS_STREAM_ENABLED", False))
         self._last_rendered_frame: np.ndarray | None = None
         self._expected_lane_width_px = _get_optional_float("EXPECTED_LANE_WIDTH_PX")
+        # Reuse the last lane pair for a few frames when detection drops out
+        # (motion blur, glare) instead of flipping straight to GAPPING.
+        self._pair_hold_frames = max(0, _get_int("VISION_PAIR_HOLD_FRAMES", 5))
+        self._held_pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None
+        self._held_pair_age = 0
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
@@ -1056,6 +1063,16 @@ class UnifiedCalibrator:
             stage = "lane_pair_selection"
             process = "select_lane_pair"
             selected = self._vision._apply_geometric_filter(lines, frame_w, frame_h)
+            pair_detected = selected is not None
+            if selected is not None:
+                self._held_pair = selected
+                self._held_pair_age = 0
+            elif self._held_pair is not None and self._held_pair_age < self._pair_hold_frames:
+                self._held_pair_age += 1
+                selected = self._held_pair
+            else:
+                self._held_pair = None
+            pair_held = 0 if selected is None else self._held_pair_age
             if selected is not None:
                 line1, line2 = selected
                 vision_debug["selected_lines"] = [line1, line2]
@@ -1186,7 +1203,7 @@ class UnifiedCalibrator:
                 "total_hough_lines": len(lines),
                 "left_candidate_lines": vision_debug.get("left_candidate_lines", 0),
                 "right_candidate_lines": vision_debug.get("right_candidate_lines", 0),
-                "selected_pair_found": int(selected is not None),
+                "selected_pair_found": int(pair_detected),
                 "left_intercept": left_intercept,
                 "right_intercept": right_intercept,
                 "lane_width_px": lane_width_px,
@@ -1195,6 +1212,7 @@ class UnifiedCalibrator:
                 "vp_row": round(self._vision.vp_row, 1),
                 "vp_center_deg": self._steering._vp_center_deg,
                 "command_source": self._steering.last_command_source,
+                "pair_held_frames": pair_held,
                 "lane_offset_ratio": (
                     None if lane_offset_ratio is None else round(lane_offset_ratio, 4)
                 ),

@@ -57,6 +57,7 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("min_abs_slope", "Vision", "Min abs slope", "float", 0.0, 5.0, 0.01),
     TuneParam("vp_horizon_y", "Vision", "VP horizon row", "int", -5000, 0, 1),
     TuneParam("vp_search_px", "Vision", "VP row search", "int", 0, 1000, 1),
+    TuneParam("pair_hold_frames", "Vision", "Lane pair hold (frames)", "int", 0, 30, 1),
     TuneParam("pid_kp", "Steering", "PID Kp", "float", 0.0, 10.0, 0.01),
     TuneParam("pid_kd", "Steering", "PID Kd", "float", 0.0, 10.0, 0.01),
     TuneParam("vp_inner_thresh", "Steering", "VP inner", "float", 0.0, 45.0, 0.1),
@@ -215,6 +216,7 @@ class CalibTuneManager:
             "min_abs_slope": float(vision._min_abs_slope),
             "vp_horizon_y": int(vision._vp_horizon_y),
             "vp_search_px": int(vision._vp_search_px),
+            "pair_hold_frames": int(getattr(self._calibrator, "_pair_hold_frames", 0)),
             "pid_kp": float(state.pid.kp),
             "pid_kd": float(state.pid.kd),
             "vp_inner_thresh": float(steering._inner_thresh),
@@ -242,6 +244,7 @@ class CalibTuneManager:
         vision._vp_horizon_y = float(values["vp_horizon_y"])
         vision._vp_search_px = float(values["vp_search_px"])
         vision._vp_row_offset = 0.0
+        self._calibrator._pair_hold_frames = int(values["pair_hold_frames"])
 
         state.pid.kp = float(values["pid_kp"])
         state.pid.kd = float(values["pid_kd"])

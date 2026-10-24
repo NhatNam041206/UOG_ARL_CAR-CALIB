@@ -44,6 +44,7 @@ def _fake_calibrator():
         steering_controller=steering,
         robot_state=state,
         _overlay_drawer=SimpleNamespace(_inner_thresh=3.0, _outer_thresh=8.0, _danger_margin_px=130),
+        _pair_hold_frames=5,
         _telemetry=SimpleNamespace(
             _inner_thresh=3.0,
             _outer_thresh=8.0,
