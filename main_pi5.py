@@ -120,7 +120,12 @@ def map_calibrated_servo(
     input_cmd,
     home_offset_deg=-8,
     limit_deg=60,
-    reverse=False
+    reverse=False,
+    trim_deg=0.0,
+    left_gain=1.0,
+    right_gain=1.0,
+    left_kick_deg=5.0,
+    right_kick_deg=10.0,
 ):
     """
     input_cmd: lệnh logic từ 0 -> 180
@@ -133,19 +138,26 @@ def map_calibrated_servo(
             ví dụ 60 nghĩa là chỉ chạy từ -60 -> +60 quanh home
 
     reverse: đảo chiều servo nếu cần
+
+    trim_deg: shifts the servo home so logic 90 drives straight
+    left_gain / right_gain: scale the offset on each side so equal
+                    commands give equal curvature left and right
+    left_kick_deg / right_kick_deg: fixed extra step once a side is
+                    commanded, to get past the servo/linkage dead zone
     """
 
     # Giới hạn input logic
     input_cmd = constrain(input_cmd, 0, 180)
 
     # Tính home servo thật sau calibration
-    home_cmd = 90 + home_offset_deg
+    home_cmd = 90 + home_offset_deg + trim_deg
 
     # Đổi input 0..180 thành ratio -1..1
     ratio = (input_cmd - 90) / 90
 
     # Map ratio ra góc servo thật
     calib_deg = input_cmd - 90
+    calib_deg *= left_gain if calib_deg > 0 else right_gain
     if reverse:
         calib_deg = -calib_deg
     # Cap error nếu vượt quá limit
@@ -156,9 +168,9 @@ def map_calibrated_servo(
 
     # Due to hardware limitation of servo, we need to add some offset to avoid hitting the physical limit
     if servo_cmd < home_cmd: #increase power of right side
-        servo_cmd -= 10
+        servo_cmd -= right_kick_deg
     elif servo_cmd > home_cmd: #increase power of left side
-        servo_cmd += 5
+        servo_cmd += left_kick_deg
     
     # Giới hạn an toàn servo 0..180
     servo_cmd = constrain(servo_cmd, 0, 180)
@@ -856,6 +868,7 @@ def main() -> None:
                 home_offset_deg=_env_float(("SERVO_CENTER_ANGLE",), -8.0),
                 limit_deg=_env_int(("MAX_STEERING_OFFSET",), 60),
                 reverse=_env_bool("SERVO_REVERSE", False),
+                **calibrator.servo_side_params(),
             )
             if (
                 not manual_decision.active

@@ -22,11 +22,18 @@ def _fake_calibrator():
         _hough_max_line_gap=20,
         _min_abs_slope=0.3,
         _vp_horizon_y=-518.0,
+        _vp_search_px=200.0,
+        _vp_row_offset=0.0,
+        _lane_width_tol=0.3,
+        _single_line_max_frames=30,
     )
     steering = SimpleNamespace(
         _inner_thresh=3.0,
         _outer_thresh=8.0,
         _danger_margin=130,
+        _danger_offset_ratio=0.25,
+        _vp_center_deg=90.0,
+        _lateral_gain=60.0,
         _nudge_deg=10.0,
         _tracking_active=True,
         _last_error=12.0,
@@ -40,6 +47,9 @@ def _fake_calibrator():
         steering_controller=steering,
         robot_state=state,
         _overlay_drawer=SimpleNamespace(_inner_thresh=3.0, _outer_thresh=8.0, _danger_margin_px=130),
+        _pair_hold_frames=5,
+        _camera_hfov_deg=0.0,
+        _relock_valid_frames=3,
         _telemetry=SimpleNamespace(
             _inner_thresh=3.0,
             _outer_thresh=8.0,

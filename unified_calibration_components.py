@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from importlib import import_module
-from math import hypot
+from math import atan, degrees, hypot, radians, tan
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from config.settings import _get_bool, _get_float, _get_int, _get_str
-from control.steering_controller import SteeringController
+from control.steering_controller import SteeringController, lane_center_offset_ratio
 from models.robot_state import FSMState, PIDConstants, RobotState
 from runtime.overlay_drawer import OverlayDrawer
 
@@ -145,6 +145,9 @@ class ConfigManager:
         self._vp_inner_thresh = _get_float("VP_INNER_THRESH", 3.0)
         self._vp_outer_thresh = _get_float("VP_OUTER_THRESH", 5.0)
         self._danger_margin_px = _get_int("DANGER_MARGIN_PX", 100)
+        self._danger_offset_ratio = _get_float("DANGER_OFFSET_RATIO", 0.25)
+        self._vp_center_deg = _get_float("VP_CENTER_DEG", 90.0)
+        self._pid_lateral_gain = _get_float("PID_LATERAL_GAIN", 60.0)
         self._danger_nudge_deg = _get_float("DANGER_NUDGE_DEG", 5.0)
 
     def get_system_configs(self) -> dict:
@@ -171,6 +174,18 @@ class ConfigManager:
         """Return danger margin in pixels and fixed nudge angle in degrees."""
         return self._danger_margin_px, self._danger_nudge_deg
 
+    def get_pid_lateral_gain(self) -> float:
+        """Return PD error degrees per 1.0 lane-offset ratio (0 = heading only)."""
+        return self._pid_lateral_gain
+
+    def get_vp_center_deg(self) -> float:
+        """Return the VP angle that means the car points straight down the lane."""
+        return self._vp_center_deg
+
+    def get_danger_offset_ratio(self) -> float:
+        """Return the lane-centre offset (fraction of lane width) that triggers danger."""
+        return self._danger_offset_ratio
+
 
 class VisionProcessor:
     """Frame pre-processor and Stage-1 line extractor."""
@@ -192,9 +207,33 @@ class VisionProcessor:
         self._hough_min_line_length = _get_int("VISION_HOUGH_MIN_LINE_LENGTH", 40)
         self._hough_max_line_gap = _get_int("VISION_HOUGH_MAX_LINE_GAP", 20)
         self._min_abs_slope = _get_float("VISION_MIN_ABS_SLOPE", 0.3)
-        # Image row where lane lines converge (camera pitch is fixed). Default
-        # is the median VP row measured on the Pi5 car camera at 640x480.
+        # Nominal image row where lane lines converge. Camera pitch shifts
+        # between runs (mount, load, acceleration), so the row actually used
+        # is tracked from the detected VP within +-vp_search_px of this one.
         self._vp_horizon_y = _get_float("VISION_VP_HORIZON_Y", -518.0)
+        self._vp_search_px = max(0.0, _get_float("VISION_VP_SEARCH_PX", 200.0))
+        self._vp_track_alpha = min(1.0, max(0.0, _get_float("VISION_VP_TRACK_ALPHA", 0.2)))
+        self._vp_row_offset = 0.0
+        # Lane-width memory: pairs whose bottom width is more than
+        # lane_width_tol off the running width are rejected (furniture and
+        # wall edges), and lines near the previous pair are preferred.
+        self._lane_width_tol = max(0.0, _get_float("VISION_LANE_WIDTH_TOL", 0.30))
+        self._lane_width_seed = _get_optional_float("EXPECTED_LANE_WIDTH_PX")
+        self._lane_width_px: float | None = self._lane_width_seed
+        self._width_reject_streak = 0
+        # Single-line tracking: when only one lane line is visible, infer the
+        # other from the running lane width for up to this many frames.
+        self._single_line_max_frames = max(0, _get_int("VISION_SINGLE_LINE_MAX_FRAMES", 60))
+        self._single_line_streak = 0
+        self._lane_ref: tuple[float, float] | None = None
+        self._lane_ref_age = 0
+        self._width_rejected = False
+        self.last_pair_kind = "NONE"
+
+    @property
+    def vp_row(self) -> float:
+        """Image row currently used to group lane lines (nominal + tracked offset)."""
+        return self._vp_horizon_y + self._vp_row_offset
 
     def _apply_trapezoid_mask(self, edges: np.ndarray) -> np.ndarray:
         """Zero out edges outside a trapezoid narrowing from bottom to top width."""
@@ -330,9 +369,143 @@ class VisionProcessor:
             if line[0] == line[2]
             or abs((line[3] - line[1]) / (line[2] - line[0])) >= self._min_abs_slope
         ]
-        family = self._dominant_family(longitudinal, frame_width)
-        if not family:
+        self._width_rejected = False
+        anchor = self.vp_row
+        for row in self._vp_search_rows(anchor):
+            pair = self._select_pair(longitudinal, frame_width, frame_height, row)
+            if pair is not None:
+                self._track_vp_row(pair)
+                self._remember_pair(pair, frame_height, inferred=False)
+                self.last_pair_kind = "PAIR"
+                return pair
+
+        pair = self._infer_single_line(longitudinal, frame_width, frame_height)
+        if pair is not None:
+            self._remember_pair(pair, frame_height, inferred=True)
+            return pair
+
+        # A wrong running width would reject the real lane forever; forget
+        # it once candidate pairs keep getting rejected with nothing else
+        # left to steer on.
+        if self._width_rejected:
+            self._width_reject_streak += 1
+            if self._width_reject_streak >= LANE_WIDTH_RESET_FRAMES:
+                self._lane_width_px = self._lane_width_seed
+                self._lane_ref = None
+                self._width_reject_streak = 0
+        self._lane_ref_age += 1
+        self.last_pair_kind = "NONE"
+        return None
+
+    def _reference(self) -> tuple[float, float] | None:
+        """Return the previous pair's bottom intercepts while still recent."""
+        if self._lane_ref is None or self._lane_ref_age > LANE_REF_MAX_AGE_FRAMES:
             return None
+        return self._lane_ref
+
+    def _remember_pair(
+        self,
+        pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]],
+        frame_height: int,
+        *,
+        inferred: bool,
+    ) -> None:
+        left_x = _x_at_row(pair[0], frame_height)
+        right_x = _x_at_row(pair[1], frame_height)
+        self._lane_ref = (left_x, right_x)
+        self._lane_ref_age = 0
+        if inferred:
+            self._single_line_streak += 1
+            return
+        self._single_line_streak = 0
+        self._width_reject_streak = 0
+        width = right_x - left_x
+        if self._lane_width_px is None:
+            self._lane_width_px = width
+        else:
+            self._lane_width_px += LANE_WIDTH_ALPHA * (width - self._lane_width_px)
+
+    def _infer_single_line(
+        self,
+        longitudinal: list[tuple[int, int, int, int]],
+        frame_width: int,
+        frame_height: int,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+        """Track one visible lane line and place the other one lane width away.
+
+        The visible line must be near where the previous pair's line was, so
+        a lone wall edge is not mistaken for a lane line. The inferred line
+        goes through the visible line's crossing of the VP row, so the VP
+        (and the heading) comes from the visible line alone.
+        """
+        ref = self._reference()
+        width = self._lane_width_px
+        if (
+            self._single_line_max_frames <= 0
+            or self._single_line_streak >= self._single_line_max_frames
+            or ref is None
+            or width is None
+            or width <= 0
+        ):
+            return None
+        row = self.vp_row
+        tol = max(LANE_REF_TOL_MIN_PX, LANE_REF_TOL_RATIO * width)
+        best: tuple[float, str, float, tuple[int, int, int, int]] | None = None
+        for x_bottom, line in self._lane_groups(longitudinal, frame_width, frame_height, row):
+            for side, ref_x in (("LEFT", ref[0]), ("RIGHT", ref[1])):
+                dist = abs(x_bottom - ref_x)
+                if dist <= tol and (best is None or dist < best[0]):
+                    best = (dist, side, x_bottom, line)
+        if best is None:
+            return None
+        _, side, x_bottom, line = best
+        vp_x = _x_at_row(line, row)
+        other_x = x_bottom + width if side == "LEFT" else x_bottom - width
+        inferred = (int(round(vp_x)), int(round(row)), int(round(other_x)), int(frame_height))
+        self.last_pair_kind = "SINGLE_LEFT" if side == "LEFT" else "SINGLE_RIGHT"
+        return (line, inferred) if side == "LEFT" else (inferred, line)
+
+    def _vp_search_rows(self, anchor: float) -> list[float]:
+        """Return candidate VP rows, nearest the tracked row first."""
+        rows = [anchor]
+        if self._vp_search_px <= 0:
+            return rows
+        lo = self._vp_horizon_y - self._vp_search_px
+        hi = self._vp_horizon_y + self._vp_search_px
+        step = VP_SEARCH_STEP_PX
+        k = 1
+        while k * step <= 2 * self._vp_search_px:
+            for row in (anchor - k * step, anchor + k * step):
+                if lo <= row <= hi:
+                    rows.append(row)
+            k += 1
+        return rows
+
+    def _track_vp_row(self, pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]]) -> None:
+        """Move the tracked VP row toward the VP of the selected pair."""
+        if self._vp_search_px <= 0:
+            self._vp_row_offset = 0.0
+            return
+        vp = GeometryCalculator.calculate_vanishing_point(*pair)
+        if vp is None:
+            return
+        measured = float(vp[1]) - self._vp_horizon_y
+        if abs(measured) > self._vp_search_px:
+            return
+        offset = self._vp_row_offset + self._vp_track_alpha * (measured - self._vp_row_offset)
+        self._vp_row_offset = max(-self._vp_search_px, min(self._vp_search_px, offset))
+
+    def _lane_groups(
+        self,
+        longitudinal: list[tuple[int, int, int, int]],
+        frame_width: int,
+        frame_height: int,
+        vp_row: float,
+    ) -> list[tuple[float, tuple[int, int, int, int]]]:
+        """Return (bottom x, longest line) for each lane-line candidate."""
+        family = self._dominant_family(longitudinal, frame_width, vp_row)
+        if not family:
+            return []
 
         # Merge collinear fragments by bottom intercept; keep the longest one.
         groups: list[dict[str, Any]] = []
@@ -348,34 +521,76 @@ class VisionProcessor:
             group["lines"].append(line)
             group["length"] += _line_length(line)
 
-        center_x = frame_width / 2.0
-        left: tuple[float, tuple[int, int, int, int]] | None = None
-        right: tuple[float, tuple[int, int, int, int]] | None = None
+        candidates = []
         for group in groups:
             if group["length"] < LANE_MIN_GROUP_LENGTH_PX:
                 continue
             line = max(group["lines"], key=_line_length)
-            x_bottom = _x_at_row(line, frame_height)
-            if x_bottom < center_x:
-                if left is None or x_bottom > left[0]:
-                    left = (x_bottom, line)
-            elif right is None or x_bottom < right[0]:
-                right = (x_bottom, line)
+            candidates.append((_x_at_row(line, frame_height), line))
+        return candidates
 
-        if left is None or right is None:
+    def _select_pair(
+        self,
+        longitudinal: list[tuple[int, int, int, int]],
+        frame_width: int,
+        frame_height: int,
+        vp_row: float,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+        """Pick one candidate each side of the image centre.
+
+        Without a recent pair this is the innermost line on each side. With
+        one, the pair closest to the previous intercepts wins. Unless
+        lane_width_tol is 0, pairs whose width is implausible against the
+        running lane width, or whose lines jumped away from the previous
+        pair, are skipped.
+        """
+        candidates = self._lane_groups(longitudinal, frame_width, frame_height, vp_row)
+        center_x = frame_width / 2.0
+        ref = self._reference()
+        width = self._lane_width_px
+        gate = width is not None and width > 0 and self._lane_width_tol > 0
+        ref_tol = 0.0 if not gate else max(LANE_REF_TOL_MIN_PX, LANE_REF_TOL_RATIO * width)
+        best: tuple[float, tuple[int, int, int, int], tuple[int, int, int, int]] | None = None
+        for left_x, left_line in candidates:
+            if left_x >= center_x:
+                continue
+            for right_x, right_line in candidates:
+                if right_x < center_x:
+                    continue
+                pair_width = right_x - left_x
+                if gate and abs(pair_width - width) > self._lane_width_tol * width:
+                    self._width_rejected = True
+                    continue
+                # A lane line cannot jump far in one frame; a line that did
+                # is an obstacle or wall edge (single-line tracking may still
+                # use the other one).
+                if gate and ref is not None and (
+                    abs(left_x - ref[0]) > ref_tol or abs(right_x - ref[1]) > ref_tol
+                ):
+                    self._width_rejected = True
+                    continue
+                if ref is None:
+                    cost = pair_width
+                else:
+                    cost = abs(left_x - ref[0]) + abs(right_x - ref[1])
+                if best is None or cost < best[0]:
+                    best = (cost, left_line, right_line)
+        if best is None:
             return None
-        return left[1], right[1]
+        return best[1], best[2]
 
     def _dominant_family(
         self,
         lines: list[tuple[int, int, int, int]],
         frame_width: int,
+        vp_row: float | None = None,
     ) -> list[tuple[int, int, int, int]]:
         """Return the lines whose horizon crossings cluster with the most length."""
+        row = self.vp_row if vp_row is None else vp_row
         votes = [
             (x_horizon, _line_length(line), line)
             for line in lines
-            if abs(x_horizon := _x_at_row(line, self._vp_horizon_y)) < 4 * frame_width
+            if abs(x_horizon := _x_at_row(line, row)) < 4 * frame_width
         ]
         best: list[tuple[float, float, tuple[int, int, int, int]]] = []
         best_length = 0.0
@@ -389,8 +604,15 @@ class VisionProcessor:
 
 # Lane-pair selection tolerances (pixels, 640x480 frame).
 VP_FAMILY_TOL_PX = 30.0
+VP_SEARCH_STEP_PX = 20.0
 LANE_CLUSTER_TOL_PX = 25.0
 LANE_MIN_GROUP_LENGTH_PX = 60.0
+# Lane-width memory and single-line tracking.
+LANE_WIDTH_ALPHA = 0.1
+LANE_WIDTH_RESET_FRAMES = 15
+LANE_REF_MAX_AGE_FRAMES = 15
+LANE_REF_TOL_RATIO = 0.15
+LANE_REF_TOL_MIN_PX = 40.0
 
 
 def _line_length(line: tuple[int, int, int, int]) -> float:
@@ -485,10 +707,20 @@ class GeometryCalculator:
         return x_at_y(line1), x_at_y(line2)
 
     @staticmethod
-    def map_vp_to_angle(vp_x: int, frame_width: int) -> float:
-        """Map vanishing-point x-coordinate to linear proxy heading angle."""
+    def map_vp_to_angle(vp_x: int, frame_width: int, hfov_deg: float = 0.0) -> float:
+        """Map vanishing-point x to a 90-centred heading angle.
+
+        With ``hfov_deg`` > 0 the angle is the true camera heading,
+        ``90 + atan((vp_x - cx) / f)`` with ``f = cx / tan(hfov / 2)``.
+        With 0 it is the legacy linear proxy ``180 * vp_x / frame_width``,
+        which overstates heading about 3x on the Pi5 camera.
+        """
         if frame_width <= 0:
             return 90.0
+        if hfov_deg > 0.0:
+            cx = float(frame_width) / 2.0
+            focal = cx / tan(radians(min(hfov_deg, 179.0)) / 2.0)
+            return 90.0 + degrees(atan((float(vp_x) - cx) / focal))
         return (180.0 / float(frame_width)) * float(vp_x)
 
 
@@ -565,6 +797,13 @@ class TelemetryLogger:
             "lane_width_px",
             "expected_lane_width_px",
             "width_error_px",
+            "vp_row",
+            "lane_offset_ratio",
+            "command_source",
+            "pair_held_frames",
+            "lane_source",
+            "relock_frames",
+            "lane_width_est_px",
         ]
 
         self._draw_overlay_fn: Any = None
@@ -574,6 +813,7 @@ class TelemetryLogger:
             inner_thresh=self._inner_thresh,
             outer_thresh=self._outer_thresh,
             danger_margin_px=self._danger_margin_px,
+            danger_offset_ratio=config.get_danger_offset_ratio(),
             roi_height_pct=_get_float("ROI_HEIGHT_PCT", 0.6),
             roi_top_width_pct=_get_float("ROI_TOP_WIDTH_PCT", 0.75),
             roi_bottom_width_pct=_get_float("ROI_BOTTOM_WIDTH_PCT", 1.0),
@@ -781,6 +1021,15 @@ class TelemetryLogger:
                         else None
                     ),
                     "vp_location": telemetry_data.get("vp_location", "missing"),
+                    "lane_offset_ratio": telemetry_data.get("lane_offset_ratio"),
+                    "vp_row": telemetry_data.get("vp_row"),
+                    "vp_center_deg": telemetry_data.get("vp_center_deg"),
+                    "command_source": telemetry_data.get("command_source"),
+                    "pair_held_frames": telemetry_data.get("pair_held_frames"),
+                    "lane_source": telemetry_data.get("lane_source"),
+                    "relock_frames": telemetry_data.get("relock_frames"),
+                    "relock_needed": telemetry_data.get("relock_needed"),
+                    "camera_hfov_deg": telemetry_data.get("camera_hfov_deg"),
                 },
             )
         else:
@@ -915,6 +1164,9 @@ class UnifiedCalibrator:
             outer_thresh=outer_thresh,
             center_angle=self._robot_state.servo_center_angle,
             max_offset=self._robot_state.max_steering_offset,
+            danger_offset_ratio=self._config.get_danger_offset_ratio(),
+            vp_center_deg=self._config.get_vp_center_deg(),
+            lateral_gain=self._config.get_pid_lateral_gain(),
         )
         self._telemetry = TelemetryLogger(self._config) if telemetry_enabled else None
         self._target_hz = float(self._system_configs.get("MAIN_TARGET_HZ", 30.0))
@@ -927,14 +1179,45 @@ class UnifiedCalibrator:
         self._stream_enabled = bool(self._stream_configs.get("MAIN_HTTPS_STREAM_ENABLED", False))
         self._last_rendered_frame: np.ndarray | None = None
         self._expected_lane_width_px = _get_optional_float("EXPECTED_LANE_WIDTH_PX")
+        # Reuse the last lane pair for a few frames when detection drops out
+        # (motion blur, glare) instead of flipping straight to GAPPING.
+        self._pair_hold_frames = max(0, _get_int("VISION_PAIR_HOLD_FRAMES", 5))
+        # Horizontal field of view used to turn VP x into true heading
+        # degrees; 0 keeps the legacy linear proxy (180 deg across the frame).
+        self._camera_hfov_deg = max(0.0, _get_float("CAMERA_HFOV_DEG", 0.0))
+        self._held_pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None
+        self._held_pair_age = 0
+        # After GAPPING, wait for this many frames with a lane pair before
+        # steering on it again, so one lucky frame does not flip the command.
+        self._relock_valid_frames = max(0, _get_int("CTRL_RELOCK_VALID_FRAMES", 3))
+        self._relock_count = 0
+        self._relocking = False
+        # Output-side servo correction applied by the Pi5 runtime when it maps
+        # the 90-centred command to the physical servo (map_calibrated_servo).
+        self._servo_trim_deg = _get_float("SERVO_TRIM_DEG", 0.0)
+        self._servo_left_gain = _get_float("SERVO_LEFT_GAIN", 1.0)
+        self._servo_right_gain = _get_float("SERVO_RIGHT_GAIN", 1.0)
+        self._servo_left_kick_deg = _get_float("SERVO_LEFT_KICK_DEG", 5.0)
+        self._servo_right_kick_deg = _get_float("SERVO_RIGHT_KICK_DEG", 10.0)
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
             danger_margin_px=danger_margin,
+            danger_offset_ratio=self._config.get_danger_offset_ratio(),
             roi_height_pct=self._vision._roi_height_pct,
             roi_top_width_pct=self._vision._roi_top_width_pct,
             roi_bottom_width_pct=self._vision._roi_bottom_width_pct,
         )
+
+    def servo_side_params(self) -> dict[str, float]:
+        """Per-side servo correction, as keyword arguments for map_calibrated_servo."""
+        return {
+            "trim_deg": self._servo_trim_deg,
+            "left_gain": self._servo_left_gain,
+            "right_gain": self._servo_right_gain,
+            "left_kick_deg": self._servo_left_kick_deg,
+            "right_kick_deg": self._servo_right_kick_deg,
+        }
 
     @property
     def steering_controller(self) -> SteeringController:
@@ -978,6 +1261,26 @@ class UnifiedCalibrator:
             stage = "lane_pair_selection"
             process = "select_lane_pair"
             selected = self._vision._apply_geometric_filter(lines, frame_w, frame_h)
+            pair_detected = selected is not None
+            lane_source = getattr(self._vision, "last_pair_kind", "PAIR")
+            if selected is not None:
+                self._held_pair = selected
+                self._held_pair_age = 0
+            elif self._held_pair is not None and self._held_pair_age < self._pair_hold_frames:
+                self._held_pair_age += 1
+                selected = self._held_pair
+                lane_source = "HELD"
+            else:
+                self._held_pair = None
+            pair_held = 0 if selected is None else self._held_pair_age
+            if selected is None:
+                self._relocking = self._relock_valid_frames > 0
+                self._relock_count = 0
+            elif self._relocking:
+                self._relock_count += 1
+                if self._relock_count >= self._relock_valid_frames:
+                    self._relocking = False
+            relock_pending = selected is not None and self._relocking
             if selected is not None:
                 line1, line2 = selected
                 vision_debug["selected_lines"] = [line1, line2]
@@ -1037,16 +1340,28 @@ class UnifiedCalibrator:
                 vp = self._geometry.calculate_vanishing_point(line1, line2)
                 if vp is not None:
                     process = "map_vanishing_point_to_angle"
-                    vp_angle = self._geometry.map_vp_to_angle(vp[0], frame_w)
+                    vp_angle = self._geometry.map_vp_to_angle(
+                        vp[0], frame_w, self._camera_hfov_deg
+                    )
 
             stage = "steering_control"
             process = "compute_steering_command"
-            steering_angle, fsm_state = self._steering.compute_steering(
-                vp_angle=vp_angle,
-                left_intercept=left_intercept,
-                right_intercept=right_intercept,
-                frame_width=frame_w,
-            )
+            if relock_pending:
+                # Lane seen again but not yet stable: keep the GAPPING command.
+                steering_angle, fsm_state = self._steering.compute_steering(
+                    vp_angle=None,
+                    left_intercept=None,
+                    right_intercept=None,
+                    frame_width=frame_w,
+                )
+                self._steering.last_command_source = "RELOCK"
+            else:
+                steering_angle, fsm_state = self._steering.compute_steering(
+                    vp_angle=vp_angle,
+                    left_intercept=left_intercept,
+                    right_intercept=right_intercept,
+                    frame_width=frame_w,
+                )
             control_details = self._steering.describe_control_state(fsm_state, frame_w)
             vision_debug.update(control_details)
 
@@ -1061,7 +1376,14 @@ class UnifiedCalibrator:
             loop_ms = (time.perf_counter() - loop_start) * 1000.0
             target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
             overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
-            pid_error = 0.0 if vp_angle is None else float(vp_angle) - 90.0
+            pid_error = (
+                0.0
+                if vp_angle is None
+                else self._steering._tracking_error(
+                    float(vp_angle),
+                    lane_center_offset_ratio(left_intercept, right_intercept, frame_w),
+                )
+            )
             derivative_error = pid_error - self._robot_state.pid_last_error
             pid_p = self._robot_state.pid.kp * pid_error
             pid_d = self._robot_state.pid.kd * derivative_error
@@ -1086,6 +1408,8 @@ class UnifiedCalibrator:
                 if lane_width_px is None or self._expected_lane_width_px is None
                 else float(lane_width_px) - self._expected_lane_width_px
             )
+            lane_offset_ratio = lane_center_offset_ratio(left_intercept, right_intercept, frame_w)
+            lane_width_est = getattr(self._vision, "_lane_width_px", None)
             telemetry_data: dict[str, Any] = {
                 "frame_num": frame_num,
                 "mono_timestamp": f"{time.perf_counter():.6f}",
@@ -1107,12 +1431,26 @@ class UnifiedCalibrator:
                 "total_hough_lines": len(lines),
                 "left_candidate_lines": vision_debug.get("left_candidate_lines", 0),
                 "right_candidate_lines": vision_debug.get("right_candidate_lines", 0),
-                "selected_pair_found": int(selected is not None),
+                "selected_pair_found": int(pair_detected),
                 "left_intercept": left_intercept,
                 "right_intercept": right_intercept,
                 "lane_width_px": lane_width_px,
                 "expected_lane_width_px": self._expected_lane_width_px,
                 "width_error_px": width_error_px,
+                "vp_row": round(self._vision.vp_row, 1),
+                "vp_center_deg": self._steering._vp_center_deg,
+                "command_source": self._steering.last_command_source,
+                "pair_held_frames": pair_held,
+                "lane_source": lane_source if selected is not None else "NONE",
+                "relock_frames": self._relock_count if relock_pending else 0,
+                "relock_needed": self._relock_valid_frames,
+                "lane_width_est_px": (
+                    None if lane_width_est is None else round(lane_width_est, 1)
+                ),
+                "camera_hfov_deg": self._camera_hfov_deg,
+                "lane_offset_ratio": (
+                    None if lane_offset_ratio is None else round(lane_offset_ratio, 4)
+                ),
                 "selected_left_line": selected_left_line,
                 "selected_right_line": selected_right_line,
                 "selected_left_slope": (

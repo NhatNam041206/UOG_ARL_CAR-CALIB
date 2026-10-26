@@ -31,6 +31,7 @@ class OverlayDrawer:
         inner_thresh: float = 3.0,
         outer_thresh: float = 10.0,
         danger_margin_px: int = 100,
+        danger_offset_ratio: float = 0.0,
         roi_height_pct: float = 0.6,
         roi_top_width_pct: float = 1.0,
         roi_bottom_width_pct: float = 1.0,
@@ -43,6 +44,7 @@ class OverlayDrawer:
         self.inner_thresh = float(inner_thresh)
         self.outer_thresh = float(outer_thresh)
         self.danger_margin_px = int(danger_margin_px)
+        self.danger_offset_ratio = float(danger_offset_ratio)
         self.roi_height_pct = float(roi_height_pct)
         self.roi_top_width_pct = float(roi_top_width_pct)
         self.roi_bottom_width_pct = float(roi_bottom_width_pct)
@@ -64,6 +66,18 @@ class OverlayDrawer:
         final_cmd = self._as_float(debug_packet.get("final_steering_cmd"), self.angle_center)
         vp_coord = self._as_point(debug_packet.get("vp_coord"), (frame_w // 2, frame_h // 3))
         lines = self._normalize_lines(debug_packet.get("lines") or [])
+        lane_offset = debug_packet.get("lane_offset_ratio")
+        lane_offset = None if lane_offset is None else self._as_float(lane_offset, 0.0)
+        vp_row = debug_packet.get("vp_row")
+        vp_center = self._as_float(debug_packet.get("vp_center_deg"), 90.0)
+        command_source = debug_packet.get("command_source")
+        pair_held = int(self._as_float(debug_packet.get("pair_held_frames"), 0.0))
+        hfov = self._as_float(debug_packet.get("camera_hfov_deg"), 0.0)
+        lane_source = str(debug_packet.get("lane_source") or "")
+        relock = int(self._as_float(debug_packet.get("relock_frames"), 0.0))
+        relock_needed = int(self._as_float(debug_packet.get("relock_needed"), 0.0))
+        if command_source == "RELOCK":
+            command_source = f"RELOCK {relock}/{relock_needed}"
 
         self._draw_floor_visuals(
             output,
@@ -81,7 +95,24 @@ class OverlayDrawer:
             left_intercept_x=left_intercept_x,
             right_intercept_x=right_intercept_x,
             final_cmd=final_cmd,
+            lane_offset=lane_offset,
+            vp_row=vp_row,
+            vp_center=vp_center,
+            command_source=command_source,
+            pair_held=pair_held,
+            hfov=hfov,
+            lane_source=lane_source,
         )
+        if self.danger_offset_ratio > 0:
+            self._draw_lane_offset_bar(
+                output,
+                frame_w=frame_w,
+                frame_h=frame_h,
+                state=state,
+                left_intercept_x=left_intercept_x,
+                right_intercept_x=right_intercept_x,
+                command_source=command_source,
+            )
         self._draw_hysteresis_gauge(output, frame_w=frame_w, frame_h=frame_h, raw_vp_angle=raw_vp_angle)
         return output
 
@@ -94,20 +125,34 @@ class OverlayDrawer:
         left_intercept_x: int | None,
         right_intercept_x: int | None,
         final_cmd: float,
+        lane_offset: float | None = None,
+        vp_row: Any = None,
+        vp_center: float = 90.0,
+        command_source: str | None = None,
+        pair_held: int = 0,
+        hfov: float = 0.0,
+        lane_source: str = "",
     ) -> None:
         panel_x = 8
         panel_y = 8
         panel_w = 330
-        panel_h = 148
+        panel_h = 148 if self.danger_offset_ratio <= 0 else 236
+        lane_tag = self._lane_tag(lane_source, pair_held)
+        if self.danger_offset_ratio > 0 and lane_tag:
+            panel_w = 420
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
         self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58)
 
         state_color = self._state_color(state)
-        heading_error = raw_vp_angle - 90.0
+        heading_error = raw_vp_angle - vp_center
         entries = [
             (f"STATE: {state}", state_color),
-            (f"RAW VP ANGLE: {raw_vp_angle:.1f}", self.theme.white),
+            (
+                f"VP ANGLE: {raw_vp_angle:.1f}"
+                + (f" (true, HFOV {hfov:.0f})" if hfov > 0 else " (proxy)"),
+                self.theme.white,
+            ),
             (f"HEADING ERROR: {heading_error:+.1f}", self.theme.white),
             (
                 "BOTTOM INTERCEPTS: "
@@ -116,6 +161,23 @@ class OverlayDrawer:
             ),
             (f"FINAL CMD: {final_cmd:.1f}", self.theme.white),
         ]
+        if self.danger_offset_ratio > 0:
+            limit = self.danger_offset_ratio
+            if lane_offset is None:
+                offset_text, offset_color = "LANE OFFSET: - (no lane pair)", self.theme.yellow
+            else:
+                over = abs(lane_offset) > limit
+                offset_text = f"LANE OFFSET: {lane_offset:+.2f} (limit +-{limit:.2f})"
+                offset_color = self.theme.red if over else self.theme.green
+            row_text = "-" if vp_row is None else f"{self._as_float(vp_row, 0.0):.0f}"
+            if lane_tag:
+                offset_text += f"  {lane_tag}"
+                offset_color = self.theme.yellow
+            entries += [
+                (offset_text, offset_color),
+                (f"CMD SOURCE: {self._command_source(state, command_source)}", state_color),
+                (f"VP ROW: {row_text}  VP STRAIGHT: {vp_center:.1f}", self.theme.white),
+            ]
 
         y = panel_y + 48
         for text, color in entries:
@@ -138,7 +200,8 @@ class OverlayDrawer:
         center_x = frame_w // 2
         self._draw_dashed_vertical_line(frame, center_x, 0, frame_h - 1, self.theme.white)
 
-        margin = max(0, min(self.danger_margin_px, frame_w))
+        # Lane-offset danger has no fixed pixel band; edge bands only for the legacy rule.
+        margin = 0 if self.danger_offset_ratio > 0 else max(0, min(self.danger_margin_px, frame_w))
         if margin > 0:
             self._fill_alpha_rect(frame, (0, 0), (margin, frame_h), self.theme.red, 0.16)
             self._fill_alpha_rect(frame, (max(0, frame_w - margin), 0), (frame_w, frame_h), self.theme.red, 0.16)
@@ -147,11 +210,15 @@ class OverlayDrawer:
             x1, y1, x2, y2 = line
             line_color = self.theme.green
             bottom_x = self._line_bottom_x(line)
-            if bottom_x is not None and (bottom_x < margin or bottom_x > (frame_w - margin)):
+            if margin > 0 and bottom_x is not None and (bottom_x < margin or bottom_x > (frame_w - margin)):
                 line_color = self.theme.red
             cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
         self._draw_vp_crosshair(frame, vp_coord)
+
+        if self.danger_offset_ratio > 0:
+            # Lane-offset rule: markers are drawn by _draw_lane_offset_bar.
+            return
 
         if left_intercept_x is not None:
             self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, self._marker_color(left_intercept_x, frame_w))
@@ -191,6 +258,86 @@ class OverlayDrawer:
         cv2.line(frame, (x - size, y), (x + size, y), self.theme.vp_yellow, 2, cv2.LINE_AA)
         cv2.line(frame, (x, y - size), (x, y + size), self.theme.vp_yellow, 2, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 4, self.theme.vp_yellow, -1, cv2.LINE_AA)
+
+    @staticmethod
+    def _lane_tag(lane_source: str, pair_held: int) -> str:
+        """Short HUD tag for a lane pair that is not a fresh two-line detection."""
+        if lane_source == "SINGLE_LEFT":
+            return "1 LINE (R inferred)"
+        if lane_source == "SINGLE_RIGHT":
+            return "1 LINE (L inferred)"
+        if pair_held > 0:
+            return f"HELD {pair_held}f"
+        return ""
+
+    @staticmethod
+    def _command_source(state: str, source: str | None = None) -> str:
+        normalized = state.upper()
+        if source and source.startswith("RELOCK"):
+            return f"{source} (center)"
+        if source == "DANGER_PD":
+            return "PD overrides nudge"
+        if normalized == "TRACKING_PD":
+            return "PD on heading"
+        if normalized == "TRACKING_COAST":
+            return "COAST (center)"
+        if normalized == "DANGER_LEFT":
+            return "NUDGE LEFT (offset)"
+        if normalized == "DANGER_RIGHT":
+            return "NUDGE RIGHT (offset)"
+        if normalized in {"GAPPING", "VISION_LOST"}:
+            return "HOLD CENTER (no pair)"
+        return normalized
+
+    def _draw_lane_offset_bar(
+        self,
+        frame: np.ndarray,
+        *,
+        frame_w: int,
+        frame_h: int,
+        state: str,
+        left_intercept_x: int | None,
+        right_intercept_x: int | None,
+        command_source: str | None = None,
+    ) -> None:
+        """Draw the lane-offset danger rule: safe zone around the lane centre vs image centre."""
+        if left_intercept_x is None or right_intercept_x is None or right_intercept_x <= left_intercept_x:
+            return
+        y = frame_h - 82
+        lane_w = right_intercept_x - left_intercept_x
+        lane_cx = (left_intercept_x + right_intercept_x) // 2
+        center_x = frame_w // 2
+        band = int(round(self.danger_offset_ratio * lane_w))
+        in_danger = abs(lane_cx - center_x) > band
+        color = self.theme.red if in_danger else self.theme.green
+
+        # Full lane between the two bottom intercepts, then the safe zone on top.
+        cv2.line(frame, (left_intercept_x, y), (right_intercept_x, y), self.theme.white, 2, cv2.LINE_AA)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (lane_cx - band, y - 9), (lane_cx + band, y + 9), color, -1)
+        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0.0, frame)
+        for x in (left_intercept_x, right_intercept_x):
+            cv2.line(frame, (x, y - 12), (x, y + 12), self.theme.white, 2, cv2.LINE_AA)
+        cv2.line(frame, (lane_cx, y - 14), (lane_cx, y + 14), color, 3, cv2.LINE_AA)
+        cv2.circle(frame, (center_x, y), 6, self.theme.white, -1, cv2.LINE_AA)
+        self._draw_text(
+            frame,
+            "SAFE ZONE (lane centre +-{:.0f}% lane)".format(self.danger_offset_ratio * 100),
+            (max(4, lane_cx - band), y - 16),
+            color,
+            scale=0.42,
+        )
+
+        normalized = state.upper()
+        if normalized.startswith("DANGER") and command_source == "DANGER_PD":
+            self._draw_text(frame, "DANGER: PD OVERRIDES NUDGE", (max(4, center_x - 120), y - 30), self.theme.red, scale=0.5)
+        elif normalized in {"DANGER_LEFT", "DANGER_RIGHT"}:
+            direction = -1 if normalized == "DANGER_LEFT" else 1
+            start = (center_x, y - 34)
+            end = (center_x + direction * 70, y - 34)
+            cv2.arrowedLine(frame, start, end, self.theme.red, 4, cv2.LINE_AA, tipLength=0.35)
+            label = "NUDGE LEFT" if direction < 0 else "NUDGE RIGHT"
+            self._draw_text(frame, label, (min(center_x, end[0]), y - 44), self.theme.red, scale=0.5)
 
     def _draw_hysteresis_gauge(self, frame: np.ndarray, *, frame_w: int, frame_h: int, raw_vp_angle: float) -> None:
         gauge_w = min(self.gauge_width, max(260, frame_w - 120))
