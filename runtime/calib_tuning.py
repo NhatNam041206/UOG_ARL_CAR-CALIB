@@ -71,7 +71,19 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("danger_margin_px", "Steering", "Danger margin", "int", 0, 640, 1),
     TuneParam("danger_offset_ratio", "Steering", "Danger lane offset", "float", 0.0, 0.5, 0.01),
     TuneParam("danger_nudge_deg", "Steering", "Danger nudge", "float", 0.0, 45.0, 0.1),
+    TuneParam("servo_trim_deg", "Servo", "Straight trim (+ = left)", "float", -30.0, 30.0, 0.5),
+    TuneParam("servo_left_gain", "Servo", "Left gain", "float", 0.2, 3.0, 0.05),
+    TuneParam("servo_right_gain", "Servo", "Right gain", "float", 0.2, 3.0, 0.05),
+    TuneParam("servo_left_kick_deg", "Servo", "Left kick (deg)", "float", 0.0, 30.0, 0.5),
+    TuneParam("servo_right_kick_deg", "Servo", "Right kick (deg)", "float", 0.0, 30.0, 0.5),
 )
+_SERVO_ATTRS = {
+    "servo_trim_deg": ("_servo_trim_deg", 0.0),
+    "servo_left_gain": ("_servo_left_gain", 1.0),
+    "servo_right_gain": ("_servo_right_gain", 1.0),
+    "servo_left_kick_deg": ("_servo_left_kick_deg", 5.0),
+    "servo_right_kick_deg": ("_servo_right_kick_deg", 10.0),
+}
 _PARAMS_BY_KEY = {param.key: param for param in PARAMS}
 
 
@@ -235,6 +247,10 @@ class CalibTuneManager:
             "danger_margin_px": int(steering._danger_margin),
             "danger_offset_ratio": float(steering._danger_offset_ratio),
             "danger_nudge_deg": float(steering._nudge_deg),
+            **{
+                key: float(getattr(self._calibrator, attr, default))
+                for key, (attr, default) in _SERVO_ATTRS.items()
+            },
         }
 
     def _apply_values(self, values: dict[str, int | float]) -> None:
@@ -269,6 +285,8 @@ class CalibTuneManager:
         steering._danger_margin = int(values["danger_margin_px"])
         steering._danger_offset_ratio = float(values["danger_offset_ratio"])
         steering._nudge_deg = float(values["danger_nudge_deg"])
+        for key, (attr, _default) in _SERVO_ATTRS.items():
+            setattr(self._calibrator, attr, float(values[key]))
         steering._tracking_active = False
         steering._last_error = 0.0
         state.pid_last_error = 0.0

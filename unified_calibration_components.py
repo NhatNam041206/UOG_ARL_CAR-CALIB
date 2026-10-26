@@ -1192,6 +1192,13 @@ class UnifiedCalibrator:
         self._relock_valid_frames = max(0, _get_int("CTRL_RELOCK_VALID_FRAMES", 3))
         self._relock_count = 0
         self._relocking = False
+        # Output-side servo correction applied by the Pi5 runtime when it maps
+        # the 90-centred command to the physical servo (map_calibrated_servo).
+        self._servo_trim_deg = _get_float("SERVO_TRIM_DEG", 0.0)
+        self._servo_left_gain = _get_float("SERVO_LEFT_GAIN", 1.0)
+        self._servo_right_gain = _get_float("SERVO_RIGHT_GAIN", 1.0)
+        self._servo_left_kick_deg = _get_float("SERVO_LEFT_KICK_DEG", 5.0)
+        self._servo_right_kick_deg = _get_float("SERVO_RIGHT_KICK_DEG", 10.0)
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
@@ -1201,6 +1208,16 @@ class UnifiedCalibrator:
             roi_top_width_pct=self._vision._roi_top_width_pct,
             roi_bottom_width_pct=self._vision._roi_bottom_width_pct,
         )
+
+    def servo_side_params(self) -> dict[str, float]:
+        """Per-side servo correction, as keyword arguments for map_calibrated_servo."""
+        return {
+            "trim_deg": self._servo_trim_deg,
+            "left_gain": self._servo_left_gain,
+            "right_gain": self._servo_right_gain,
+            "left_kick_deg": self._servo_left_kick_deg,
+            "right_kick_deg": self._servo_right_kick_deg,
+        }
 
     @property
     def steering_controller(self) -> SteeringController:
