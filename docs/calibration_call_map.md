@@ -420,7 +420,7 @@ Main output cua algorithm la `CalibrationResult`:
 | [`VisionProcessor.__init__()`](../unified_calibration_components.py#L167) | `unified_calibration_components.py` | `config.settings._get_*` | Load ROI, blur, Canny, Hough, min slope. |
 | [`VisionProcessor.process_frame()`](../unified_calibration_components.py#L178) | `unified_calibration_components.py` | `process_frame_debug()` | Convenience: chi tra `lines`. |
 | [`VisionProcessor.process_frame_debug()`](../unified_calibration_components.py#L183) | `unified_calibration_components.py` | `cv2.cvtColor`, `cv2.GaussianBlur`, `cv2.Canny`, `cv2.HoughLinesP` | Tra `(lines, vision_debug)`. Lines la list `(x1,y1,x2,y2)`. |
-| [`VisionProcessor._apply_geometric_filter()`](../unified_calibration_components.py#L243) | `unified_calibration_components.py` | `math.hypot` | Loc ho line doc theo diem cat hang VP (bat dau tu hang dang track, quet trong `VISION_VP_HORIZON_Y` +/- `VISION_VP_SEARCH_PX`, buoc 20 px), chon line gan tam nhat moi ben; cap dau tien tim duoc cap nhat hang VP track (EMA `VISION_VP_TRACK_ALPHA`). Neu thieu 1 ben o moi hang -> `None`. |
+| [`VisionProcessor._apply_geometric_filter()`](../unified_calibration_components.py#L243) | `unified_calibration_components.py` | `math.hypot` | Loc ho line doc theo diem cat hang VP (bat dau tu hang dang track, quet trong `VISION_VP_HORIZON_Y` +/- `VISION_VP_SEARCH_PX`, buoc 20 px), chon cap trai/phai: khong co cap truoc -> line gan tam nhat moi ben, co cap truoc -> cap gan cap truoc nhat. Bo cap co be rong day lech qua `VISION_LANE_WIDTH_TOL` so voi lane width dang chay (EMA), hoac co line nhay xa cap truoc (> 0.15 lane width). Cap dau tien tim duoc cap nhat hang VP track (EMA `VISION_VP_TRACK_ALPHA`) va lane width. Neu khong co cap: lay 1 line gan line cu (single-line), suy line con lai cach 1 lane width, toi da `VISION_SINGLE_LINE_MAX_FRAMES` frame. Khong co gi -> `None`. |
 
 Vision data flow:
 
@@ -433,6 +433,9 @@ frame
   -> HoughLinesP
   -> raw lines
   -> _apply_geometric_filter()
+       -> PAIR (2 line) | SINGLE_LEFT/SINGLE_RIGHT (1 line + inferred) | None
+  -> UnifiedCalibrator: None -> held pair (VISION_PAIR_HOLD_FRAMES) -> GAPPING
+  -> after GAPPING: CTRL_RELOCK_VALID_FRAMES frames with a pair before steering (RELOCK = center)
   -> selected left/negative + right/positive line pair
 ```
 

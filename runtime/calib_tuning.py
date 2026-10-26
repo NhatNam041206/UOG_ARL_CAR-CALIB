@@ -59,6 +59,9 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("vp_search_px", "Vision", "VP row search", "int", 0, 1000, 1),
     TuneParam("pair_hold_frames", "Vision", "Lane pair hold (frames)", "int", 0, 30, 1),
     TuneParam("camera_hfov_deg", "Vision", "Camera HFOV (0 = proxy angle)", "float", 0.0, 170.0, 0.5),
+    TuneParam("lane_width_tol", "Vision", "Lane width tolerance (0 = off)", "float", 0.0, 1.0, 0.01),
+    TuneParam("single_line_max_frames", "Vision", "Single-line tracking (frames, 0 = off)", "int", 0, 300, 1),
+    TuneParam("relock_valid_frames", "Vision", "Relock frames after GAPPING", "int", 0, 30, 1),
     TuneParam("pid_kp", "Steering", "PID Kp", "float", 0.0, 10.0, 0.01),
     TuneParam("pid_kd", "Steering", "PID Kd", "float", 0.0, 10.0, 0.01),
     TuneParam("pid_lateral_gain", "Steering", "PID lateral gain", "float", 0.0, 300.0, 1.0),
@@ -220,6 +223,9 @@ class CalibTuneManager:
             "vp_search_px": int(vision._vp_search_px),
             "pair_hold_frames": int(getattr(self._calibrator, "_pair_hold_frames", 0)),
             "camera_hfov_deg": float(getattr(self._calibrator, "_camera_hfov_deg", 0.0)),
+            "lane_width_tol": float(getattr(vision, "_lane_width_tol", 0.0)),
+            "single_line_max_frames": int(getattr(vision, "_single_line_max_frames", 0)),
+            "relock_valid_frames": int(getattr(self._calibrator, "_relock_valid_frames", 0)),
             "pid_kp": float(state.pid.kp),
             "pid_kd": float(state.pid.kd),
             "pid_lateral_gain": float(steering._lateral_gain),
@@ -250,6 +256,9 @@ class CalibTuneManager:
         vision._vp_row_offset = 0.0
         self._calibrator._pair_hold_frames = int(values["pair_hold_frames"])
         self._calibrator._camera_hfov_deg = float(values["camera_hfov_deg"])
+        vision._lane_width_tol = float(values["lane_width_tol"])
+        vision._single_line_max_frames = int(values["single_line_max_frames"])
+        self._calibrator._relock_valid_frames = int(values["relock_valid_frames"])
 
         state.pid.kp = float(values["pid_kp"])
         state.pid.kd = float(values["pid_kd"])

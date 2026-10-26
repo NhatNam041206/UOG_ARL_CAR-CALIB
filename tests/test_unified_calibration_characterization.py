@@ -106,6 +106,15 @@ def _make_calibrator_for_characterization() -> UnifiedCalibrator:
     calibrator._stream_configs = {}
     calibrator._stream_enabled = False
     calibrator._last_rendered_frame = None
+    calibrator._lost_frames = 0
+    calibrator._expected_lane_width_px = None
+    calibrator._pair_hold_frames = 0
+    calibrator._camera_hfov_deg = 0.0
+    calibrator._held_pair = None
+    calibrator._held_pair_age = 0
+    calibrator._relock_valid_frames = 0
+    calibrator._relock_count = 0
+    calibrator._relocking = False
     return calibrator
 
 

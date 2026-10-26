@@ -35,6 +35,10 @@ REPLAY_FIELDS = (
     "left_candidate_lines",
     "right_candidate_lines",
     "servo_angle",
+    "command_source",
+    "lane_source",
+    "relock_frames",
+    "lane_width_est_px",
 )
 
 # Preferred first: overlay-free footage. route.avi has the dashboard overlay

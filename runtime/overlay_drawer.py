@@ -73,6 +73,11 @@ class OverlayDrawer:
         command_source = debug_packet.get("command_source")
         pair_held = int(self._as_float(debug_packet.get("pair_held_frames"), 0.0))
         hfov = self._as_float(debug_packet.get("camera_hfov_deg"), 0.0)
+        lane_source = str(debug_packet.get("lane_source") or "")
+        relock = int(self._as_float(debug_packet.get("relock_frames"), 0.0))
+        relock_needed = int(self._as_float(debug_packet.get("relock_needed"), 0.0))
+        if command_source == "RELOCK":
+            command_source = f"RELOCK {relock}/{relock_needed}"
 
         self._draw_floor_visuals(
             output,
@@ -96,6 +101,7 @@ class OverlayDrawer:
             command_source=command_source,
             pair_held=pair_held,
             hfov=hfov,
+            lane_source=lane_source,
         )
         if self.danger_offset_ratio > 0:
             self._draw_lane_offset_bar(
@@ -125,13 +131,15 @@ class OverlayDrawer:
         command_source: str | None = None,
         pair_held: int = 0,
         hfov: float = 0.0,
+        lane_source: str = "",
     ) -> None:
         panel_x = 8
         panel_y = 8
         panel_w = 330
         panel_h = 148 if self.danger_offset_ratio <= 0 else 236
-        if self.danger_offset_ratio > 0 and pair_held > 0:
-            panel_w = 400
+        lane_tag = self._lane_tag(lane_source, pair_held)
+        if self.danger_offset_ratio > 0 and lane_tag:
+            panel_w = 420
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
         self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58)
@@ -162,8 +170,8 @@ class OverlayDrawer:
                 offset_text = f"LANE OFFSET: {lane_offset:+.2f} (limit +-{limit:.2f})"
                 offset_color = self.theme.red if over else self.theme.green
             row_text = "-" if vp_row is None else f"{self._as_float(vp_row, 0.0):.0f}"
-            if pair_held > 0:
-                offset_text += f"  HELD {pair_held}f"
+            if lane_tag:
+                offset_text += f"  {lane_tag}"
                 offset_color = self.theme.yellow
             entries += [
                 (offset_text, offset_color),
@@ -252,8 +260,21 @@ class OverlayDrawer:
         cv2.circle(frame, (x, y), 4, self.theme.vp_yellow, -1, cv2.LINE_AA)
 
     @staticmethod
+    def _lane_tag(lane_source: str, pair_held: int) -> str:
+        """Short HUD tag for a lane pair that is not a fresh two-line detection."""
+        if lane_source == "SINGLE_LEFT":
+            return "1 LINE (R inferred)"
+        if lane_source == "SINGLE_RIGHT":
+            return "1 LINE (L inferred)"
+        if pair_held > 0:
+            return f"HELD {pair_held}f"
+        return ""
+
+    @staticmethod
     def _command_source(state: str, source: str | None = None) -> str:
         normalized = state.upper()
+        if source and source.startswith("RELOCK"):
+            return f"{source} (center)"
         if source == "DANGER_PD":
             return "PD overrides nudge"
         if normalized == "TRACKING_PD":
