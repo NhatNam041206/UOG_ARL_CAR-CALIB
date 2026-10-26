@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from importlib import import_module
-from math import hypot
+from math import atan, degrees, hypot, radians, tan
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -557,10 +557,20 @@ class GeometryCalculator:
         return x_at_y(line1), x_at_y(line2)
 
     @staticmethod
-    def map_vp_to_angle(vp_x: int, frame_width: int) -> float:
-        """Map vanishing-point x-coordinate to linear proxy heading angle."""
+    def map_vp_to_angle(vp_x: int, frame_width: int, hfov_deg: float = 0.0) -> float:
+        """Map vanishing-point x to a 90-centred heading angle.
+
+        With ``hfov_deg`` > 0 the angle is the true camera heading,
+        ``90 + atan((vp_x - cx) / f)`` with ``f = cx / tan(hfov / 2)``.
+        With 0 it is the legacy linear proxy ``180 * vp_x / frame_width``,
+        which overstates heading about 3x on the Pi5 camera.
+        """
         if frame_width <= 0:
             return 90.0
+        if hfov_deg > 0.0:
+            cx = float(frame_width) / 2.0
+            focal = cx / tan(radians(min(hfov_deg, 179.0)) / 2.0)
+            return 90.0 + degrees(atan((float(vp_x) - cx) / focal))
         return (180.0 / float(frame_width)) * float(vp_x)
 
 
@@ -863,6 +873,7 @@ class TelemetryLogger:
                     "vp_center_deg": telemetry_data.get("vp_center_deg"),
                     "command_source": telemetry_data.get("command_source"),
                     "pair_held_frames": telemetry_data.get("pair_held_frames"),
+                    "camera_hfov_deg": telemetry_data.get("camera_hfov_deg"),
                 },
             )
         else:
@@ -1015,6 +1026,9 @@ class UnifiedCalibrator:
         # Reuse the last lane pair for a few frames when detection drops out
         # (motion blur, glare) instead of flipping straight to GAPPING.
         self._pair_hold_frames = max(0, _get_int("VISION_PAIR_HOLD_FRAMES", 5))
+        # Horizontal field of view used to turn VP x into true heading
+        # degrees; 0 keeps the legacy linear proxy (180 deg across the frame).
+        self._camera_hfov_deg = max(0.0, _get_float("CAMERA_HFOV_DEG", 0.0))
         self._held_pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None
         self._held_pair_age = 0
         self._overlay_drawer = OverlayDrawer(
@@ -1138,7 +1152,9 @@ class UnifiedCalibrator:
                 vp = self._geometry.calculate_vanishing_point(line1, line2)
                 if vp is not None:
                     process = "map_vanishing_point_to_angle"
-                    vp_angle = self._geometry.map_vp_to_angle(vp[0], frame_w)
+                    vp_angle = self._geometry.map_vp_to_angle(
+                        vp[0], frame_w, self._camera_hfov_deg
+                    )
 
             stage = "steering_control"
             process = "compute_steering_command"
@@ -1226,6 +1242,7 @@ class UnifiedCalibrator:
                 "vp_center_deg": self._steering._vp_center_deg,
                 "command_source": self._steering.last_command_source,
                 "pair_held_frames": pair_held,
+                "camera_hfov_deg": self._camera_hfov_deg,
                 "lane_offset_ratio": (
                     None if lane_offset_ratio is None else round(lane_offset_ratio, 4)
                 ),

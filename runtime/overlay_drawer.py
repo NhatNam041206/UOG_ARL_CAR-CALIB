@@ -72,6 +72,7 @@ class OverlayDrawer:
         vp_center = self._as_float(debug_packet.get("vp_center_deg"), 90.0)
         command_source = debug_packet.get("command_source")
         pair_held = int(self._as_float(debug_packet.get("pair_held_frames"), 0.0))
+        hfov = self._as_float(debug_packet.get("camera_hfov_deg"), 0.0)
 
         self._draw_floor_visuals(
             output,
@@ -94,6 +95,7 @@ class OverlayDrawer:
             vp_center=vp_center,
             command_source=command_source,
             pair_held=pair_held,
+            hfov=hfov,
         )
         if self.danger_offset_ratio > 0:
             self._draw_lane_offset_bar(
@@ -122,6 +124,7 @@ class OverlayDrawer:
         vp_center: float = 90.0,
         command_source: str | None = None,
         pair_held: int = 0,
+        hfov: float = 0.0,
     ) -> None:
         panel_x = 8
         panel_y = 8
@@ -137,7 +140,11 @@ class OverlayDrawer:
         heading_error = raw_vp_angle - vp_center
         entries = [
             (f"STATE: {state}", state_color),
-            (f"RAW VP ANGLE: {raw_vp_angle:.1f}", self.theme.white),
+            (
+                f"VP ANGLE: {raw_vp_angle:.1f}"
+                + (f" (true, HFOV {hfov:.0f})" if hfov > 0 else " (proxy)"),
+                self.theme.white,
+            ),
             (f"HEADING ERROR: {heading_error:+.1f}", self.theme.white),
             (
                 "BOTTOM INTERCEPTS: "

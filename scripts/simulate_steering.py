@@ -9,18 +9,19 @@ import sys, math
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 from control.steering_controller import SteeringController
 from models.robot_state import PIDConstants
+from unified_calibration_components import GeometryCalculator
 
-W, D, F, LANE_PX = 0.6, 0.35, 532.0, 560.0   # lane m, lookahead m, focal px, lane px at bottom
+W, D, F, LANE_PX = 0.6, 0.35, 686.0, 560.0   # lane m, lookahead m, focal px (HFOV ~50 deg), lane px at bottom
 V, WB, DT, LIM, DELAY = 0.6, 0.26, 0.05, 45.0, 2
 
-def run(lat_gain, y0, psi0_deg, kp=0.5, kd=0.2, T=10.0):
-    c = SteeringController(PIDConstants(kp=kp, ki=0, kd=kd), danger_margin=93, nudge_deg=8, inner_thresh=3, outer_thresh=5,
+def run(lat_gain, y0, psi0_deg, kp=0.5, kd=0.2, T=10.0, hfov=0.0, inner=3.0, outer=5.0):
+    c = SteeringController(PIDConstants(kp=kp, ki=0, kd=kd), danger_margin=93, nudge_deg=8, inner_thresh=inner, outer_thresh=outer,
                            center_angle=90, max_offset=90, danger_offset_ratio=0.2, vp_center_deg=90, lateral_gain=lat_gain)
     y, psi = y0 * W, math.radians(psi0_deg)  # y>0: right of centre; psi>0: pointing right
     queue = [90.0] * DELAY; log = []
     for k in range(int(T / DT)):
         vp_x = 320 - F * math.tan(psi)
-        vp_angle = 180.0 / 640.0 * vp_x
+        vp_angle = GeometryCalculator.map_vp_to_angle(vp_x, 640, hfov)
         off = -(y + D * math.tan(psi)) / W
         cx = 320 + off * LANE_PX
         cmd, state = c.compute_steering(vp_angle, int(cx - LANE_PX / 2), int(cx + LANE_PX / 2), 640)

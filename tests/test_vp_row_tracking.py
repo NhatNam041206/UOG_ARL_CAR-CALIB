@@ -65,3 +65,14 @@ def test_calibrator_holds_last_pair_for_brief_dropouts() -> None:
     assert [s["pair_held_frames"] for s in states[1:3]] == [1, 2]
     assert states[1]["fsm_state"] != "GAPPING"
     assert states[3]["fsm_state"] == "GAPPING"
+
+
+def test_vp_angle_true_degrees_with_hfov() -> None:
+    from unified_calibration_components import GeometryCalculator
+
+    assert GeometryCalculator.map_vp_to_angle(320, 640, 50.0) == 90.0
+    # Image edge sits at half the HFOV.
+    assert abs(GeometryCalculator.map_vp_to_angle(640, 640, 50.0) - 115.0) < 1e-6
+    assert abs(GeometryCalculator.map_vp_to_angle(0, 640, 50.0) - 65.0) < 1e-6
+    # Legacy proxy unchanged.
+    assert GeometryCalculator.map_vp_to_angle(640, 640) == 180.0
