@@ -75,3 +75,31 @@ Writes `cross_lines.csv`, `cross_summary.json` and, with `--video`,
   (seen when the car drives under a bench).
 - Reversing is not handled: seams moving up the image are not tracked.
 - The tile size is not applied here; distance = count x measured tile size.
+
+## Placing the count on the campus map
+
+`positioning/tile_position.py` maps the count onto the campus tile map
+(`routes/tile_maps/campus-path.json`, a JSON copy of
+`NhatNam041206/ARL_AUTOCAR` `routes/tile_maps/campus-path.yaml`; a `.yaml` map
+also loads when PyYAML is installed). Cells are `(row, column)`; row grows
+south (down on the map image), column grows east.
+
+- **Straight:** `--start <anchor|row,col> --heading east` → cell = start + N
+  steps east.
+- **Path:** `--start AAD-1 --goal gym-01` → shortest 4-connected map path,
+  cell = path[N]. The count follows the car, so the index keeps advancing
+  through turns (a corner can be one tile off).
+- A predicted cell outside the runnable cells is `CONTRADICTORY` (never
+  snapped); counting beyond the goal is `PAST_END`.
+- `--anchor FRAME:REF` (repeatable) says the car is at that anchor or cell at
+  that frame; counting continues from there.
+
+```bash
+python scripts/replay_tile_position.py <route_dir> --start AAD-1 --goal gym-01 --out tile_position_replay
+```
+
+Writes `tile_position.csv` (per frame: count, path index, row, column,
+status), `tile_position_map.png` and `tile_position_summary.json`. Offline
+only; nothing on the robot uses the map yet.
+
+First validation run: AAD-1 → gym-01 is 16 tiles straight east on the map.
