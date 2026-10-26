@@ -99,7 +99,8 @@ export PI5_HOST PI5_USER PI5_PORT PI5_PASSWORD PI5_DEST_DIR
 
 set -a
 # shellcheck disable=SC1090
-source "$ENV_FILE"
+# Strip CRLF so a .env edited on Windows does not leave \r in every value.
+source <(tr -d '\r' < "$ENV_FILE")
 set +a
 
 # Defaults
@@ -287,7 +288,7 @@ echo "[remote] Extracting release..."
 sudo mkdir -p "$release_dir" "$root_dir/data/logs" "$root_dir/data/routes" "$root_dir/data/models" || { echo "[remote] ERROR: mkdir failed"; exit 1; }
 sudo chown -R "$(id -un):$(id -gn)" "$root_dir" || { echo "[remote] ERROR: chown $root_dir failed"; exit 1; }
 tar -xzf "$remote_archive" -C "$release_dir" || { echo "[remote] ERROR: extracting $remote_archive failed"; exit 1; }
-cp "$REMOTE_ENV" "$release_dir/.env" || { echo "[remote] ERROR: copying env file into release failed"; exit 1; }
+tr -d '\r' < "$REMOTE_ENV" > "$release_dir/.env" || { echo "[remote] ERROR: copying env file into release failed"; exit 1; }
 ln -sfn "$release_dir" "$current_dir" || { echo "[remote] ERROR: symlinking $current_dir failed"; exit 1; }
 rm -f "$remote_archive" "$REMOTE_ENV"
 
