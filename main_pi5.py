@@ -488,6 +488,7 @@ def main() -> None:
             session.attach_meta("sasc_file", "sasc_baseline_log.csv")
             session.attach_meta("calib_tune", tune_manager.status())
             session.start(time.monotonic())
+            calibrator.cross_counter.reset()
         except OSError as exc:
             storage.mark_error(exc)
             logger.warning("Route recording disabled: %s", exc)
@@ -630,6 +631,7 @@ def main() -> None:
         if route_session is None:
             return
         try:
+            route_session.attach_meta("cross_tile_count", calibrator.cross_counter.tile_count)
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",
@@ -818,6 +820,11 @@ def main() -> None:
 
             object_status = object_detector.process(frame, now=now)
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
+
+            # --- transverse seam (tile) counter: log + HUD only ---
+            cross_result = calibrator.cross_counter.update(frame)
+            if display_frame.shape == frame.shape:
+                display_frame = calibrator.cross_counter.draw(display_frame, cross_result)
             safety_pause_active = object_status.object_pause_active
 
             manual_decision = manual_override.evaluate(
@@ -958,6 +965,7 @@ def main() -> None:
             })
             tel.update(manual_decision.telemetry())
             tel.update(object_status.telemetry())
+            tel.update(cross_result.telemetry())
             if route_session is not None:
                 mono_now = time.monotonic()
                 try:

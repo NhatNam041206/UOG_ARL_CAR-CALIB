@@ -17,6 +17,7 @@ from config.settings import _get_bool, _get_float, _get_int, _get_str
 from control.steering_controller import SteeringController, lane_center_offset_ratio
 from models.robot_state import FSMState, PIDConstants, RobotState
 from runtime.overlay_drawer import OverlayDrawer
+from vision.cross_line_counter import CrossLineCounter
 
 
 def _normalize_debug_visualizer(value: Any) -> str:
@@ -1199,6 +1200,9 @@ class UnifiedCalibrator:
         self._servo_right_gain = _get_float("SERVO_RIGHT_GAIN", 1.0)
         self._servo_left_kick_deg = _get_float("SERVO_LEFT_KICK_DEG", 5.0)
         self._servo_right_kick_deg = _get_float("SERVO_RIGHT_KICK_DEG", 10.0)
+        # Transverse seam counter (positioning); runs beside the lane path and
+        # has no effect on steering. Tuned through the "Cross lines" group.
+        self.cross_counter = CrossLineCounter()
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
