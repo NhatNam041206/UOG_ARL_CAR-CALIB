@@ -14,9 +14,15 @@ from config.settings import (
     DATA_RETENTION_DAYS,
     DISK_MIN_FREE_BYTES,
     ROUTE_MAX_STEP_DURATION_S,
+    ROUTE_MAX_STEP_TILES,
     ROUTE_MAX_STEPS,
     ROUTE_MAX_TOTAL_DURATION_S,
+    TILE_STEP_MAX_S_PER_TILE,
 )
+
+# Actions that may run by tile count: the car drives forward under vision
+# steering, so the cross-line counter sees the seams pass.
+TILE_ROUTE_ACTIONS = frozenset({"forward", "straight"})
 
 VALID_ROUTE_ACTIONS = frozenset({
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause",
@@ -50,6 +56,24 @@ def validate_route_steps(raw_steps: Any) -> list[dict[str, Any]]:
         action = str(raw_step.get("action", "")).strip().lower()
         if action not in VALID_ROUTE_ACTIONS:
             raise ScriptValidationError(f"step {index} has unsupported action: {action!r}")
+        if raw_step.get("tiles") not in (None, ""):
+            tiles = raw_step.get("tiles")
+            if isinstance(tiles, bool) or not isinstance(tiles, (int, float)) or int(tiles) != tiles:
+                raise ScriptValidationError(f"step {index} tiles must be a whole number")
+            tiles = int(tiles)
+            if action not in TILE_ROUTE_ACTIONS:
+                raise ScriptValidationError(f"step {index}: only forward/straight can run by tiles")
+            if not 1 <= tiles <= ROUTE_MAX_STEP_TILES:
+                raise ScriptValidationError(f"step {index} tiles must be between 1 and {ROUTE_MAX_STEP_TILES}")
+            # The safety timeout is what the step can cost in time.
+            total_duration += tiles * TILE_STEP_MAX_S_PER_TILE
+            if total_duration > ROUTE_MAX_TOTAL_DURATION_S:
+                raise ScriptValidationError(
+                    f"total route duration must not exceed {ROUTE_MAX_TOTAL_DURATION_S:g} seconds "
+                    f"(tile steps count {TILE_STEP_MAX_S_PER_TILE:g} s per tile)"
+                )
+            normalized.append({"action": action, "tiles": tiles})
+            continue
         try:
             duration = float(raw_step.get("duration_s", 0.0))
         except (TypeError, ValueError) as exc:

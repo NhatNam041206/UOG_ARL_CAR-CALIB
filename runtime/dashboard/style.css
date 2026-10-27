@@ -412,3 +412,24 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 .event-item.ok { border-left-color: #48e07f; color: #48e07f; }
 .event-item.info { border-left-color: #60a5fa; color: #b0c4de; }
 .event-item.warn { border-left-color: #ffd166; color: #ffd166; }
+
+/* Map tab (follows the ARL_AUTOCAR map survey tool) */
+.map-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.map-toolbar button { padding: 7px 10px; font-size: 13px; }
+.map-toolbar button.active { background: #236c91; color: #fff; }
+#mapCanvas { display: block; width: 100%; height: auto; background: #fff; border-radius: 6px; touch-action: none; }
+.map-note { padding: 8px 10px; background: var(--bg-1); border-radius: 6px; color: #a7d7ef; font-size: 13px; }
+.map-measure { color: #f4cb73; margin-bottom: 8px; }
+.map-status { min-height: 1.4em; color: #9fd6ba; font-size: 14px; }
+.map-status.error { color: #ff9b9b; }
+.map-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.map-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #b8c6d1; }
+.map-form input, .map-form select { width: 100%; min-width: 0; box-sizing: border-box; }
+
+/* Pre-calibrate tab */
+.precal-table { width: 100%; border-collapse: collapse; }
+.precal-table td, .precal-table th { padding: 8px 10px; border-bottom: 1px solid var(--bg-3); text-align: left; vertical-align: top; }
+.precal-table .mark { font-size: 18px; font-weight: 700; }
+.precal-table tr.ok .mark { color: var(--ok); }
+.precal-table tr.bad .mark { color: var(--bad); }
+.precal-table tr.bad td.hint { color: var(--warn); }

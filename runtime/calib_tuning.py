@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from vision.cross_line_counter import CrossLineConfig
+
 logger = logging.getLogger(__name__)
 
 IdleGetter = Callable[[], tuple[bool, str]]
@@ -76,7 +78,28 @@ PARAMS: tuple[TuneParam, ...] = (
     TuneParam("servo_right_gain", "Servo", "Right gain", "float", 0.2, 3.0, 0.05),
     TuneParam("servo_left_kick_deg", "Servo", "Left kick (deg)", "float", 0.0, 30.0, 0.5),
     TuneParam("servo_right_kick_deg", "Servo", "Right kick (deg)", "float", 0.0, 30.0, 0.5),
+    TuneParam("cross_enabled", "Cross lines", "Tile counter on (1/0)", "int", 0, 1, 1),
+    TuneParam("cross_roi_top", "Cross lines", "Look-ahead ROI top", "float", 0.0, 1.0, 0.01),
+    TuneParam("cross_roi_bottom", "Cross lines", "Look-ahead ROI bottom", "float", 0.0, 1.0, 0.01),
+    TuneParam("cross_counter_y", "Cross lines", "Counter line (y)", "float", 0.0, 1.0, 0.01),
+    TuneParam("cross_counter_h", "Cross lines", "Counter band height", "float", 0.0, 0.5, 0.01),
+    TuneParam("cross_dark_thresh", "Cross lines", "Dark-line threshold", "int", 1, 100, 1),
+    TuneParam("cross_blackhat_kernel_px", "Cross lines", "Dark-line kernel (px)", "int", 3, 61, 2),
+    TuneParam("cross_min_len", "Cross lines", "Min line length (x width)", "float", 0.05, 1.0, 0.01),
+    TuneParam("cross_max_tilt_deg", "Cross lines", "Max tilt (deg)", "float", 1.0, 80.0, 0.5),
+    TuneParam("cross_slope_tol_deg", "Cross lines", "Tilt tolerance (deg)", "float", 0.5, 45.0, 0.5),
+    TuneParam("cross_track_max_dy", "Cross lines", "Track max jump (y)", "float", 0.01, 0.5, 0.01),
+    TuneParam("cross_confirm_frames", "Cross lines", "Confirm frames", "int", 1, 30, 1),
+    TuneParam("cross_max_miss_frames", "Cross lines", "Coast frames", "int", 0, 60, 1),
+    TuneParam("cross_count_min_gap_frames", "Cross lines", "Min frames between counts", "int", 0, 120, 1),
+    TuneParam("cross_count_min_gap_ratio", "Cross lines", "Min gap (x median interval, 0 = off)", "float", 0.0, 1.0, 0.05),
 )
+# Tune key -> CrossLineConfig field on calibrator.cross_counter.config.
+_CROSS_FIELDS = {
+    param.key: param.key[len("cross_"):]
+    for param in PARAMS
+    if param.key.startswith("cross_")
+}
 _SERVO_ATTRS = {
     "servo_trim_deg": ("_servo_trim_deg", 0.0),
     "servo_left_gain": ("_servo_left_gain", 1.0),
@@ -215,6 +238,8 @@ class CalibTuneManager:
             raise TuneValidationError("canny_high must be >= canny_low")
         if float(merged["vp_outer_thresh"]) < float(merged["vp_inner_thresh"]):
             raise TuneValidationError("vp_outer_thresh must be >= vp_inner_thresh")
+        if float(merged["cross_roi_bottom"]) <= float(merged["cross_roi_top"]):
+            raise TuneValidationError("cross_roi_bottom must be > cross_roi_top")
         return merged
 
     def _read_current(self) -> dict[str, int | float]:
@@ -251,7 +276,21 @@ class CalibTuneManager:
                 key: float(getattr(self._calibrator, attr, default))
                 for key, (attr, default) in _SERVO_ATTRS.items()
             },
+            **self._read_cross(),
         }
+
+    def _cross_config(self) -> Any:
+        counter = getattr(self._calibrator, "cross_counter", None)
+        return getattr(counter, "config", None)
+
+    def _read_cross(self) -> dict[str, int | float]:
+        config = self._cross_config() or CrossLineConfig()
+        values: dict[str, int | float] = {}
+        for key, attr in _CROSS_FIELDS.items():
+            param = _PARAMS_BY_KEY[key]
+            raw = getattr(config, attr)
+            values[key] = int(raw) if param.value_type == "int" else float(raw)
+        return values
 
     def _apply_values(self, values: dict[str, int | float]) -> None:
         vision = self._calibrator._vision
@@ -287,6 +326,12 @@ class CalibTuneManager:
         steering._nudge_deg = float(values["danger_nudge_deg"])
         for key, (attr, _default) in _SERVO_ATTRS.items():
             setattr(self._calibrator, attr, float(values[key]))
+        config = self._cross_config()
+        if config is not None:
+            for key, attr in _CROSS_FIELDS.items():
+                current = getattr(config, attr)
+                value = values[key]
+                setattr(config, attr, bool(value) if isinstance(current, bool) else type(current)(value))
         steering._tracking_active = False
         steering._last_error = 0.0
         state.pid_last_error = 0.0

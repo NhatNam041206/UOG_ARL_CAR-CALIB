@@ -13,6 +13,8 @@
 //  §10  Route summary modal
 //  §11  Presets CRUD
 //  §12  Tune panel (steering controller params)
+//  §13  Map tab (tile-map editor like ARL_AUTOCAR map survey + live cell)
+//  §14  Pre-calibrate tab (pre-run checklist)
 // =====================================================================
 (function () {
 "use strict";
@@ -82,6 +84,55 @@ if (actionDistanceInput) actionDistanceInput.addEventListener("input", () => {
 });
 refreshAvgSpeed();
 
+// Script modes: 1 time (every step by seconds), 2 tiles (forward/straight
+// steps by tile count, turns by seconds; typed or built from the saved map
+// route), 3 A* (the Pi builds the steps from the saved start -> goal).
+const scriptModeSel = document.getElementById("scriptMode");
+const durationUnit = document.getElementById("durationUnit");
+const TILE_ACTIONS = new Set(["forward", "straight"]);
+function stepUsesTiles(action) {
+  return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
+}
+function stepAmount(s) {
+  return s.tiles != null ? `${s.tiles} ô` : `${Number(s.duration_s).toFixed(1)} s`;
+}
+function updateDurationUnit() {
+  if (durationUnit) durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : "seconds";
+}
+async function loadStepsFromMap() {
+  const hint = document.getElementById("scriptModeHint");
+  try {
+    const r = await fetch("/api/map/saved_steps" + qp);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || r.status);
+    steps.length = 0;
+    j.steps.forEach(s => steps.push(s));
+    resetEditor();
+    render();
+    const tiles = j.steps.reduce((n, s) => n + (s.tiles || 0), 0);
+    hint.textContent = `A* từ map ${j.map_id}: ${j.path.length - 1} ô, ${j.steps.filter(s => s.action.startsWith("turn")).length} lần rẽ (${tiles} ô forward). Sửa được từng action trước khi chạy.`;
+  } catch (e) {
+    hint.textContent = "lỗi: " + e.message;
+  }
+}
+function applyScriptMode() {
+  const mode = scriptModeSel.value;
+  const hint = document.getElementById("scriptModeHint");
+  const fromMap = document.getElementById("stepsFromMap");
+  fromMap.style.display = mode === "time" ? "none" : "";
+  fromMap.textContent = mode === "astar" ? "tính lại A*" : "tạo từ map";
+  hint.textContent = mode === "time" ? "" : (mode === "tiles"
+    ? "forward/straight đi theo số ô (bộ đếm vạch ngang), rẽ vẫn theo giây"
+    : "");
+  updateDurationUnit();
+  if (mode === "astar") loadStepsFromMap();
+}
+if (scriptModeSel) {
+  scriptModeSel.onchange = applyScriptMode;
+  actionInput.addEventListener("change", updateDurationUnit);
+  document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
+}
+
 function resetEditor() {
   editingIndex = -1;
   addBtn.textContent = "+ add step";
@@ -93,7 +144,8 @@ function loadEditorFromStep(idx) {
   if (!step) return;
   editingIndex = idx;
   actionInput.value = step.action;
-  durationInput.value = String(step.duration_s);
+  durationInput.value = String(step.tiles != null ? step.tiles : step.duration_s);
+  updateDurationUnit();
   addBtn.textContent = "save edit";
   cancelEditBtn.style.display = "";
 }
@@ -109,7 +161,7 @@ function render() {
       else if (i + 1 === currentRunningStep) tr.classList.add("active");
       else tr.classList.add("pending");
     }
-    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
+    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${stepAmount(s)}</td><td>${isRunning ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);
@@ -118,13 +170,20 @@ function render() {
 addBtn.onclick = () => {
   if (isRunning) return;
   const action = actionInput.value;
-  const duration_s = parseFloat(durationInput.value || "0");
-  if (!isFinite(duration_s) || duration_s <= 0) { runDetail.textContent = "duration phải > 0"; return; }
+  const amount = parseFloat(durationInput.value || "0");
+  let step;
+  if (stepUsesTiles(action)) {
+    if (!Number.isInteger(amount) || amount < 1) { runDetail.textContent = "số ô phải là số nguyên ≥ 1"; return; }
+    step = {action, tiles: amount};
+  } else {
+    if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
+    step = {action, duration_s: amount};
+  }
   if (editingIndex >= 0 && editingIndex < steps.length) {
-    steps[editingIndex] = {action, duration_s};
+    steps[editingIndex] = step;
     resetEditor();
   } else {
-    steps.push({action, duration_s});
+    steps.push(step);
   }
   render();
 };
@@ -171,7 +230,7 @@ async function playSingleStep(idx) {
   try {
     const r = await fetch("/route/script/step" + qp, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: step.action, duration_s: step.duration_s}),
+      body: JSON.stringify(step),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -218,11 +277,12 @@ runBtn.onclick = async () => {
   }
   if (editingIndex >= 0) { runDetail.textContent = "save edit first"; return; }
   if (steps.length === 0) { runDetail.textContent = "add steps first"; return; }
+  if (!(await precalGateOk())) { runDetail.textContent = "huỷ: pre-calibrate chưa đạt"; return; }
   runDetail.textContent = "submitting…";
   const presetSel = document.getElementById("presetSelect");
   const presetInput = document.getElementById("presetName");
   const preset_name = (presetSel && presetSel.value) || (presetInput && presetInput.value.trim()) || null;
-  const body = {steps, preset_name, description: null};
+  const body = {steps, preset_name, description: null, mode: scriptModeSel ? scriptModeSel.value : "time"};
   const r = await fetch("/route/script" + qp, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { runDetail.textContent = "error: " + JSON.stringify(j.detail || r.status); return; }
@@ -721,19 +781,21 @@ async function pollStatus() {
       currentRunningStep = st.current_step || 0;
       if (st.running) {
         const total = st.total || 0;
-        const stepDur = (st.step && Number(st.step.duration_s)) || 0;
-        const stepElapsed = Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
+        const stepTiles = st.step && st.step.tiles != null ? Number(st.step.tiles) : null;
+        const stepDur = stepTiles != null ? stepTiles : ((st.step && Number(st.step.duration_s)) || 0);
+        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
+        const unit = stepTiles != null ? " ô" : "s";
         setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
         const pauseReason = st.pause_reason === "object_detected"
           ? "object"
           : (st.pause_reason === "manual_override" ? "manual" : (st.pause_reason || "script"));
         runDetail.textContent = action
-          ? `${action} · ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`
+          ? `${action} · ${stepTiles != null ? stepElapsed : stepElapsed.toFixed(1)} / ${stepTiles != null ? stepDur : stepDur.toFixed(1)}${unit}`
           : "";
         if (st.paused && action) {
-          runDetail.textContent = `${action} - paused ${safeText(pauseReason)} - ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`;
+          runDetail.textContent = `${action} - paused ${safeText(pauseReason)} - ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}${unit}`;
         }
         const overallRatio = total ? ((currentRunningStep - 1 + fillRatio) / total) : 0;
         progressBar.style.width = (overallRatio * 100).toFixed(1) + "%";
@@ -1088,7 +1150,7 @@ function renderSummaryScript(s) {
   const script = extra.script || {};
   const stepsRows = (script.steps || []).map((st, i) => {
     const d = Number(st.duration_s);
-    const dTxt = Number.isFinite(d) ? d.toFixed(1) + " s" : "-";
+    const dTxt = st.tiles != null ? `${st.tiles} ô` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-");
     return `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${dTxt}</td></tr>`;
   }).join("");
   const stepsTable = stepsRows
@@ -1164,7 +1226,9 @@ document.getElementById("presetLoad").onclick = async () => {
   const j = await r.json();
   const p = j.preset || {};
   steps.length = 0;
-  (p.steps || []).forEach(s => steps.push({action: s.action, duration_s: Number(s.duration_s)}));
+  (p.steps || []).forEach(s => steps.push(s.tiles != null
+    ? {action: s.action, tiles: Number(s.tiles)}
+    : {action: s.action, duration_s: Number(s.duration_s)}));
   presetName.value = p.name || name;
   resetEditor();
   render();
@@ -1533,5 +1597,442 @@ function renderCompare(summaries) {
   return `<table class="data-table cmp-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+
+
+// ---------------------------------------------------------------------------
+// §13 Map tab. The editor follows the ARL_AUTOCAR map survey tool (sparse
+// grid with rulers, pan/zoom/fit, draw/erase, measure, anchors, start/goal,
+// route preview, save/load/delete); on top it shows the car's live cell.
+// ---------------------------------------------------------------------------
+function escapeHtml(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+function activeTab() {
+  const t = document.querySelector(".tab.active");
+  return t ? t.dataset.tab : "";
+}
+
+async function apiJson(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  };
+  const sep = path.includes("?") ? (qp ? "&" + qp.slice(1) : "") : qp;
+  const r = await fetch(path + sep, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || String(r.status));
+  return j;
+}
+
+const mapCanvas = document.getElementById("mapCanvas");
+if (mapCanvas) {
+  const q = id => document.getElementById(id);
+  const ctx = mapCanvas.getContext("2d");
+  const rulerTop = 30, rulerLeft = 52;
+  let cells = new Set(), anchors = new Map(), selectedAnchorId = null, tool = "draw", drag = false;
+  let start = null, goal = null, route = [], cellPx = 28, viewRow = -10, viewColumn = -15, panStart = null;
+  let measureStart = null, measureEnd = null, liveState = null, mapsLoaded = false;
+  const key = (r, c) => r + "," + c, parseKey = k => k.split(",").map(Number), value = id => Number(q(id).value);
+
+  // Messages show under the canvas and under the anchor buttons, since the
+  // two are a screen apart.
+  function status(message, error = false) {
+    for (const id of ["mapStatus", "mapAnchorStatus"]) {
+      q(id).textContent = message; q(id).className = error ? "map-status error" : "map-status";
+    }
+  }
+  function centreOn(cell) {
+    viewColumn = cell[1] + .5 - (mapCanvas.width - rulerLeft) / cellPx / 2;
+    viewRow = cell[0] + .5 - (mapCanvas.height - rulerTop) / cellPx / 2;
+  }
+  function bounds() {
+    if (!cells.size) return null;
+    const pts = [...cells].map(parseKey), rs = pts.map(x => x[0]), cs = pts.map(x => x[1]);
+    return {minR: Math.min(...rs), maxR: Math.max(...rs), minC: Math.min(...cs), maxC: Math.max(...cs)};
+  }
+  function updateExtent() {
+    const b = bounds(), tile = value("mapTileSize");
+    if (!b || !Number.isFinite(tile) || tile <= 0) { q("mapExtent").textContent = "Map edges are defined by the outermost drawn path cells."; return; }
+    const width = (b.maxC - b.minC + 1) * tile, length = (b.maxR - b.minR + 1) * tile;
+    q("mapExtent").textContent = `Map extent: ${width.toFixed(2)} m wide × ${length.toFixed(2)} m long · rows ${b.minR}…${b.maxR}, columns ${b.minC}…${b.maxC} · ${cells.size} cells`;
+  }
+  const mapX = c => rulerLeft + (c - viewColumn) * cellPx;
+  const mapY = r => rulerTop + (r - viewRow) * cellPx;
+
+  function fitCanvasToBox() {
+    // Draw at the displayed size so rulers and labels stay readable.
+    const w = Math.round(mapCanvas.clientWidth);
+    if (!w) return;
+    const h = Math.max(360, Math.round(w * 0.76));
+    if (mapCanvas.width !== w || mapCanvas.height !== h) { mapCanvas.width = w; mapCanvas.height = h; }
+  }
+
+  function draw() {
+    fitCanvasToBox();
+    const W = mapCanvas.width, H = mapCanvas.height, plotW = W - rulerLeft, plotH = H - rulerTop;
+    ctx.fillStyle = "#d9e2e8"; ctx.fillRect(rulerLeft, rulerTop, plotW, plotH);
+    const firstC = Math.floor(viewColumn), lastC = Math.ceil(viewColumn + plotW / cellPx);
+    const firstR = Math.floor(viewRow), lastR = Math.ceil(viewRow + plotH / cellPx);
+    ctx.save(); ctx.beginPath(); ctx.rect(rulerLeft, rulerTop, plotW, plotH); ctx.clip();
+    ctx.fillStyle = "#3fa36c";
+    for (const k of cells) {
+      const [r, c] = parseKey(k), x = mapX(c), y = mapY(r);
+      if (x + cellPx < rulerLeft || y + cellPx < rulerTop || x > W || y > H) continue;
+      ctx.fillRect(x, y, cellPx, cellPx);
+    }
+    ctx.fillStyle = "#2f7de1";
+    for (const [r, c] of route) ctx.fillRect(mapX(c), mapY(r), cellPx, cellPx);
+    for (const [cell, color] of [[start, "#f0b429"], [goal, "#e65a50"]]) {
+      if (cell) { ctx.fillStyle = color; ctx.fillRect(mapX(cell[1]), mapY(cell[0]), cellPx, cellPx); }
+    }
+    // live car trail + position
+    const live = liveState && liveState.configured ? liveState : null;
+    if (live) {
+      ctx.fillStyle = "rgba(255,138,0,0.8)";
+      const inset = cellPx * 0.3;
+      for (const [r, c] of live.trail || []) ctx.fillRect(mapX(c) + inset, mapY(r) + inset, cellPx - 2 * inset, cellPx - 2 * inset);
+    }
+    for (const a of anchors.values()) {
+      const x = mapX(a.cell[1] + .5), y = mapY(a.cell[0] + .5);
+      ctx.fillStyle = a.id === selectedAnchorId ? "#ff54ce" : "#8f42d8";
+      ctx.beginPath(); ctx.arc(x, y, Math.max(5, cellPx * .24), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#351044"; ctx.font = `bold ${Math.max(10, cellPx * .32)}px system-ui`; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+      ctx.fillText(a.label || a.id, x + cellPx * .28, y - cellPx * .28);
+    }
+    if (live && live.position) {
+      const p = live.position, x = mapX(p.column + .5), y = mapY(p.row + .5);
+      ctx.fillStyle = p.status === "OK" ? "#16a34a" : "#dc2626"; ctx.strokeStyle = "#111"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(6, cellPx * .45), 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(30,45,55,.32)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let c = firstC; c <= lastC; c++) { const x = mapX(c); ctx.moveTo(x, rulerTop); ctx.lineTo(x, H); }
+    for (let r = firstR; r <= lastR; r++) { const y = mapY(r); ctx.moveTo(rulerLeft, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(190,80,80,.65)"; ctx.beginPath();
+    const x0 = mapX(0), y0 = mapY(0);
+    ctx.moveTo(x0, rulerTop); ctx.lineTo(x0, H); ctx.moveTo(rulerLeft, y0); ctx.lineTo(W, y0); ctx.stroke();
+    if (measureStart) {
+      const pts = [measureStart, measureEnd || measureStart];
+      ctx.strokeStyle = "#ff8a00"; ctx.fillStyle = "#ff8a00"; ctx.lineWidth = 3; ctx.setLineDash([7, 5]);
+      ctx.beginPath(); ctx.moveTo(mapX(pts[0][1] + .5), mapY(pts[0][0] + .5)); ctx.lineTo(mapX(pts[1][1] + .5), mapY(pts[1][0] + .5)); ctx.stroke();
+      ctx.setLineDash([]);
+      for (const p of pts) { ctx.beginPath(); ctx.arc(mapX(p[1] + .5), mapY(p[0] + .5), Math.max(5, cellPx * .18), 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.restore();
+    ctx.fillStyle = "#243540"; ctx.fillRect(0, 0, W, rulerTop); ctx.fillRect(0, 0, rulerLeft, H);
+    ctx.strokeStyle = "#748b9a"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(rulerLeft, 0); ctx.lineTo(rulerLeft, H); ctx.moveTo(0, rulerTop); ctx.lineTo(W, rulerTop); ctx.stroke();
+    ctx.fillStyle = "#d8e7ef"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `${Math.max(9, Math.min(12, cellPx * .36))}px system-ui`;
+    const every = cellPx < 16 ? Math.ceil(16 / cellPx) : 1;
+    for (let c = firstC; c <= lastC; c++) if (c % every === 0) ctx.fillText(String(c), mapX(c + .5), rulerTop / 2);
+    ctx.textAlign = "right";
+    for (let r = firstR; r <= lastR; r++) if (r % every === 0) ctx.fillText(String(r), rulerLeft - 7, mapY(r + .5));
+    ctx.textAlign = "center"; ctx.fillStyle = "#f4cb73"; ctx.font = "bold 10px system-ui";
+    ctx.fillText("COL", rulerLeft / 2, rulerTop / 2 - 6); ctx.fillText("ROW", rulerLeft / 2, rulerTop / 2 + 6);
+    updateExtent();
+  }
+
+  function point(ev) { const box = mapCanvas.getBoundingClientRect(); return {x: (ev.clientX - box.left) * mapCanvas.width / box.width, y: (ev.clientY - box.top) * mapCanvas.height / box.height}; }
+  function at(ev) { const p = point(ev); if (p.x < rulerLeft || p.y < rulerTop) return null; return [Math.floor(viewRow + (p.y - rulerTop) / cellPx), Math.floor(viewColumn + (p.x - rulerLeft) / cellPx)]; }
+  function updateMeasurement() {
+    if (!measureStart) { q("mapMeasurement").textContent = "Measurement: select the Measure tool, then click two tiles."; return; }
+    if (!measureEnd) { q("mapMeasurement").textContent = `Measurement start: row ${measureStart[0]}, column ${measureStart[1]}. Click the second tile.`; return; }
+    const dr = Math.abs(measureEnd[0] - measureStart[0]), dc = Math.abs(measureEnd[1] - measureStart[1]), moves = dr + dc, straight = Math.hypot(dr, dc), tile = value("mapTileSize");
+    const metres = Number.isFinite(tile) && tile > 0 ? ` / ${(moves * tile).toFixed(2)} m along grid · straight-line: ${straight.toFixed(2)} tiles / ${(straight * tile).toFixed(2)} m` : "";
+    q("mapMeasurement").textContent = `Rows: ${dr} · columns: ${dc} · grid distance: ${moves} tile moves (${moves + 1} tiles including both ends)${metres}`;
+  }
+  function apply(ev) {
+    if (tool === "pan") {
+      const p = point(ev);
+      if (!panStart) panStart = {x: p.x, y: p.y, row: viewRow, column: viewColumn};
+      viewColumn = panStart.column - (p.x - panStart.x) / cellPx; viewRow = panStart.row - (p.y - panStart.y) / cellPx;
+      draw(); return;
+    }
+    const cell = at(ev); if (!cell) { drag = false; return; }
+    const k = key(...cell);
+    if (tool === "draw") cells.add(k);
+    else if (tool === "erase") {
+      cells.delete(k);
+      for (const [id, a] of anchors) if (key(...a.cell) === k) anchors.delete(id);
+      refreshAnchors();
+      if (start && key(...start) === k) start = null;
+      if (goal && key(...goal) === k) goal = null;
+    } else if (tool === "measure") {
+      if (!measureStart || measureEnd) { measureStart = cell; measureEnd = null; } else measureEnd = cell;
+      updateMeasurement(); drag = false;
+    } else if (tool === "anchor") {
+      if (!cells.has(k)) { status("An anchor must be placed on a runnable path cell.", true); drag = false; return; }
+      q("mapAnchorRow").value = cell[0]; q("mapAnchorColumn").value = cell[1]; drag = false;
+      status(`Anchor position (${cell[0]},${cell[1]}): enter an Anchor ID, then Create / update anchor.`);
+    } else if (tool === "start") { cells.add(k); start = cell; drag = false; }
+    else if (tool === "goal") { cells.add(k); goal = cell; drag = false; }
+    if (tool !== "measure") route = [];
+    draw();
+  }
+  mapCanvas.onpointerdown = e => { drag = true; panStart = null; mapCanvas.setPointerCapture(e.pointerId); apply(e); };
+  mapCanvas.onpointermove = e => { if (drag && (tool === "draw" || tool === "erase" || tool === "pan")) apply(e); };
+  mapCanvas.onpointerup = () => { drag = false; panStart = null; };
+  mapCanvas.onpointercancel = mapCanvas.onpointerup;
+  document.querySelectorAll("[data-map-tool]").forEach(b => b.onclick = () => {
+    tool = b.dataset.mapTool;
+    document.querySelectorAll("[data-map-tool]").forEach(x => x.classList.toggle("active", x === b));
+  });
+  q("mapZoomIn").onclick = () => { cellPx = Math.min(80, cellPx * 1.25); draw(); };
+  q("mapZoomOut").onclick = () => { cellPx = Math.max(4, cellPx / 1.25); draw(); };
+  q("mapFit").onclick = () => fit();
+  q("mapClearMeasure").onclick = () => { measureStart = measureEnd = null; updateMeasurement(); draw(); };
+  q("mapClearDraft").onclick = () => {
+    if (cells.size && !confirm("Clear the whole draft map (not the saved file)?")) return;
+    cells.clear(); anchors.clear(); selectedAnchorId = null; refreshAnchors();
+    start = null; goal = null; route = []; measureStart = measureEnd = null; updateMeasurement(); draw();
+  };
+  q("mapTileSize").oninput = () => { updateExtent(); updateMeasurement(); };
+  q("mapFollow").onclick = () => {
+    const p = liveState && liveState.position;
+    if (!p) { status("Xe chưa có vị trí trên map.", true); return; }
+    viewColumn = p.column + .5 - (mapCanvas.width - rulerLeft) / cellPx / 2;
+    viewRow = p.row + .5 - (mapCanvas.height - rulerTop) / cellPx / 2;
+    draw();
+  };
+
+  window.addEventListener("resize", () => draw());
+
+  function fit() {
+    fitCanvasToBox();
+    const b = bounds();
+    if (!b) { viewRow = -10; viewColumn = -15; cellPx = 28; draw(); return; }
+    const rows = b.maxR - b.minR + 1, columns = b.maxC - b.minC + 1;
+    cellPx = Math.max(4, Math.min(60, (mapCanvas.width - rulerLeft) / (columns + 4), (mapCanvas.height - rulerTop) / (rows + 4)));
+    viewRow = b.minR - 2; viewColumn = b.minC - 2; draw();
+  }
+  function payload() {
+    return {
+      schema_version: 2, map_id: q("mapId").value, tile_size_m: value("mapTileSize"),
+      robot: {width_m: value("mapRobotWidth"), length_m: value("mapRobotLength"), safety_margin_m: value("mapMargin")},
+      runnable_cells: [...cells].map(parseKey), visual_anchors: [...anchors.values()],
+    };
+  }
+  function refreshAnchors() {
+    const select = q("mapAnchorSelect"), current = selectedAnchorId || "";
+    select.replaceChildren(new Option("New anchor", ""));
+    for (const a of [...anchors.values()].sort((x, y) => x.id.localeCompare(y.id))) select.add(new Option(a.label ? `${a.id} · ${a.label}` : a.id, a.id));
+    select.value = anchors.has(current) ? current : "";
+    if (!select.value) selectedAnchorId = null;
+    draw();
+  }
+  q("mapAnchorSelect").onchange = () => {
+    selectedAnchorId = q("mapAnchorSelect").value || null;
+    const a = selectedAnchorId ? anchors.get(selectedAnchorId) : null;
+    q("mapAnchorId").value = a ? a.id : ""; q("mapAnchorLabel").value = a ? (a.label || "") : "";
+    q("mapAnchorRow").value = a ? a.cell[0] : ""; q("mapAnchorColumn").value = a ? a.cell[1] : "";
+    if (a) centreOn(a.cell);
+    draw();
+  };
+  q("mapSaveAnchor").onclick = () => {
+    const id = q("mapAnchorId").value.trim(), label = q("mapAnchorLabel").value.trim();
+    const rowText = q("mapAnchorRow").value, colText = q("mapAnchorColumn").value;
+    const row = Number(rowText), column = Number(colText);
+    if (!id || rowText === "" || colText === "" || !Number.isInteger(row) || !Number.isInteger(column)) { status("Enter an anchor ID and place it on the map.", true); return; }
+    if (!cells.has(key(row, column))) { status("Anchor position must be a runnable path cell.", true); return; }
+    if (anchors.has(id) && id !== selectedAnchorId) { status("Anchor IDs must be unique.", true); return; }
+    if (selectedAnchorId && selectedAnchorId !== id) anchors.delete(selectedAnchorId);
+    anchors.set(id, {id, label: label || null, cell: [row, column]});
+    selectedAnchorId = id; centreOn([row, column]); refreshAnchors();
+    status(`Anchor ${id} at (${row},${column}) added to the map (pink). Press Validate and save to keep it.`);
+    mapCanvas.scrollIntoView({behavior: "smooth", block: "center"});
+  };
+  q("mapDeleteAnchor").onclick = () => {
+    if (!selectedAnchorId) { status("Select an anchor to delete.", true); return; }
+    anchors.delete(selectedAnchorId); selectedAnchorId = null;
+    q("mapAnchorId").value = q("mapAnchorLabel").value = q("mapAnchorRow").value = q("mapAnchorColumn").value = "";
+    refreshAnchors(); status("Anchor deleted from the draft map.");
+  };
+  function selectedAnchor() {
+    const a = selectedAnchorId ? anchors.get(selectedAnchorId) : null;
+    if (!a) status("Select an anchor first.", true);
+    return a;
+  }
+  q("mapAnchorStart").onclick = () => { const a = selectedAnchor(); if (a) { start = a.cell.slice(); route = []; draw(); } };
+  q("mapAnchorGoal").onclick = () => { const a = selectedAnchor(); if (a) { goal = a.cell.slice(); route = []; draw(); } };
+  q("mapAnchorHere").onclick = async () => {
+    const a = selectedAnchor(); if (!a) return;
+    try { liveState = await apiJson("/api/map/anchor", {ref: a.cell}); renderLive(); status(`Vị trí xe đặt lại tại ${a.id}.`); }
+    catch (e) { status("lỗi: " + e.message, true); }
+  };
+
+  q("mapPlan").onclick = async () => {
+    if (!start || !goal) { status("Set a runnable start and goal first.", true); return; }
+    try {
+      const body = await apiJson("/api/map/plan", {map: payload(), start, goal});
+      route = body.cells; draw();
+      status(`Route: ${body.distance_m.toFixed(2)} m, ${body.cells.length - 1} tiles, ${body.turn_count} turns.`);
+    } catch (e) { route = []; draw(); status(e.message, true); }
+  };
+  q("mapSave").onclick = async () => {
+    try {
+      const body = await apiJson("/api/map/save", payload());
+      status(`Saved ${body.file}`); await refreshSaved(body.saved);
+    } catch (e) { status(e.message, true); }
+  };
+  q("mapDelete").onclick = async () => {
+    const id = q("mapSaved").value || q("mapId").value;
+    if (!id || !confirm(`Delete map ${id}?`)) return;
+    try { await apiJson("/api/map/delete", {id}); status(`Deleted map ${id}.`); await refreshSaved(); }
+    catch (e) { status(e.message, true); }
+  };
+  async function refreshSaved(selected) {
+    try {
+      const body = await apiJson("/api/map/maps");
+      const sel = q("mapSaved"), keep = selected || sel.value;
+      sel.innerHTML = '<option value="">—</option>' + body.maps.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.id)}${m.source === "bundled" ? " (repo)" : ""}</option>`).join("");
+      if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+      return body.maps;
+    } catch (e) { status(e.message, true); return []; }
+  }
+  async function loadMap(id) {
+    try {
+      const data = await apiJson("/api/map/load?id=" + encodeURIComponent(id));
+      q("mapId").value = data.map_id; q("mapTileSize").value = data.tile_size_m;
+      q("mapRobotWidth").value = data.robot.width_m; q("mapRobotLength").value = data.robot.length_m; q("mapMargin").value = data.robot.safety_margin_m;
+      cells = new Set(data.runnable_cells.map(x => key(...x)));
+      anchors = new Map((data.visual_anchors || []).map(a => [a.id, a]));
+      selectedAnchorId = null; refreshAnchors(); start = null; goal = null; route = [];
+      measureStart = measureEnd = null; updateMeasurement(); fit(); status(`Map ${data.map_id} loaded.`);
+    } catch (e) { status(e.message, true); }
+  }
+  q("mapLoad").onclick = () => { if (q("mapSaved").value) loadMap(q("mapSaved").value); };
+
+  // --- live car position -------------------------------------------------
+  const modeSel = q("mapMode");
+  modeSel.onchange = () => { q("mapHeading").style.display = modeSel.value === "heading" ? "" : "none"; };
+  q("mapUse").onclick = async () => {
+    if (!start) { status("Set start trước (Set start, hoặc chọn anchor rồi → start).", true); return; }
+    const body = {map: payload(), start};
+    if (modeSel.value === "goal") {
+      if (!goal) { status("Set goal trước, hoặc chọn 'đi thẳng theo hướng'.", true); return; }
+      body.goal = goal;
+    } else body.heading = q("mapHeading").value;
+    try {
+      liveState = await apiJson("/api/map/start", body);
+      if (liveState.setup && liveState.setup.path) route = liveState.setup.path;
+      renderLive(); status("Đã lưu vị trí xuất phát. Bắt đầu route sẽ đặt xe ở đây và reset bộ đếm ô.");
+    } catch (e) { status("lỗi: " + e.message, true); }
+  };
+  q("mapLiveClear").onclick = async () => {
+    if (!confirm("Xoá vị trí xuất phát đã lưu trên Pi?")) return;
+    try { liveState = await apiJson("/api/map/clear", {}); renderLive(); status("Đã xoá vị trí xuất phát."); } catch (e) { status("lỗi: " + e.message, true); }
+  };
+  function renderLive() {
+    const st = liveState, pill = q("mapPill"), detail = q("mapDetail");
+    if (!st || !st.configured || !st.position) {
+      pill.className = "pill pill-idle"; pill.textContent = "chưa lưu xuất phát"; detail.textContent = "";
+    } else {
+      const p = st.position, setup = st.setup || {};
+      pill.className = "pill " + (p.status === "OK" ? "pill-running" : "pill-error"); pill.textContent = p.status;
+      const how = setup.goal ? `route tới (${setup.goal.join(",")}), ${setup.path.length - 1} ô` : `hướng ${setup.heading}`;
+      detail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · xuất phát (${setup.start.join(",")}) · ${how} · map ${setup.map_id || "?"}`;
+    }
+    draw();
+  }
+
+  async function pollMap() {
+    if (activeTab() !== "map") return;
+    if (!mapsLoaded) {
+      mapsLoaded = true;
+      const maps = await refreshSaved();
+      try { liveState = await apiJson("/api/map/state"); } catch (e) { liveState = null; }
+      const want = (liveState && liveState.setup && liveState.setup.map_id) || "campus-path";
+      const pick = maps.some(m => m.id === want) ? want : (maps[0] && maps[0].id);
+      if (pick) { q("mapSaved").value = pick; await loadMap(pick); }
+      else status("Không có map nào trên Pi (maps/tile_maps hoặc TILE_MAP_DIR). Vẽ map mới hoặc deploy lại.", true);
+      if (liveState && liveState.setup) {
+        start = liveState.setup.start || null; goal = liveState.setup.goal || null; route = liveState.setup.path || [];
+      }
+      renderLive();
+      return;
+    }
+    try { liveState = await apiJson("/api/map/state"); } catch (e) { return; }
+    renderLive();
+  }
+  draw();
+  setInterval(pollMap, 500);
+}
+
+// Saved map start next to "bắt đầu route" (route start resets the tile count
+// and puts the car back there).
+const runMapStart = document.getElementById("runMapStart");
+async function pollRunMapStart() {
+  if (!runMapStart || activeTab() !== "script") return;
+  try {
+    const st = await apiJson("/api/map/state");
+    const setup = st.setup || {};
+    runMapStart.textContent = st.saved_start && setup.start
+      ? `Map: xuất phát (${setup.start.join(",")})${setup.goal ? ` → goal (${setup.goal.join(",")})` : ` hướng ${setup.heading}`} · bắt đầu route sẽ reset bộ đếm ô về đây (sửa ở tab Map)`
+      : "Map: chưa lưu vị trí xuất phát (tab Map)";
+  } catch (e) {
+    runMapStart.textContent = "";
+  }
+}
+pollRunMapStart();
+setInterval(pollRunMapStart, 3000);
+
+// ---------------------------------------------------------------------------
+// §14 Pre-calibrate tab: stationary checklist before a run.
+// ---------------------------------------------------------------------------
+const precalChecks = document.getElementById("precalChecks");
+const precalPill = document.getElementById("precalPill");
+const precalDetail = document.getElementById("precalDetail");
+const precalCaptureStatus = document.getElementById("precalCaptureStatus");
+
+function renderPrecal(st) {
+  if (!st || !st.frames) {
+    precalPill.className = "pill pill-idle"; precalPill.textContent = "chưa có frame";
+    precalChecks.innerHTML = ""; return;
+  }
+  precalPill.className = "pill " + (st.ready ? "pill-running" : "pill-error");
+  precalPill.textContent = st.ready ? "sẵn sàng chạy" : "chưa sẵn sàng";
+  precalDetail.textContent = `${st.frames} frame (trung vị)`;
+  precalChecks.innerHTML = st.checks.map(c => `<tr class="${c.ok ? "ok" : "bad"}">
+    <td class="mark">${c.ok ? "✓" : "✗"}</td>
+    <td>${escapeHtml(c.label)}</td>
+    <td>${escapeHtml(c.value)}</td>
+    <td class="hint">${escapeHtml(c.hint || "")}</td></tr>`).join("");
+}
+
+async function pollPrecal() {
+  if (activeTab() !== "precal") return;
+  try { renderPrecal(await apiJson("/api/precal")); }
+  catch (e) { precalPill.className = "pill pill-error"; precalPill.textContent = "lỗi: " + e.message; }
+}
+
+async function precalCapture(what) {
+  precalCaptureStatus.textContent = "đang lưu…";
+  try {
+    const j = await apiJson("/api/precal/capture", {what});
+    precalCaptureStatus.textContent = "đã apply: " + Object.entries(j.applied).map(([k, v]) => `${k}=${v}`).join(", ");
+    renderPrecal(j.precal);
+  } catch (e) { precalCaptureStatus.textContent = "lỗi: " + e.message; }
+}
+
+if (precalChecks) {
+  document.getElementById("precalCaptureVp").onclick = () => precalCapture(["vp_center_deg"]);
+  document.getElementById("precalCaptureRow").onclick = () => precalCapture(["vp_horizon_y"]);
+  setInterval(pollPrecal, 500);
+}
+
+// Soft gate for "bắt đầu route": warn when the pre-run checklist is not green.
+async function precalGateOk() {
+  try {
+    const st = await apiJson("/api/precal");
+    if (st.ready || !st.frames) return true;
+    const bad = st.checks.filter(c => !c.ok).map(c => "• " + c.label + ": " + c.value).join("\n");
+    return window.confirm("Pre-calibrate chưa đạt:\n" + bad + "\n\nVẫn chạy route?");
+  } catch (e) {
+    return true;  // endpoint missing (older runtime): do not block
+  }
+}
 
 })();

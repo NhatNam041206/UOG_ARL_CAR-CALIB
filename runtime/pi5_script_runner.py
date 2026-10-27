@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from config.settings import TILE_STEP_MAX_S_PER_TILE
 from runtime.resource_limits import validate_route_steps
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,12 @@ class Pi5ScriptRunner:
         self._relay_cb: Callable[[str], None] | None = None
         self._center_angle: float = 90.0 + float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
         self._max_steer: float = float(os.getenv("MAX_STEERING_OFFSET", "60"))
+        # Tile steps: the counter line looks ahead of the car, so a step can
+        # stop this many seams early (calibrate on a measured run).
+        self._tile_count_lead = int(os.getenv("TILE_STEP_COUNT_LEAD", "0"))
+        self._tile_count_getter: Callable[[], int] | None = None
+        self._step_tiles_done = 0
+        self._last_error = ""
 
     def set_handlers(
         self,
@@ -56,6 +63,16 @@ class Pi5ScriptRunner:
         self._base_cb = base_cb
         self._servo_cb = servo_cb
         self._relay_cb = relay_cb
+
+    def set_tile_count_getter(self, fn: Callable[[], int]) -> None:
+        """Running cross-line tile count (needed for {"tiles": N} steps)."""
+        self._tile_count_getter = fn
+
+    def current_action(self) -> str | None:
+        with self._lock:
+            if not self._running or self._current_step is None:
+                return None
+            return str(self._current_step.get("action", "stop"))
 
     def is_running(self) -> bool:
         with self._lock:
@@ -83,10 +100,14 @@ class Pi5ScriptRunner:
                 "total": len(self._steps),
                 "step_elapsed_s": self._step_elapsed_s,
                 "step_remaining_s": remaining,
+                "step_tiles_done": self._step_tiles_done,
+                "last_error": self._last_error,
             }
 
     def submit(self, steps: list[dict[str, Any]]) -> bool:
         normalized_steps = validate_route_steps(steps)
+        if any("tiles" in s for s in normalized_steps) and self._tile_count_getter is None:
+            raise ValueError("tile steps need the cross-line counter")
         with self._lock:
             if self._running:
                 return False
@@ -96,6 +117,7 @@ class Pi5ScriptRunner:
             self._step_elapsed_s = 0.0
             self._step_duration_s = 0.0
             self._steps = normalized_steps
+            self._last_error = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return True
@@ -158,7 +180,16 @@ class Pi5ScriptRunner:
 
     def _execute_step(self, step: dict[str, Any]) -> None:
         action = step.get("action", "stop")
-        duration_s = max(0.0, float(step.get("duration_s", 1.0)))
+        tiles = step.get("tiles")
+        if tiles is not None:
+            # Safety timeout: the step fails (and the script stops) if the
+            # counter does not see the seams in time.
+            duration_s = float(tiles) * TILE_STEP_MAX_S_PER_TILE
+            target = max(1, int(tiles) - self._tile_count_lead)
+            last_count = int(self._tile_count_getter()) if self._tile_count_getter else 0
+            done_tiles = 0
+        else:
+            duration_s = max(0.0, float(step.get("duration_s", 1.0)))
 
         if action in ("forward", "straight"):
             base_cmd = "FORWARD"
@@ -185,6 +216,7 @@ class Pi5ScriptRunner:
         with self._lock:
             self._step_elapsed_s = 0.0
             self._step_duration_s = duration_s
+            self._step_tiles_done = 0
             self._current_base_cmd = base_cmd
             self._current_angle = angle
 
@@ -201,9 +233,28 @@ class Pi5ScriptRunner:
                     last_tick = now
                     continue
                 self._step_elapsed_s += now - last_tick
-                done = self._step_elapsed_s >= self._step_duration_s
+                timed_out = self._step_elapsed_s >= self._step_duration_s
                 last_tick = now
-            if done:
+            if tiles is not None:
+                # Add up increments instead of subtracting a start value: the
+                # counter is reset to 0 when the route session opens, which
+                # can happen just after this step has started.
+                count = int(self._tile_count_getter())  # type: ignore[misc]
+                if count > last_count:
+                    done_tiles += count - last_count
+                last_count = count
+                with self._lock:
+                    self._step_tiles_done = done_tiles
+                if done_tiles >= target:
+                    break
+                if timed_out:
+                    msg = f"tile step timed out: {done_tiles}/{target} tiles in {duration_s:.0f} s"
+                    logger.warning("Route script stopped: %s", msg)
+                    with self._lock:
+                        self._last_error = msg
+                        self._running = False
+                    break
+            elif timed_out:
                 break
 
     def _publish_current_command(self, base_cmd: str, angle: float | None) -> None:

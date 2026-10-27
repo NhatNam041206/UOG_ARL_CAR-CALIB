@@ -176,7 +176,10 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 parser.error(f"invalid tune values: {exc}")
 
-    replayed, frame_width = route_replay.replay_video(video, calibrator, max_frames=args.max_frames)
+    crop = 0 if video_is_raw else int((summary.get("extra_meta") or {}).get("video_map_panel_w") or 0)
+    replayed, frame_width = route_replay.replay_video(
+        video, calibrator, max_frames=args.max_frames, crop_right_px=crop
+    )
     recorded = route_replay.load_recorded_rows(args.route_dir)
     if args.max_frames is not None:
         recorded = recorded[: len(replayed)]
