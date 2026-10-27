@@ -199,8 +199,8 @@
           <label>Anchor<select id="mapAnchorSelect"><option value="">New anchor</option></select></label>
           <label>Anchor ID<input id="mapAnchorId" placeholder="e.g. room-a101"></label>
           <label>Label<input id="mapAnchorLabel" placeholder="optional, e.g. A101"></label>
-          <label>Row<input id="mapAnchorRow" readonly></label>
-          <label>Column<input id="mapAnchorColumn" readonly></label>
+          <label>Row<input id="mapAnchorRow" type="number" step="1" placeholder="click map (Place anchor)"></label>
+          <label>Column<input id="mapAnchorColumn" type="number" step="1"></label>
         </div>
         <div class="row">
           <button id="mapSaveAnchor">Create / update anchor</button>
@@ -209,6 +209,7 @@
           <button id="mapAnchorGoal">→ goal</button>
           <button id="mapAnchorHere" title="xe đang đứng ở mốc này: sửa vị trí">Xe đang ở mốc này</button>
         </div>
+        <p id="mapAnchorStatus" class="map-status"></p>
         <p class="muted">Ô chưa vẽ là blocked. Map lưu từ dashboard nằm trên Pi (TILE_MAP_DIR), dạng JSON (cũng là YAML hợp lệ, dùng được trong ARL_AUTOCAR).</p>
       </div>
       <div class="tab-pane" data-pane="precal">
@@ -296,6 +297,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-astar-edit"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261027-anchor-ux"></script>
 </body>
 </html>

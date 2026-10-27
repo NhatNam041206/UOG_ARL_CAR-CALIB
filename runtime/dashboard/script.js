@@ -1636,7 +1636,17 @@ if (mapCanvas) {
   let measureStart = null, measureEnd = null, liveState = null, mapsLoaded = false;
   const key = (r, c) => r + "," + c, parseKey = k => k.split(",").map(Number), value = id => Number(q(id).value);
 
-  function status(message, error = false) { q("mapStatus").textContent = message; q("mapStatus").className = error ? "map-status error" : "map-status"; }
+  // Messages show under the canvas and under the anchor buttons, since the
+  // two are a screen apart.
+  function status(message, error = false) {
+    for (const id of ["mapStatus", "mapAnchorStatus"]) {
+      q(id).textContent = message; q(id).className = error ? "map-status error" : "map-status";
+    }
+  }
+  function centreOn(cell) {
+    viewColumn = cell[1] + .5 - (mapCanvas.width - rulerLeft) / cellPx / 2;
+    viewRow = cell[0] + .5 - (mapCanvas.height - rulerTop) / cellPx / 2;
+  }
   function bounds() {
     if (!cells.size) return null;
     const pts = [...cells].map(parseKey), rs = pts.map(x => x[0]), cs = pts.map(x => x[1]);
@@ -1756,6 +1766,7 @@ if (mapCanvas) {
     } else if (tool === "anchor") {
       if (!cells.has(k)) { status("An anchor must be placed on a runnable path cell.", true); drag = false; return; }
       q("mapAnchorRow").value = cell[0]; q("mapAnchorColumn").value = cell[1]; drag = false;
+      status(`Anchor position (${cell[0]},${cell[1]}): enter an Anchor ID, then Create / update anchor.`);
     } else if (tool === "start") { cells.add(k); start = cell; drag = false; }
     else if (tool === "goal") { cells.add(k); goal = cell; drag = false; }
     if (tool !== "measure") route = [];
@@ -1817,6 +1828,7 @@ if (mapCanvas) {
     const a = selectedAnchorId ? anchors.get(selectedAnchorId) : null;
     q("mapAnchorId").value = a ? a.id : ""; q("mapAnchorLabel").value = a ? (a.label || "") : "";
     q("mapAnchorRow").value = a ? a.cell[0] : ""; q("mapAnchorColumn").value = a ? a.cell[1] : "";
+    if (a) centreOn(a.cell);
     draw();
   };
   q("mapSaveAnchor").onclick = () => {
@@ -1828,7 +1840,9 @@ if (mapCanvas) {
     if (anchors.has(id) && id !== selectedAnchorId) { status("Anchor IDs must be unique.", true); return; }
     if (selectedAnchorId && selectedAnchorId !== id) anchors.delete(selectedAnchorId);
     anchors.set(id, {id, label: label || null, cell: [row, column]});
-    selectedAnchorId = id; refreshAnchors(); status(`Anchor ${id} saved in the draft (press Validate and save).`);
+    selectedAnchorId = id; centreOn([row, column]); refreshAnchors();
+    status(`Anchor ${id} at (${row},${column}) added to the map (pink). Press Validate and save to keep it.`);
+    mapCanvas.scrollIntoView({behavior: "smooth", block: "center"});
   };
   q("mapDeleteAnchor").onclick = () => {
     if (!selectedAnchorId) { status("Select an anchor to delete.", true); return; }
