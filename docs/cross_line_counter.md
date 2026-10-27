@@ -99,7 +99,30 @@ python scripts/replay_tile_position.py <route_dir> --start AAD-1 --goal gym-01 -
 ```
 
 Writes `tile_position.csv` (per frame: count, path index, row, column,
-status), `tile_position_map.png` and `tile_position_summary.json`. Offline
-only; nothing on the robot uses the map yet.
+status), `tile_position_map.png` and `tile_position_summary.json`.
+The live version runs in the dashboard Map tab (below).
 
 First validation run: AAD-1 → gym-01 is 16 tiles straight east on the map.
+
+## Dashboard: Map and Pre-calibrate tabs
+
+**Map** (`positioning/map_session.py`, endpoints `/api/map`, `/api/map/state`,
+`/api/map/start`, `/api/map/anchor`, `/api/map/clear`). Pick a start (anchor
+or a clicked cell) plus a heading or a goal, then press "đặt xuất phát". The
+Pi follows the live tile count and logs `map_row`, `map_column`, `map_status`
+(`UNSET` / `OK` / `CONTRADICTORY` / `PAST_END`) in the route CSV and
+`/api/status`. "sửa vị trí" says the car is at that anchor or cell now. The
+position survives the counter reset at route start. `TILE_MAP_PATH` picks
+another map. The map has no motion authority.
+
+**Pre-calibrate** (`runtime/precalibrate.py`, `/api/precal`,
+`/api/precal/capture`). With the car still and aligned with the tiles, the
+tab shows medians over `PRECAL_WINDOW_S` (1.5 s) for: light (mean grey,
+saturated share), FPS, lane pair found, car centred (`lane_offset_ratio`,
+hint in cm from `PRECAL_TILE_SIZE_CM`), VP x at the image centre, VP row vs
+the tuned `vp_horizon_y`, and at least one cross line. While the tab is open
+the stream shows the centre line and the VP marker. "Lưu VP làm hướng thẳng"
+applies the measured VP angle as `vp_center_deg`, "Lưu VP row" applies the
+VP y as `vp_horizon_y` (Apply only; Save in the Tune tab to keep). Starting a
+route while a check is red asks for confirmation. Thresholds: `PRECAL_*` env
+vars in `runtime/precalibrate.py`.

@@ -1,0 +1,182 @@
+"""Tests for the dashboard Map tab session and the Pre-calibrate checklist."""
+
+from __future__ import annotations
+
+import json
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from positioning.map_session import MapSession
+from positioning.tile_position import TileMap
+from runtime.calib_tuning import TuneBlockedError
+from runtime.pi5_http import Pi5HttpServer
+from runtime.precalibrate import PreCalibrator
+
+CAMPUS_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "campus-path.json"
+
+
+def _session() -> MapSession:
+    return MapSession(TileMap.load(CAMPUS_MAP))
+
+
+def test_map_session_follows_count_and_keeps_position_across_counter_reset():
+    session = _session()
+    assert session.telemetry()["map_status"] == "UNSET"
+    session.update(7)  # counter already running before the start is set
+    state = session.configure({"start": "AAD-1", "goal": "gym-01"})
+    assert state["setup"]["start"] == [-31, 5]
+    assert len(state["setup"]["path"]) == 17
+    assert state["tiles"] == 0
+
+    session.update(10)
+    assert session.telemetry() == {"map_row": -31, "map_column": 8, "map_status": "OK"}
+
+    session.counter_reset()  # route start: counter back to 0
+    session.update(0)
+    assert session.telemetry()["map_column"] == 8
+    session.update(13)
+    assert session.telemetry()["map_column"] == 21
+    session.update(14)
+    assert session.telemetry()["map_status"] == "PAST_END"
+
+
+def test_map_session_anchor_and_validation():
+    session = _session()
+    with pytest.raises(ValueError):
+        session.configure({"start": "AAD-1"})
+    with pytest.raises(ValueError):
+        session.mark_anchor({"ref": "AAD-1"})
+    session.configure({"start": "AAD-1", "heading": "east"})
+    session.update(5)  # overcounted: the car is really at 3 tiles
+    state = session.mark_anchor({"ref": "-31,8"})
+    assert state["position"]["column"] == 8
+    session.update(6)
+    assert session.telemetry()["map_column"] == 9
+    assert session.map_payload()["anchors"]
+    assert session.clear()["configured"] is False
+
+
+def test_map_session_without_map():
+    session = MapSession(None)
+    assert session.state()["available"] is False
+    with pytest.raises(ValueError):
+        session.map_payload()
+
+
+def _telemetry(**kw):
+    base = {
+        "frame_width": 640,
+        "selected_pair_found": 1,
+        "vp_x": 320.0,
+        "vp_y": -320.0,
+        "vp_angle": 90.0,
+        "lane_offset_ratio": 0.0,
+        "lane_width_px": 540.0,
+    }
+    base.update(kw)
+    return base
+
+
+def _feed(precal: PreCalibrator, n: int = 30, frame=None, cross=2, row=-320, **kw):
+    frame = np.full((480, 640, 3), 120, np.uint8) if frame is None else frame
+    for i in range(n):
+        precal.observe(frame, _telemetry(**kw), cross, row, now=1000.0 + i / 30.0)
+
+
+def _check(status, key):
+    return next(c for c in status["checks"] if c["key"] == key)
+
+
+def test_precal_all_green_when_centered():
+    precal = PreCalibrator()
+    _feed(precal)
+    st = precal.status()
+    assert st["ready"], st["checks"]
+    assert {c["key"] for c in st["checks"]} == {"light", "fps", "lane", "center", "vp_x", "vp_row", "cross"}
+
+
+def test_precal_flags_offset_vp_dark_and_no_cross():
+    precal = PreCalibrator()
+    _feed(precal, frame=np.full((480, 640, 3), 20, np.uint8), cross=0,
+          lane_offset_ratio=0.2, vp_x=360.0, vp_y=-200.0)
+    st = precal.status()
+    assert not st["ready"]
+    assert not _check(st, "light")["ok"]
+    assert not _check(st, "cross")["ok"]
+    center = _check(st, "center")
+    assert not center["ok"] and "phải" in center["hint"] and "12 cm" in center["hint"]
+    assert not _check(st, "vp_x")["ok"]
+    assert not _check(st, "vp_row")["ok"]
+
+
+class _FakeTune:
+    def __init__(self, blocked: bool = False):
+        self.applied = []
+        self.blocked = blocked
+
+    def apply(self, values):
+        if self.blocked:
+            raise TuneBlockedError("route running")
+        self.applied.append(dict(values))
+        return {}
+
+
+def test_precal_capture_writes_measured_vp():
+    precal = PreCalibrator()
+    _feed(precal, vp_angle=93.27, vp_y=-301.6)
+    tune = _FakeTune()
+    out = precal.capture(tune, {"what": ["vp_center_deg"]})
+    assert out["applied"] == {"vp_center_deg": 93.3}
+    precal.capture(tune, {})
+    assert tune.applied[-1] == {"vp_center_deg": 93.3, "vp_horizon_y": -302}
+
+    empty = PreCalibrator()
+    _feed(empty, vp_angle=None, vp_y=None, vp_x=None, selected_pair_found=0)
+    with pytest.raises(ValueError):
+        empty.capture(tune, {})
+
+
+def _request(port, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            return exc.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return exc.code, raw.decode()
+
+
+def test_extra_routes_dispatch_and_map_errors():
+    server = Pi5HttpServer(host="127.0.0.1", port=0, token="")
+    session = _session()
+    precal = PreCalibrator()
+    _feed(precal)
+    server.add_route("GET", "/api/map/state", lambda _q: session.state())
+    server.add_route("POST", "/api/map/start", session.configure)
+    server.add_route("POST", "/api/precal/capture", lambda body: precal.capture(_FakeTune(blocked=True), body))
+    try:
+        server.start()
+        deadline = time.monotonic() + 2.0
+        while server._server is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        port = server._server.server_address[1]
+        assert _request(port, "/api/map/state")[1]["configured"] is False
+        code, body = _request(port, "/api/map/start", {"start": "AAD-1", "heading": "east"})
+        assert code == 200 and body["configured"] is True
+        assert _request(port, "/api/map/start", {"start": "nowhere", "heading": "east"})[0] == 400
+        assert _request(port, "/api/precal/capture", {})[0] == 409
+        assert _request(port, "/api/unknown")[0] == 404
+    finally:
+        server.stop()
+        if server._server is not None:
+            server._server.server_close()

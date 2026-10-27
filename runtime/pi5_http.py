@@ -184,6 +184,20 @@ class _RequestHandler(BaseHTTPRequestHandler):
             while chunk := fileobj.read(64 * 1024):
                 self.wfile.write(chunk)
 
+    def _extra_route(self, attr: str, path: str, query: dict[str, list[str]] | None) -> bool:
+        """Dispatch to a handler registered with Pi5HttpServer.add_route()."""
+        handler = (getattr(self.server, attr, None) or {}).get(path)
+        if not callable(handler):
+            return False
+        try:
+            body = query if query is not None else self._json_body()
+            self._json(handler(body))
+        except (json.JSONDecodeError, ValueError, TuneValidationError) as exc:
+            self._json({"detail": str(exc)}, 400)
+        except TuneBlockedError as exc:
+            self._json({"detail": str(exc)}, 409)
+        return True
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._cors()
@@ -376,6 +390,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._file(zip_path)
             return
 
+        if self._extra_route("extra_get_routes", path, self._query()):
+            return
         self._text(404, "not found")
 
     def do_POST(self) -> None:
@@ -509,6 +525,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._json({"detail": str(exc)}, 409)
             except TuneValidationError as exc:
                 self._json({"detail": str(exc)}, 400)
+            return
+        if self._extra_route("extra_post_routes", path, None):
             return
         self._text(404, "not found")
 
@@ -672,6 +690,8 @@ class Pi5HttpServer:
         self._manual_override_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self._camera_list_getter: Callable[[], dict[str, Any]] | None = None
         self._camera_selector: Callable[[str], dict[str, Any]] | None = None
+        self._extra_get_routes: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+        self._extra_post_routes: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self._thread: threading.Thread | None = None
 
     def set_frame_getter(self, fn: Callable[[], np.ndarray | None]) -> None:
@@ -773,6 +793,16 @@ class Pi5HttpServer:
         self._tune_saver = saver
         self._tune_resetter = resetter
 
+    def add_route(
+        self,
+        method: str,
+        path: str,
+        fn: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> None:
+        """Register a JSON endpoint: GET handlers get the query, POST the body."""
+        table = self._extra_get_routes if method.upper() == "GET" else self._extra_post_routes
+        table[path] = fn
+
     def start(self) -> None:
         if self._host not in {"127.0.0.1", "localhost", "::1"} and not self._token:
             raise ValueError("DASHBOARD_TOKEN is required when DASHBOARD_HOST is not localhost")
@@ -826,4 +856,6 @@ class Pi5HttpServer:
         self._server.tune_applier = self._tune_applier
         self._server.tune_saver = self._tune_saver
         self._server.tune_resetter = self._tune_resetter
+        self._server.extra_get_routes = dict(self._extra_get_routes)
+        self._server.extra_post_routes = dict(self._extra_post_routes)
         self._server.serve_forever()

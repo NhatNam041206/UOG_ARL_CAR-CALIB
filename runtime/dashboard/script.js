@@ -13,6 +13,8 @@
 //  §10  Route summary modal
 //  §11  Presets CRUD
 //  §12  Tune panel (steering controller params)
+//  §13  Map tab (campus tile map, live cell)
+//  §14  Pre-calibrate tab (pre-run checklist)
 // =====================================================================
 (function () {
 "use strict";
@@ -218,6 +220,7 @@ runBtn.onclick = async () => {
   }
   if (editingIndex >= 0) { runDetail.textContent = "save edit first"; return; }
   if (steps.length === 0) { runDetail.textContent = "add steps first"; return; }
+  if (!(await precalGateOk())) { runDetail.textContent = "huỷ: pre-calibrate chưa đạt"; return; }
   runDetail.textContent = "submitting…";
   const presetSel = document.getElementById("presetSelect");
   const presetInput = document.getElementById("presetName");
@@ -1533,5 +1536,252 @@ function renderCompare(summaries) {
   return `<table class="data-table cmp-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+
+
+// ---------------------------------------------------------------------------
+// §13 Map tab: campus tile map, start/heading/goal, live cell from the Pi.
+// ---------------------------------------------------------------------------
+const mapCanvas = document.getElementById("mapCanvas");
+const mapPill = document.getElementById("mapPill");
+const mapDetail = document.getElementById("mapDetail");
+let mapData = null;
+let mapState = null;
+let mapPicked = null;   // [row, col] clicked on the canvas
+const MAP_CELL_PX = 9;
+
+function escapeHtml(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+// Grid extent from the runnable cells (map "bounds" may carry extra keys).
+function mapExtent() {
+  if (!mapData._extent) {
+    const rs = mapData.cells.map(c => c[0]), cs = mapData.cells.map(c => c[1]);
+    mapData._extent = {min_row: Math.min(...rs), max_row: Math.max(...rs), min_col: Math.min(...cs), max_col: Math.max(...cs)};
+  }
+  return mapData._extent;
+}
+
+function activeTab() {
+  const t = document.querySelector(".tab.active");
+  return t ? t.dataset.tab : "";
+}
+
+async function apiJson(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  };
+  const r = await fetch(path + qp, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || String(r.status));
+  return j;
+}
+
+function mapRefOptions(sel, withClicked) {
+  if (!sel || !mapData) return;
+  const keep = sel.value;
+  let html = withClicked ? `<option value="__picked">ô đã click${mapPicked ? ` (${mapPicked.join(",")})` : ""}</option>` : "";
+  for (const a of mapData.anchors) {
+    html += `<option value="${escapeHtml(a.id)}">${escapeHtml(a.id)}${a.label ? " · " + escapeHtml(a.label) : ""} (${a.cell.join(",")})</option>`;
+  }
+  sel.innerHTML = html;
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+
+function mapRefValue(sel) {
+  if (sel.value === "__picked") {
+    if (!mapPicked) throw new Error("click một ô trên map trước");
+    return mapPicked.join(",");
+  }
+  return sel.value;
+}
+
+function drawMap() {
+  if (!mapCanvas || !mapData) return;
+  const b = mapExtent();
+  const rows = b.max_row - b.min_row + 1, cols = b.max_col - b.min_col + 1;
+  const s = MAP_CELL_PX;
+  if (mapCanvas.width !== cols * s) { mapCanvas.width = cols * s; mapCanvas.height = rows * s; }
+  const ctx = mapCanvas.getContext("2d");
+  const px = (c) => [(c[1] - b.min_col) * s, (c[0] - b.min_row) * s];
+  ctx.fillStyle = "#0b0c0e";
+  ctx.fillRect(0, 0, mapCanvas.width, mapCanvas.height);
+  ctx.fillStyle = "#3a3f48";
+  for (const c of mapData.cells) { const [x, y] = px(c); ctx.fillRect(x, y, s - 1, s - 1); }
+  const st = mapState || {};
+  const setup = st.setup || {};
+  if (setup.path) {
+    ctx.fillStyle = "rgba(96,165,250,0.55)";
+    for (const c of setup.path) { const [x, y] = px(c); ctx.fillRect(x, y, s - 1, s - 1); }
+  }
+  if (st.trail && st.trail.length) {
+    ctx.fillStyle = "rgba(251,191,36,0.75)";
+    for (const c of st.trail) { const [x, y] = px(c); ctx.fillRect(x + 2, y + 2, s - 5, s - 5); }
+  }
+  ctx.font = "bold 11px sans-serif";
+  for (const a of mapData.anchors) {
+    const [x, y] = px(a.cell);
+    ctx.fillStyle = "#c084fc";
+    ctx.fillRect(x, y, s - 1, s - 1);
+    ctx.fillText(a.id, x + s + 1, y + s - 1);
+  }
+  const mark = (cell, color, r) => {
+    if (!cell) return;
+    const [x, y] = px(cell);
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, r, 0, Math.PI * 2); ctx.stroke();
+  };
+  mark(setup.start, "#4ade80", s * 0.9);
+  mark(setup.goal, "#60a5fa", s * 0.9);
+  mark(mapPicked, "#ffffff", s * 0.7);
+  const pos = st.position;
+  if (pos) {
+    const [x, y] = px([pos.row, pos.column]);
+    ctx.fillStyle = pos.status === "OK" ? "#4ade80" : "#f87171";
+    ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, s * 0.75, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function renderMapState() {
+  const st = mapState;
+  if (!st || !st.available) {
+    mapPill.className = "pill pill-error"; mapPill.textContent = "không có map";
+    mapDetail.textContent = ""; return;
+  }
+  if (!st.configured || !st.position) {
+    mapPill.className = "pill pill-idle"; mapPill.textContent = "chưa đặt xuất phát";
+    mapDetail.textContent = "";
+  } else {
+    const p = st.position;
+    mapPill.className = "pill " + (p.status === "OK" ? "pill-running" : "pill-error");
+    mapPill.textContent = p.status;
+    const setup = st.setup || {};
+    const route = setup.goal ? `→ đích (${setup.goal.join(",")}), ${setup.path.length - 1} ô` : `hướng ${setup.heading}`;
+    mapDetail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · ${route}`;
+  }
+  drawMap();
+}
+
+async function loadMap() {
+  try {
+    mapData = await apiJson("/api/map");
+    mapRefOptions(document.getElementById("mapStart"), true);
+    mapRefOptions(document.getElementById("mapGoal"), true);
+    mapRefOptions(document.getElementById("mapAnchor"), true);
+    const startSel = document.getElementById("mapStart");
+    if ([...startSel.options].some(o => o.value === "AAD-1")) startSel.value = "AAD-1";
+    const goalSel = document.getElementById("mapGoal");
+    if ([...goalSel.options].some(o => o.value === "gym-01")) goalSel.value = "gym-01";
+  } catch (e) {
+    mapData = null;
+    mapState = {available: false};
+    renderMapState();
+  }
+}
+
+async function pollMap() {
+  if (activeTab() !== "map") return;
+  if (!mapData) await loadMap();
+  if (!mapData) return;
+  try { mapState = await apiJson("/api/map/state"); } catch (e) { return; }
+  renderMapState();
+}
+
+if (mapCanvas) {
+  const modeSel = document.getElementById("mapMode");
+  modeSel.onchange = () => {
+    document.getElementById("mapHeading").style.display = modeSel.value === "heading" ? "" : "none";
+    document.getElementById("mapGoal").style.display = modeSel.value === "goal" ? "" : "none";
+  };
+  mapCanvas.addEventListener("click", ev => {
+    if (!mapData) return;
+    const rect = mapCanvas.getBoundingClientRect();
+    const scale = mapCanvas.width / rect.width;
+    const col = Math.floor((ev.clientX - rect.left) * scale / MAP_CELL_PX) + mapExtent().min_col;
+    const row = Math.floor((ev.clientY - rect.top) * scale / MAP_CELL_PX) + mapExtent().min_row;
+    mapPicked = [row, col];
+    ["mapStart", "mapGoal", "mapAnchor"].forEach(id => mapRefOptions(document.getElementById(id), true));
+    mapDetail.textContent = `đã chọn ô (${row},${col})`;
+    drawMap();
+  });
+  document.getElementById("mapSet").onclick = async () => {
+    try {
+      const body = {start: mapRefValue(document.getElementById("mapStart"))};
+      if (modeSel.value === "goal") body.goal = mapRefValue(document.getElementById("mapGoal"));
+      else body.heading = document.getElementById("mapHeading").value;
+      mapState = await apiJson("/api/map/start", body);
+      renderMapState();
+    } catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+  };
+  document.getElementById("mapAnchorBtn").onclick = async () => {
+    try {
+      mapState = await apiJson("/api/map/anchor", {ref: mapRefValue(document.getElementById("mapAnchor"))});
+      renderMapState();
+    } catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+  };
+  document.getElementById("mapClear").onclick = async () => {
+    try { mapState = await apiJson("/api/map/clear", {}); renderMapState(); }
+    catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+  };
+  setInterval(pollMap, 500);
+}
+
+// ---------------------------------------------------------------------------
+// §14 Pre-calibrate tab: stationary checklist before a run.
+// ---------------------------------------------------------------------------
+const precalChecks = document.getElementById("precalChecks");
+const precalPill = document.getElementById("precalPill");
+const precalDetail = document.getElementById("precalDetail");
+const precalCaptureStatus = document.getElementById("precalCaptureStatus");
+
+function renderPrecal(st) {
+  if (!st || !st.frames) {
+    precalPill.className = "pill pill-idle"; precalPill.textContent = "chưa có frame";
+    precalChecks.innerHTML = ""; return;
+  }
+  precalPill.className = "pill " + (st.ready ? "pill-running" : "pill-error");
+  precalPill.textContent = st.ready ? "sẵn sàng chạy" : "chưa sẵn sàng";
+  precalDetail.textContent = `${st.frames} frame (trung vị)`;
+  precalChecks.innerHTML = st.checks.map(c => `<tr class="${c.ok ? "ok" : "bad"}">
+    <td class="mark">${c.ok ? "✓" : "✗"}</td>
+    <td>${escapeHtml(c.label)}</td>
+    <td>${escapeHtml(c.value)}</td>
+    <td class="hint">${escapeHtml(c.hint || "")}</td></tr>`).join("");
+}
+
+async function pollPrecal() {
+  if (activeTab() !== "precal") return;
+  try { renderPrecal(await apiJson("/api/precal")); }
+  catch (e) { precalPill.className = "pill pill-error"; precalPill.textContent = "lỗi: " + e.message; }
+}
+
+async function precalCapture(what) {
+  precalCaptureStatus.textContent = "đang lưu…";
+  try {
+    const j = await apiJson("/api/precal/capture", {what});
+    precalCaptureStatus.textContent = "đã apply: " + Object.entries(j.applied).map(([k, v]) => `${k}=${v}`).join(", ");
+    renderPrecal(j.precal);
+  } catch (e) { precalCaptureStatus.textContent = "lỗi: " + e.message; }
+}
+
+if (precalChecks) {
+  document.getElementById("precalCaptureVp").onclick = () => precalCapture(["vp_center_deg"]);
+  document.getElementById("precalCaptureRow").onclick = () => precalCapture(["vp_horizon_y"]);
+  setInterval(pollPrecal, 500);
+}
+
+// Soft gate for "bắt đầu route": warn when the pre-run checklist is not green.
+async function precalGateOk() {
+  try {
+    const st = await apiJson("/api/precal");
+    if (st.ready || !st.frames) return true;
+    const bad = st.checks.filter(c => !c.ok).map(c => "• " + c.label + ": " + c.value).join("\n");
+    return window.confirm("Pre-calibrate chưa đạt:\n" + bad + "\n\nVẫn chạy route?");
+  } catch (e) {
+    return true;  // endpoint missing (older runtime): do not block
+  }
+}
 
 })();

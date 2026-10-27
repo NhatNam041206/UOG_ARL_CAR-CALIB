@@ -38,6 +38,8 @@
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="script" role="tab">Script</button>
         <button class="tab" data-tab="tune" role="tab">Tune</button>
+        <button class="tab" data-tab="map" role="tab">Map</button>
+        <button class="tab" data-tab="precal" role="tab">Pre-calibrate</button>
       </div>
       <div class="tab-pane active" data-pane="script">
       <h2>Route script builder</h2>
@@ -122,6 +124,55 @@
         </div>
         <div id="tuneFields"></div>
       </div>
+      <div class="tab-pane" data-pane="map">
+        <h2>Campus map</h2>
+        <div class="row">
+          <span class="muted">xuất phát</span>
+          <select id="mapStart"></select>
+          <select id="mapMode">
+            <option value="heading">đi thẳng hướng</option>
+            <option value="goal">đi tới đích</option>
+          </select>
+          <select id="mapHeading">
+            <option value="east">east (→)</option>
+            <option value="west">west (←)</option>
+            <option value="north">north (↑)</option>
+            <option value="south">south (↓)</option>
+          </select>
+          <select id="mapGoal" style="display:none"></select>
+          <button id="mapSet" class="primary">đặt xuất phát</button>
+          <button id="mapClear">xoá</button>
+        </div>
+        <div class="row">
+          <span class="muted">xe đang ở mốc</span>
+          <select id="mapAnchor"></select>
+          <button id="mapAnchorBtn">sửa vị trí</button>
+          <span class="muted">click lên map để chọn ô (row,column)</span>
+        </div>
+        <div class="row">
+          <span id="mapPill" class="pill pill-idle">chưa đặt</span>
+          <span id="mapDetail" class="muted"></span>
+        </div>
+        <div class="map-wrap"><canvas id="mapCanvas"></canvas></div>
+      </div>
+      <div class="tab-pane" data-pane="precal">
+        <h2>Pre-calibrate</h2>
+        <p class="muted">Xe đứng yên, đặt thẳng theo vạch gạch, ở giữa 2 vạch dọc. Stream hiện đường giữa (vàng) và vị trí VP khi tab này mở.</p>
+        <div class="row">
+          <span id="precalPill" class="pill pill-idle">đang đo…</span>
+          <span id="precalDetail" class="muted"></span>
+        </div>
+        <table class="precal-table">
+          <thead><tr><th style="width:28px"></th><th>Kiểm tra</th><th>Đo được</th><th>Cần làm</th></tr></thead>
+          <tbody id="precalChecks"></tbody>
+        </table>
+        <div class="row" style="margin-top:12px">
+          <button id="precalCaptureVp" title="ghi vp_center_deg = góc VP hiện tại (khi xe đã thẳng theo vạch)">Lưu VP làm hướng thẳng</button>
+          <button id="precalCaptureRow" title="ghi vp_horizon_y = hàng VP hiện tại">Lưu VP row</button>
+          <span id="precalCaptureStatus" class="muted"></span>
+        </div>
+        <p class="muted">Các nút Lưu chỉ Apply vào Tune; bấm Save trong tab Tune để giữ sau khi khởi động lại.</p>
+      </div>
     </div>
   </div>
   <div class="panel" style="margin-top:20px">
@@ -189,6 +240,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20260916-download-all-zip"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261027-map-precal"></script>
 </body>
 </html>

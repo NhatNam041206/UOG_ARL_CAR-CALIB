@@ -412,3 +412,15 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 .event-item.ok { border-left-color: #48e07f; color: #48e07f; }
 .event-item.info { border-left-color: #60a5fa; color: #b0c4de; }
 .event-item.warn { border-left-color: #ffd166; color: #ffd166; }
+
+/* Map tab */
+.map-wrap { background: var(--bg-1); border: 1px solid var(--bg-3); border-radius: var(--r-md); padding: var(--sp-2); overflow: auto; }
+#mapCanvas { display: block; width: 100%; height: auto; cursor: crosshair; image-rendering: pixelated; }
+
+/* Pre-calibrate tab */
+.precal-table { width: 100%; border-collapse: collapse; }
+.precal-table td, .precal-table th { padding: 8px 10px; border-bottom: 1px solid var(--bg-3); text-align: left; vertical-align: top; }
+.precal-table .mark { font-size: 18px; font-weight: 700; }
+.precal-table tr.ok .mark { color: var(--ok); }
+.precal-table tr.bad .mark { color: var(--bad); }
+.precal-table tr.bad td.hint { color: var(--warn); }

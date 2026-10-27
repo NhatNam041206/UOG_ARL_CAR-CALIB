@@ -63,6 +63,8 @@ from runtime.dashboard_stream import DashboardStreamBroker
 from runtime.resource_limits import ScriptValidationError, StorageManager, validate_route_steps
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 from runtime.sasc_experiment_log import SascExperimentLogger
+from runtime.precalibrate import PreCalibrator
+from positioning.map_session import MapSession
 
 logger = logging.getLogger("pi5")
 
@@ -343,6 +345,10 @@ def main() -> None:
                 "manual_drive": tel.get("manual_drive"),
                 "manual_steer": tel.get("manual_steer"),
                 "manual_blocked_reason": tel.get("manual_blocked_reason"),
+                "cross_tile_count": tel.get("cross_tile_count"),
+                "map_row": tel.get("map_row"),
+                "map_column": tel.get("map_column"),
+                "map_status": tel.get("map_status"),
             },
             "rpi_status": {
                 "online": True,
@@ -436,6 +442,9 @@ def main() -> None:
         tune_file,
         idle_getter=_tune_idle_state,
     )
+    # Dashboard Map tab (tile count -> campus map cell) and Pre-calibrate tab.
+    map_session = MapSession.from_env()
+    precal = PreCalibrator()
     manual_override = ManualOverrideController.from_env(
         center_angle=90.0 + _env_float(("SERVO_CENTER_ANGLE",), -8.0),
         max_steer=_env_float(("MAX_STEERING_OFFSET",), 60.0),
@@ -489,6 +498,7 @@ def main() -> None:
             session.attach_meta("calib_tune", tune_manager.status())
             session.start(time.monotonic())
             calibrator.cross_counter.reset()
+            map_session.counter_reset()
         except OSError as exc:
             storage.mark_error(exc)
             logger.warning("Route recording disabled: %s", exc)
@@ -621,6 +631,13 @@ def main() -> None:
             resetter=tune_manager.reset,
         )
 
+        http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
+        http.add_route("GET", "/api/map/state", lambda _q: map_session.state())
+        http.add_route("POST", "/api/map/start", map_session.configure)
+        http.add_route("POST", "/api/map/anchor", map_session.mark_anchor)
+        http.add_route("POST", "/api/map/clear", map_session.clear)
+        http.add_route("GET", "/api/precal", precal.status)
+        http.add_route("POST", "/api/precal/capture", lambda body: precal.capture(tune_manager, body))
         http.start()
 
     def _finalize_route(status: str) -> None:
@@ -823,8 +840,18 @@ def main() -> None:
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
+            map_session.update(cross_result.tile_count)
+            precal.observe(
+                frame,
+                calibration.telemetry,
+                len(cross_result.lines),
+                calibrator._vision._vp_horizon_y,
+                now=now,
+            )
             if display_frame.shape == frame.shape:
                 display_frame = calibrator.cross_counter.draw(display_frame, cross_result)
+                if precal.overlay_active(now):
+                    display_frame = precal.draw(display_frame)
             safety_pause_active = object_status.object_pause_active
 
             manual_decision = manual_override.evaluate(
@@ -966,6 +993,7 @@ def main() -> None:
             tel.update(manual_decision.telemetry())
             tel.update(object_status.telemetry())
             tel.update(cross_result.telemetry())
+            tel.update(map_session.telemetry())
             if route_session is not None:
                 mono_now = time.monotonic()
                 try:
