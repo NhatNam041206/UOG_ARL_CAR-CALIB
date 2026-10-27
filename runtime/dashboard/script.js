@@ -13,7 +13,7 @@
 //  §10  Route summary modal
 //  §11  Presets CRUD
 //  §12  Tune panel (steering controller params)
-//  §13  Map tab (campus tile map, live cell)
+//  §13  Map tab (tile-map editor like ARL_AUTOCAR map survey + live cell)
 //  §14  Pre-calibrate tab (pre-run checklist)
 // =====================================================================
 (function () {
@@ -1539,27 +1539,12 @@ function renderCompare(summaries) {
 
 
 // ---------------------------------------------------------------------------
-// §13 Map tab: campus tile map, start/heading/goal, live cell from the Pi.
+// §13 Map tab. The editor follows the ARL_AUTOCAR map survey tool (sparse
+// grid with rulers, pan/zoom/fit, draw/erase, measure, anchors, start/goal,
+// route preview, save/load/delete); on top it shows the car's live cell.
 // ---------------------------------------------------------------------------
-const mapCanvas = document.getElementById("mapCanvas");
-const mapPill = document.getElementById("mapPill");
-const mapDetail = document.getElementById("mapDetail");
-let mapData = null;
-let mapState = null;
-let mapPicked = null;   // [row, col] clicked on the canvas
-const MAP_CELL_PX = 9;
-
 function escapeHtml(v) {
   return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-}
-
-// Grid extent from the runnable cells (map "bounds" may carry extra keys).
-function mapExtent() {
-  if (!mapData._extent) {
-    const rs = mapData.cells.map(c => c[0]), cs = mapData.cells.map(c => c[1]);
-    mapData._extent = {min_row: Math.min(...rs), max_row: Math.max(...rs), min_col: Math.min(...cs), max_col: Math.max(...cs)};
-  }
-  return mapData._extent;
 }
 
 function activeTab() {
@@ -1573,158 +1558,329 @@ async function apiJson(path, body) {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body),
   };
-  const r = await fetch(path + qp, opts);
+  const sep = path.includes("?") ? (qp ? "&" + qp.slice(1) : "") : qp;
+  const r = await fetch(path + sep, opts);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || String(r.status));
   return j;
 }
 
-function mapRefOptions(sel, withClicked) {
-  if (!sel || !mapData) return;
-  const keep = sel.value;
-  let html = withClicked ? `<option value="__picked">ô đã click${mapPicked ? ` (${mapPicked.join(",")})` : ""}</option>` : "";
-  for (const a of mapData.anchors) {
-    html += `<option value="${escapeHtml(a.id)}">${escapeHtml(a.id)}${a.label ? " · " + escapeHtml(a.label) : ""} (${a.cell.join(",")})</option>`;
-  }
-  sel.innerHTML = html;
-  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
-}
-
-function mapRefValue(sel) {
-  if (sel.value === "__picked") {
-    if (!mapPicked) throw new Error("click một ô trên map trước");
-    return mapPicked.join(",");
-  }
-  return sel.value;
-}
-
-function drawMap() {
-  if (!mapCanvas || !mapData) return;
-  const b = mapExtent();
-  const rows = b.max_row - b.min_row + 1, cols = b.max_col - b.min_col + 1;
-  const s = MAP_CELL_PX;
-  if (mapCanvas.width !== cols * s) { mapCanvas.width = cols * s; mapCanvas.height = rows * s; }
-  const ctx = mapCanvas.getContext("2d");
-  const px = (c) => [(c[1] - b.min_col) * s, (c[0] - b.min_row) * s];
-  ctx.fillStyle = "#0b0c0e";
-  ctx.fillRect(0, 0, mapCanvas.width, mapCanvas.height);
-  ctx.fillStyle = "#3a3f48";
-  for (const c of mapData.cells) { const [x, y] = px(c); ctx.fillRect(x, y, s - 1, s - 1); }
-  const st = mapState || {};
-  const setup = st.setup || {};
-  if (setup.path) {
-    ctx.fillStyle = "rgba(96,165,250,0.55)";
-    for (const c of setup.path) { const [x, y] = px(c); ctx.fillRect(x, y, s - 1, s - 1); }
-  }
-  if (st.trail && st.trail.length) {
-    ctx.fillStyle = "rgba(251,191,36,0.75)";
-    for (const c of st.trail) { const [x, y] = px(c); ctx.fillRect(x + 2, y + 2, s - 5, s - 5); }
-  }
-  ctx.font = "bold 11px sans-serif";
-  for (const a of mapData.anchors) {
-    const [x, y] = px(a.cell);
-    ctx.fillStyle = "#c084fc";
-    ctx.fillRect(x, y, s - 1, s - 1);
-    ctx.fillText(a.id, x + s + 1, y + s - 1);
-  }
-  const mark = (cell, color, r) => {
-    if (!cell) return;
-    const [x, y] = px(cell);
-    ctx.strokeStyle = color; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, r, 0, Math.PI * 2); ctx.stroke();
-  };
-  mark(setup.start, "#4ade80", s * 0.9);
-  mark(setup.goal, "#60a5fa", s * 0.9);
-  mark(mapPicked, "#ffffff", s * 0.7);
-  const pos = st.position;
-  if (pos) {
-    const [x, y] = px([pos.row, pos.column]);
-    ctx.fillStyle = pos.status === "OK" ? "#4ade80" : "#f87171";
-    ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, s * 0.75, 0, Math.PI * 2); ctx.fill();
-  }
-}
-
-function renderMapState() {
-  const st = mapState;
-  if (!st || !st.available) {
-    mapPill.className = "pill pill-error"; mapPill.textContent = "không có map";
-    mapDetail.textContent = ""; return;
-  }
-  if (!st.configured || !st.position) {
-    mapPill.className = "pill pill-idle"; mapPill.textContent = "chưa đặt xuất phát";
-    mapDetail.textContent = "";
-  } else {
-    const p = st.position;
-    mapPill.className = "pill " + (p.status === "OK" ? "pill-running" : "pill-error");
-    mapPill.textContent = p.status;
-    const setup = st.setup || {};
-    const route = setup.goal ? `→ đích (${setup.goal.join(",")}), ${setup.path.length - 1} ô` : `hướng ${setup.heading}`;
-    mapDetail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · ${route}`;
-  }
-  drawMap();
-}
-
-async function loadMap() {
-  try {
-    mapData = await apiJson("/api/map");
-    mapRefOptions(document.getElementById("mapStart"), true);
-    mapRefOptions(document.getElementById("mapGoal"), true);
-    mapRefOptions(document.getElementById("mapAnchor"), true);
-    const startSel = document.getElementById("mapStart");
-    if ([...startSel.options].some(o => o.value === "AAD-1")) startSel.value = "AAD-1";
-    const goalSel = document.getElementById("mapGoal");
-    if ([...goalSel.options].some(o => o.value === "gym-01")) goalSel.value = "gym-01";
-  } catch (e) {
-    mapData = null;
-    mapState = {available: false};
-    renderMapState();
-  }
-}
-
-async function pollMap() {
-  if (activeTab() !== "map") return;
-  if (!mapData) await loadMap();
-  if (!mapData) return;
-  try { mapState = await apiJson("/api/map/state"); } catch (e) { return; }
-  renderMapState();
-}
-
+const mapCanvas = document.getElementById("mapCanvas");
 if (mapCanvas) {
-  const modeSel = document.getElementById("mapMode");
-  modeSel.onchange = () => {
-    document.getElementById("mapHeading").style.display = modeSel.value === "heading" ? "" : "none";
-    document.getElementById("mapGoal").style.display = modeSel.value === "goal" ? "" : "none";
-  };
-  mapCanvas.addEventListener("click", ev => {
-    if (!mapData) return;
-    const rect = mapCanvas.getBoundingClientRect();
-    const scale = mapCanvas.width / rect.width;
-    const col = Math.floor((ev.clientX - rect.left) * scale / MAP_CELL_PX) + mapExtent().min_col;
-    const row = Math.floor((ev.clientY - rect.top) * scale / MAP_CELL_PX) + mapExtent().min_row;
-    mapPicked = [row, col];
-    ["mapStart", "mapGoal", "mapAnchor"].forEach(id => mapRefOptions(document.getElementById(id), true));
-    mapDetail.textContent = `đã chọn ô (${row},${col})`;
-    drawMap();
+  const q = id => document.getElementById(id);
+  const ctx = mapCanvas.getContext("2d");
+  const rulerTop = 30, rulerLeft = 52;
+  let cells = new Set(), anchors = new Map(), selectedAnchorId = null, tool = "draw", drag = false;
+  let start = null, goal = null, route = [], cellPx = 28, viewRow = -10, viewColumn = -15, panStart = null;
+  let measureStart = null, measureEnd = null, liveState = null, mapsLoaded = false;
+  const key = (r, c) => r + "," + c, parseKey = k => k.split(",").map(Number), value = id => Number(q(id).value);
+
+  function status(message, error = false) { q("mapStatus").textContent = message; q("mapStatus").className = error ? "map-status error" : "map-status"; }
+  function bounds() {
+    if (!cells.size) return null;
+    const pts = [...cells].map(parseKey), rs = pts.map(x => x[0]), cs = pts.map(x => x[1]);
+    return {minR: Math.min(...rs), maxR: Math.max(...rs), minC: Math.min(...cs), maxC: Math.max(...cs)};
+  }
+  function updateExtent() {
+    const b = bounds(), tile = value("mapTileSize");
+    if (!b || !Number.isFinite(tile) || tile <= 0) { q("mapExtent").textContent = "Map edges are defined by the outermost drawn path cells."; return; }
+    const width = (b.maxC - b.minC + 1) * tile, length = (b.maxR - b.minR + 1) * tile;
+    q("mapExtent").textContent = `Map extent: ${width.toFixed(2)} m wide × ${length.toFixed(2)} m long · rows ${b.minR}…${b.maxR}, columns ${b.minC}…${b.maxC} · ${cells.size} cells`;
+  }
+  const mapX = c => rulerLeft + (c - viewColumn) * cellPx;
+  const mapY = r => rulerTop + (r - viewRow) * cellPx;
+
+  function fitCanvasToBox() {
+    // Draw at the displayed size so rulers and labels stay readable.
+    const w = Math.round(mapCanvas.clientWidth);
+    if (!w) return;
+    const h = Math.max(360, Math.round(w * 0.76));
+    if (mapCanvas.width !== w || mapCanvas.height !== h) { mapCanvas.width = w; mapCanvas.height = h; }
+  }
+
+  function draw() {
+    fitCanvasToBox();
+    const W = mapCanvas.width, H = mapCanvas.height, plotW = W - rulerLeft, plotH = H - rulerTop;
+    ctx.fillStyle = "#d9e2e8"; ctx.fillRect(rulerLeft, rulerTop, plotW, plotH);
+    const firstC = Math.floor(viewColumn), lastC = Math.ceil(viewColumn + plotW / cellPx);
+    const firstR = Math.floor(viewRow), lastR = Math.ceil(viewRow + plotH / cellPx);
+    ctx.save(); ctx.beginPath(); ctx.rect(rulerLeft, rulerTop, plotW, plotH); ctx.clip();
+    ctx.fillStyle = "#3fa36c";
+    for (const k of cells) {
+      const [r, c] = parseKey(k), x = mapX(c), y = mapY(r);
+      if (x + cellPx < rulerLeft || y + cellPx < rulerTop || x > W || y > H) continue;
+      ctx.fillRect(x, y, cellPx, cellPx);
+    }
+    ctx.fillStyle = "#2f7de1";
+    for (const [r, c] of route) ctx.fillRect(mapX(c), mapY(r), cellPx, cellPx);
+    for (const [cell, color] of [[start, "#f0b429"], [goal, "#e65a50"]]) {
+      if (cell) { ctx.fillStyle = color; ctx.fillRect(mapX(cell[1]), mapY(cell[0]), cellPx, cellPx); }
+    }
+    // live car trail + position
+    const live = liveState && liveState.configured ? liveState : null;
+    if (live) {
+      ctx.fillStyle = "rgba(255,138,0,0.8)";
+      const inset = cellPx * 0.3;
+      for (const [r, c] of live.trail || []) ctx.fillRect(mapX(c) + inset, mapY(r) + inset, cellPx - 2 * inset, cellPx - 2 * inset);
+    }
+    for (const a of anchors.values()) {
+      const x = mapX(a.cell[1] + .5), y = mapY(a.cell[0] + .5);
+      ctx.fillStyle = a.id === selectedAnchorId ? "#ff54ce" : "#8f42d8";
+      ctx.beginPath(); ctx.arc(x, y, Math.max(5, cellPx * .24), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#351044"; ctx.font = `bold ${Math.max(10, cellPx * .32)}px system-ui`; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+      ctx.fillText(a.label || a.id, x + cellPx * .28, y - cellPx * .28);
+    }
+    if (live && live.position) {
+      const p = live.position, x = mapX(p.column + .5), y = mapY(p.row + .5);
+      ctx.fillStyle = p.status === "OK" ? "#16a34a" : "#dc2626"; ctx.strokeStyle = "#111"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(6, cellPx * .45), 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(30,45,55,.32)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let c = firstC; c <= lastC; c++) { const x = mapX(c); ctx.moveTo(x, rulerTop); ctx.lineTo(x, H); }
+    for (let r = firstR; r <= lastR; r++) { const y = mapY(r); ctx.moveTo(rulerLeft, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(190,80,80,.65)"; ctx.beginPath();
+    const x0 = mapX(0), y0 = mapY(0);
+    ctx.moveTo(x0, rulerTop); ctx.lineTo(x0, H); ctx.moveTo(rulerLeft, y0); ctx.lineTo(W, y0); ctx.stroke();
+    if (measureStart) {
+      const pts = [measureStart, measureEnd || measureStart];
+      ctx.strokeStyle = "#ff8a00"; ctx.fillStyle = "#ff8a00"; ctx.lineWidth = 3; ctx.setLineDash([7, 5]);
+      ctx.beginPath(); ctx.moveTo(mapX(pts[0][1] + .5), mapY(pts[0][0] + .5)); ctx.lineTo(mapX(pts[1][1] + .5), mapY(pts[1][0] + .5)); ctx.stroke();
+      ctx.setLineDash([]);
+      for (const p of pts) { ctx.beginPath(); ctx.arc(mapX(p[1] + .5), mapY(p[0] + .5), Math.max(5, cellPx * .18), 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.restore();
+    ctx.fillStyle = "#243540"; ctx.fillRect(0, 0, W, rulerTop); ctx.fillRect(0, 0, rulerLeft, H);
+    ctx.strokeStyle = "#748b9a"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(rulerLeft, 0); ctx.lineTo(rulerLeft, H); ctx.moveTo(0, rulerTop); ctx.lineTo(W, rulerTop); ctx.stroke();
+    ctx.fillStyle = "#d8e7ef"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `${Math.max(9, Math.min(12, cellPx * .36))}px system-ui`;
+    const every = cellPx < 16 ? Math.ceil(16 / cellPx) : 1;
+    for (let c = firstC; c <= lastC; c++) if (c % every === 0) ctx.fillText(String(c), mapX(c + .5), rulerTop / 2);
+    ctx.textAlign = "right";
+    for (let r = firstR; r <= lastR; r++) if (r % every === 0) ctx.fillText(String(r), rulerLeft - 7, mapY(r + .5));
+    ctx.textAlign = "center"; ctx.fillStyle = "#f4cb73"; ctx.font = "bold 10px system-ui";
+    ctx.fillText("COL", rulerLeft / 2, rulerTop / 2 - 6); ctx.fillText("ROW", rulerLeft / 2, rulerTop / 2 + 6);
+    updateExtent();
+  }
+
+  function point(ev) { const box = mapCanvas.getBoundingClientRect(); return {x: (ev.clientX - box.left) * mapCanvas.width / box.width, y: (ev.clientY - box.top) * mapCanvas.height / box.height}; }
+  function at(ev) { const p = point(ev); if (p.x < rulerLeft || p.y < rulerTop) return null; return [Math.floor(viewRow + (p.y - rulerTop) / cellPx), Math.floor(viewColumn + (p.x - rulerLeft) / cellPx)]; }
+  function updateMeasurement() {
+    if (!measureStart) { q("mapMeasurement").textContent = "Measurement: select the Measure tool, then click two tiles."; return; }
+    if (!measureEnd) { q("mapMeasurement").textContent = `Measurement start: row ${measureStart[0]}, column ${measureStart[1]}. Click the second tile.`; return; }
+    const dr = Math.abs(measureEnd[0] - measureStart[0]), dc = Math.abs(measureEnd[1] - measureStart[1]), moves = dr + dc, straight = Math.hypot(dr, dc), tile = value("mapTileSize");
+    const metres = Number.isFinite(tile) && tile > 0 ? ` / ${(moves * tile).toFixed(2)} m along grid · straight-line: ${straight.toFixed(2)} tiles / ${(straight * tile).toFixed(2)} m` : "";
+    q("mapMeasurement").textContent = `Rows: ${dr} · columns: ${dc} · grid distance: ${moves} tile moves (${moves + 1} tiles including both ends)${metres}`;
+  }
+  function apply(ev) {
+    if (tool === "pan") {
+      const p = point(ev);
+      if (!panStart) panStart = {x: p.x, y: p.y, row: viewRow, column: viewColumn};
+      viewColumn = panStart.column - (p.x - panStart.x) / cellPx; viewRow = panStart.row - (p.y - panStart.y) / cellPx;
+      draw(); return;
+    }
+    const cell = at(ev); if (!cell) { drag = false; return; }
+    const k = key(...cell);
+    if (tool === "draw") cells.add(k);
+    else if (tool === "erase") {
+      cells.delete(k);
+      for (const [id, a] of anchors) if (key(...a.cell) === k) anchors.delete(id);
+      refreshAnchors();
+      if (start && key(...start) === k) start = null;
+      if (goal && key(...goal) === k) goal = null;
+    } else if (tool === "measure") {
+      if (!measureStart || measureEnd) { measureStart = cell; measureEnd = null; } else measureEnd = cell;
+      updateMeasurement(); drag = false;
+    } else if (tool === "anchor") {
+      if (!cells.has(k)) { status("An anchor must be placed on a runnable path cell.", true); drag = false; return; }
+      q("mapAnchorRow").value = cell[0]; q("mapAnchorColumn").value = cell[1]; drag = false;
+    } else if (tool === "start") { cells.add(k); start = cell; drag = false; }
+    else if (tool === "goal") { cells.add(k); goal = cell; drag = false; }
+    if (tool !== "measure") route = [];
+    draw();
+  }
+  mapCanvas.onpointerdown = e => { drag = true; panStart = null; mapCanvas.setPointerCapture(e.pointerId); apply(e); };
+  mapCanvas.onpointermove = e => { if (drag && (tool === "draw" || tool === "erase" || tool === "pan")) apply(e); };
+  mapCanvas.onpointerup = () => { drag = false; panStart = null; };
+  mapCanvas.onpointercancel = mapCanvas.onpointerup;
+  document.querySelectorAll("[data-map-tool]").forEach(b => b.onclick = () => {
+    tool = b.dataset.mapTool;
+    document.querySelectorAll("[data-map-tool]").forEach(x => x.classList.toggle("active", x === b));
   });
-  document.getElementById("mapSet").onclick = async () => {
+  q("mapZoomIn").onclick = () => { cellPx = Math.min(80, cellPx * 1.25); draw(); };
+  q("mapZoomOut").onclick = () => { cellPx = Math.max(4, cellPx / 1.25); draw(); };
+  q("mapFit").onclick = () => fit();
+  q("mapClearMeasure").onclick = () => { measureStart = measureEnd = null; updateMeasurement(); draw(); };
+  q("mapClearDraft").onclick = () => {
+    if (cells.size && !confirm("Clear the whole draft map (not the saved file)?")) return;
+    cells.clear(); anchors.clear(); selectedAnchorId = null; refreshAnchors();
+    start = null; goal = null; route = []; measureStart = measureEnd = null; updateMeasurement(); draw();
+  };
+  q("mapTileSize").oninput = () => { updateExtent(); updateMeasurement(); };
+  q("mapFollow").onclick = () => {
+    const p = liveState && liveState.position;
+    if (!p) { status("Xe chưa có vị trí trên map.", true); return; }
+    viewColumn = p.column + .5 - (mapCanvas.width - rulerLeft) / cellPx / 2;
+    viewRow = p.row + .5 - (mapCanvas.height - rulerTop) / cellPx / 2;
+    draw();
+  };
+
+  window.addEventListener("resize", () => draw());
+
+  function fit() {
+    fitCanvasToBox();
+    const b = bounds();
+    if (!b) { viewRow = -10; viewColumn = -15; cellPx = 28; draw(); return; }
+    const rows = b.maxR - b.minR + 1, columns = b.maxC - b.minC + 1;
+    cellPx = Math.max(4, Math.min(60, (mapCanvas.width - rulerLeft) / (columns + 4), (mapCanvas.height - rulerTop) / (rows + 4)));
+    viewRow = b.minR - 2; viewColumn = b.minC - 2; draw();
+  }
+  function payload() {
+    return {
+      schema_version: 2, map_id: q("mapId").value, tile_size_m: value("mapTileSize"),
+      robot: {width_m: value("mapRobotWidth"), length_m: value("mapRobotLength"), safety_margin_m: value("mapMargin")},
+      runnable_cells: [...cells].map(parseKey), visual_anchors: [...anchors.values()],
+    };
+  }
+  function refreshAnchors() {
+    const select = q("mapAnchorSelect"), current = selectedAnchorId || "";
+    select.replaceChildren(new Option("New anchor", ""));
+    for (const a of [...anchors.values()].sort((x, y) => x.id.localeCompare(y.id))) select.add(new Option(a.label ? `${a.id} · ${a.label}` : a.id, a.id));
+    select.value = anchors.has(current) ? current : "";
+    if (!select.value) selectedAnchorId = null;
+    draw();
+  }
+  q("mapAnchorSelect").onchange = () => {
+    selectedAnchorId = q("mapAnchorSelect").value || null;
+    const a = selectedAnchorId ? anchors.get(selectedAnchorId) : null;
+    q("mapAnchorId").value = a ? a.id : ""; q("mapAnchorLabel").value = a ? (a.label || "") : "";
+    q("mapAnchorRow").value = a ? a.cell[0] : ""; q("mapAnchorColumn").value = a ? a.cell[1] : "";
+    draw();
+  };
+  q("mapSaveAnchor").onclick = () => {
+    const id = q("mapAnchorId").value.trim(), label = q("mapAnchorLabel").value.trim();
+    const rowText = q("mapAnchorRow").value, colText = q("mapAnchorColumn").value;
+    const row = Number(rowText), column = Number(colText);
+    if (!id || rowText === "" || colText === "" || !Number.isInteger(row) || !Number.isInteger(column)) { status("Enter an anchor ID and place it on the map.", true); return; }
+    if (!cells.has(key(row, column))) { status("Anchor position must be a runnable path cell.", true); return; }
+    if (anchors.has(id) && id !== selectedAnchorId) { status("Anchor IDs must be unique.", true); return; }
+    if (selectedAnchorId && selectedAnchorId !== id) anchors.delete(selectedAnchorId);
+    anchors.set(id, {id, label: label || null, cell: [row, column]});
+    selectedAnchorId = id; refreshAnchors(); status(`Anchor ${id} saved in the draft (press Validate and save).`);
+  };
+  q("mapDeleteAnchor").onclick = () => {
+    if (!selectedAnchorId) { status("Select an anchor to delete.", true); return; }
+    anchors.delete(selectedAnchorId); selectedAnchorId = null;
+    q("mapAnchorId").value = q("mapAnchorLabel").value = q("mapAnchorRow").value = q("mapAnchorColumn").value = "";
+    refreshAnchors(); status("Anchor deleted from the draft map.");
+  };
+  function selectedAnchor() {
+    const a = selectedAnchorId ? anchors.get(selectedAnchorId) : null;
+    if (!a) status("Select an anchor first.", true);
+    return a;
+  }
+  q("mapAnchorStart").onclick = () => { const a = selectedAnchor(); if (a) { start = a.cell.slice(); route = []; draw(); } };
+  q("mapAnchorGoal").onclick = () => { const a = selectedAnchor(); if (a) { goal = a.cell.slice(); route = []; draw(); } };
+  q("mapAnchorHere").onclick = async () => {
+    const a = selectedAnchor(); if (!a) return;
+    try { liveState = await apiJson("/api/map/anchor", {ref: a.cell}); renderLive(); status(`Vị trí xe đặt lại tại ${a.id}.`); }
+    catch (e) { status("lỗi: " + e.message, true); }
+  };
+
+  q("mapPlan").onclick = async () => {
+    if (!start || !goal) { status("Set a runnable start and goal first.", true); return; }
     try {
-      const body = {start: mapRefValue(document.getElementById("mapStart"))};
-      if (modeSel.value === "goal") body.goal = mapRefValue(document.getElementById("mapGoal"));
-      else body.heading = document.getElementById("mapHeading").value;
-      mapState = await apiJson("/api/map/start", body);
-      renderMapState();
-    } catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+      const body = await apiJson("/api/map/plan", {map: payload(), start, goal});
+      route = body.cells; draw();
+      status(`Route: ${body.distance_m.toFixed(2)} m, ${body.cells.length - 1} tiles, ${body.turn_count} turns.`);
+    } catch (e) { route = []; draw(); status(e.message, true); }
   };
-  document.getElementById("mapAnchorBtn").onclick = async () => {
+  q("mapSave").onclick = async () => {
     try {
-      mapState = await apiJson("/api/map/anchor", {ref: mapRefValue(document.getElementById("mapAnchor"))});
-      renderMapState();
-    } catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+      const body = await apiJson("/api/map/save", payload());
+      status(`Saved ${body.file}`); await refreshSaved(body.saved);
+    } catch (e) { status(e.message, true); }
   };
-  document.getElementById("mapClear").onclick = async () => {
-    try { mapState = await apiJson("/api/map/clear", {}); renderMapState(); }
-    catch (e) { mapDetail.textContent = "lỗi: " + e.message; }
+  q("mapDelete").onclick = async () => {
+    const id = q("mapSaved").value || q("mapId").value;
+    if (!id || !confirm(`Delete map ${id}?`)) return;
+    try { await apiJson("/api/map/delete", {id}); status(`Deleted map ${id}.`); await refreshSaved(); }
+    catch (e) { status(e.message, true); }
   };
+  async function refreshSaved(selected) {
+    try {
+      const body = await apiJson("/api/map/maps");
+      const sel = q("mapSaved"), keep = selected || sel.value;
+      sel.innerHTML = '<option value="">—</option>' + body.maps.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.id)}${m.source === "bundled" ? " (repo)" : ""}</option>`).join("");
+      if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+      return body.maps;
+    } catch (e) { status(e.message, true); return []; }
+  }
+  async function loadMap(id) {
+    try {
+      const data = await apiJson("/api/map/load?id=" + encodeURIComponent(id));
+      q("mapId").value = data.map_id; q("mapTileSize").value = data.tile_size_m;
+      q("mapRobotWidth").value = data.robot.width_m; q("mapRobotLength").value = data.robot.length_m; q("mapMargin").value = data.robot.safety_margin_m;
+      cells = new Set(data.runnable_cells.map(x => key(...x)));
+      anchors = new Map((data.visual_anchors || []).map(a => [a.id, a]));
+      selectedAnchorId = null; refreshAnchors(); start = null; goal = null; route = [];
+      measureStart = measureEnd = null; updateMeasurement(); fit(); status(`Map ${data.map_id} loaded.`);
+    } catch (e) { status(e.message, true); }
+  }
+  q("mapLoad").onclick = () => { if (q("mapSaved").value) loadMap(q("mapSaved").value); };
+
+  // --- live car position -------------------------------------------------
+  const modeSel = q("mapMode");
+  modeSel.onchange = () => { q("mapHeading").style.display = modeSel.value === "heading" ? "" : "none"; };
+  q("mapUse").onclick = async () => {
+    if (!start) { status("Set start trước (Set start, hoặc chọn anchor rồi → start).", true); return; }
+    const body = {map: payload(), start};
+    if (modeSel.value === "goal") {
+      if (!goal) { status("Set goal trước, hoặc chọn 'đi thẳng theo hướng'.", true); return; }
+      body.goal = goal;
+    } else body.heading = q("mapHeading").value;
+    try {
+      liveState = await apiJson("/api/map/start", body);
+      if (liveState.setup && liveState.setup.path) route = liveState.setup.path;
+      renderLive(); status("Xe đang được theo dõi trên map này.");
+    } catch (e) { status("lỗi: " + e.message, true); }
+  };
+  q("mapLiveClear").onclick = async () => {
+    try { liveState = await apiJson("/api/map/clear", {}); renderLive(); } catch (e) { status("lỗi: " + e.message, true); }
+  };
+  function renderLive() {
+    const st = liveState, pill = q("mapPill"), detail = q("mapDetail");
+    if (!st || !st.configured || !st.position) {
+      pill.className = "pill pill-idle"; pill.textContent = "chưa theo dõi"; detail.textContent = "";
+    } else {
+      const p = st.position, setup = st.setup || {};
+      pill.className = "pill " + (p.status === "OK" ? "pill-running" : "pill-error"); pill.textContent = p.status;
+      const how = setup.goal ? `route tới (${setup.goal.join(",")}), ${setup.path.length - 1} ô` : `hướng ${setup.heading}`;
+      detail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · ${how} · map ${setup.map_id || "?"}`;
+    }
+    draw();
+  }
+
+  async function pollMap() {
+    if (activeTab() !== "map") return;
+    if (!mapsLoaded) {
+      mapsLoaded = true;
+      const maps = await refreshSaved();
+      try { liveState = await apiJson("/api/map/state"); } catch (e) { liveState = null; }
+      const want = (liveState && liveState.setup && liveState.setup.map_id) || "campus-path";
+      const pick = maps.some(m => m.id === want) ? want : (maps[0] && maps[0].id);
+      if (pick) { q("mapSaved").value = pick; await loadMap(pick); }
+      if (liveState && liveState.setup) {
+        start = liveState.setup.start || null; goal = liveState.setup.goal || null; route = liveState.setup.path || [];
+      }
+      renderLive();
+      return;
+    }
+    try { liveState = await apiJson("/api/map/state"); } catch (e) { return; }
+    renderLive();
+  }
+  draw();
   setInterval(pollMap, 500);
 }
 

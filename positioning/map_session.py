@@ -1,9 +1,10 @@
 """Live map position for the dashboard Map tab.
 
-Wraps TilePositionTracker for the Pi5 runtime: the dashboard sets a start
-cell plus a heading or goal, the main loop feeds the cross-line tile count
-every frame, and the current cell goes to /api/status and the route CSV.
-Thread-safe because the HTTP server calls in from its own threads.
+Wraps TilePositionTracker for the Pi5 runtime: the dashboard sends the map
+open in its editor plus a start cell and a heading or goal, the main loop
+feeds the cross-line tile count every frame, and the current cell goes to
+/api/status and the route CSV. Thread-safe because the HTTP server calls in
+from its own threads. Map files and route preview live in map_store.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from positioning.map_store import validate_map_data
 from positioning.tile_position import HEADINGS, TileMap, TilePositionTracker
 
 logger = logging.getLogger(__name__)
@@ -59,12 +61,20 @@ class MapSession:
             "headings": sorted(HEADINGS),
         }
 
+    @staticmethod
+    def _resolve(tile_map: TileMap, ref: Any) -> tuple[int, int]:
+        """[row, col], an anchor id or a "row,col" string."""
+        if isinstance(ref, (list, tuple)) and len(ref) == 2:
+            return int(ref[0]), int(ref[1])
+        return tile_map.resolve_cell(str(ref or "").strip())
+
     def configure(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Body: {"start": anchor id or "r,c", "heading": ...} or {..., "goal": ...}."""
-        if self._map is None:
+        """Body: {"map"?: map data, "start": cell, "heading": ...} or {..., "goal": cell}."""
+        tile_map = TileMap.from_dict(validate_map_data(body["map"])) if body.get("map") else self._map
+        if tile_map is None:
             raise ValueError("no tile map loaded")
-        start = self._map.resolve_cell(str(body.get("start", "")).strip())
-        if not self._map.is_runnable(start):
+        start = self._resolve(tile_map, body.get("start"))
+        if not tile_map.is_runnable(start):
             raise ValueError(f"start cell {start} is not runnable")
         heading = body.get("heading") or None
         goal_ref = body.get("goal") or None
@@ -72,12 +82,14 @@ class MapSession:
             raise ValueError("give a heading or a goal")
         path = None
         if goal_ref is not None:
-            path = self._map.shortest_path(start, self._map.resolve_cell(str(goal_ref).strip()))
-        tracker = TilePositionTracker(self._map, start, heading=heading, path=path)
+            path = tile_map.shortest_path(start, self._resolve(tile_map, goal_ref))
+        tracker = TilePositionTracker(tile_map, start, heading=heading, path=path)
         with self._lock:
+            self._map = tile_map
             self._tracker = tracker
             self._base_count = self._last_count
             self._setup = {
+                "map_id": tile_map.map_id,
                 "start": list(start),
                 "heading": heading,
                 "goal": None if path is None else list(path[-1]),
@@ -91,7 +103,7 @@ class MapSession:
         """The car is at this anchor (or "r,c") now."""
         if self._map is None:
             raise ValueError("no tile map loaded")
-        cell = self._map.resolve_cell(str(body.get("ref", "")).strip())
+        cell = self._resolve(self._map, body.get("ref"))
         with self._lock:
             if self._tracker is None:
                 raise ValueError("set a start first")

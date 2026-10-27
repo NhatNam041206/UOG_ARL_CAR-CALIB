@@ -106,14 +106,28 @@ First validation run: AAD-1 → gym-01 is 16 tiles straight east on the map.
 
 ## Dashboard: Map and Pre-calibrate tabs
 
-**Map** (`positioning/map_session.py`, endpoints `/api/map`, `/api/map/state`,
-`/api/map/start`, `/api/map/anchor`, `/api/map/clear`). Pick a start (anchor
-or a clicked cell) plus a heading or a goal, then press "đặt xuất phát". The
-Pi follows the live tile count and logs `map_row`, `map_column`, `map_status`
-(`UNSET` / `OK` / `CONTRADICTORY` / `PAST_END`) in the route CSV and
-`/api/status`. "sửa vị trí" says the car is at that anchor or cell now. The
-position survives the counter reset at route start. `TILE_MAP_PATH` picks
-another map. The map has no motion authority.
+**Map** follows the ARL_AUTOCAR map survey tool (`autobot.app.map_survey`,
+`docs/map-survey.md` there): a sparse grid with row/column rulers, pan, zoom,
+fit, Draw path / Erase, Measure (tile moves, inclusive tiles, metres), visual
+anchor create/update/delete, Set start / Set goal and Plan route (shortest
+four-direction route with distance and turn count). Validation matches the
+survey tool (`positioning/map_store.py`): lowercase `map_id`, positive tile
+size, at least one cell, unique anchors on runnable cells.
+
+- Maps: repo maps in `routes/tile_maps/` are read-only ("(repo)"). Maps saved
+  from the dashboard go to `TILE_MAP_DIR` (default
+  `$ROUTE_LOG_ROOT/tile_maps`, outside the release folder) as JSON, which is
+  also valid YAML, so ARL_AUTOCAR loads them. No NPZ artifact is written.
+- Live position: "Dùng cho xe" sends the map open in the editor plus start and
+  goal (or start and a heading) to the Pi. The Pi follows the tile count and
+  logs `map_row`, `map_column`, `map_status` (`UNSET` / `OK` /
+  `CONTRADICTORY` / `PAST_END`) in the route CSV and `/api/status`. The car's
+  cell and trail are drawn on the editor; "Về xe" centres on it. "Xe đang ở
+  mốc này" resets the position to the selected anchor. The position survives
+  the counter reset at route start. The map has no motion authority.
+- Endpoints: `/api/map/maps`, `/api/map/load?id=`, `/api/map/save`,
+  `/api/map/delete`, `/api/map/plan`, `/api/map/start`, `/api/map/anchor`,
+  `/api/map/clear`, `/api/map/state`.
 
 **Pre-calibrate** (`runtime/precalibrate.py`, `/api/precal`,
 `/api/precal/capture`). With the car still and aligned with the tiles, the

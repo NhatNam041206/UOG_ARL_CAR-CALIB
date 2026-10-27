@@ -180,3 +180,68 @@ def test_extra_routes_dispatch_and_map_errors():
         server.stop()
         if server._server is not None:
             server._server.server_close()
+
+
+# --- map store (ARL_AUTOCAR survey-tool rules) ------------------------------
+from positioning.map_store import MapStore, plan_route, validate_map_data  # noqa: E402
+
+
+def _small_map(**kw):
+    data = {
+        "schema_version": 2,
+        "map_id": "small",
+        "tile_size_m": 0.6,
+        "robot": {"width_m": 0.3, "length_m": 0.35, "safety_margin_m": 0.05},
+        "runnable_cells": [[0, 0], [0, 1], [0, 2], [1, 2], [2, 2]],
+        "visual_anchors": [{"id": "door", "label": "Door", "cell": [2, 2]}],
+    }
+    data.update(kw)
+    return data
+
+
+def test_validate_map_rules():
+    norm = validate_map_data(_small_map())
+    assert norm["bounds"]["physical_width_m"] == pytest.approx(1.8)
+    for bad in (
+        _small_map(map_id="Bad Name"),
+        _small_map(tile_size_m=0),
+        _small_map(runnable_cells=[]),
+        _small_map(visual_anchors=[{"id": "x", "cell": [5, 5]}]),
+        _small_map(visual_anchors=[{"id": "x", "cell": [0, 0]}, {"id": "x", "cell": [0, 1]}]),
+    ):
+        with pytest.raises(ValueError):
+            validate_map_data(bad)
+
+
+def test_plan_route_distance_and_turns():
+    out = plan_route(_small_map(), [0, 0], [2, 2])
+    assert out["cells"][-1] == [2, 2]
+    assert out["distance_m"] == pytest.approx(2.4)
+    assert out["turn_count"] == 1
+    with pytest.raises(ValueError, match="goal_not_runnable"):
+        plan_route(_small_map(), [0, 0], [9, 9])
+
+
+def test_map_store_save_load_delete(tmp_path):
+    store = MapStore(saved_dir=tmp_path)
+    ids = {m["id"]: m["source"] for m in store.list_maps()}
+    assert ids["campus-path"] == "bundled"
+    store.save(_small_map())
+    assert {"id": "small", "source": "saved"} in store.list_maps()
+    loaded = store.load("small")
+    assert loaded["visual_anchors"][0]["id"] == "door"
+    with pytest.raises(ValueError):
+        store.delete("campus-path")  # bundled maps are read-only
+    store.delete("small")
+    with pytest.raises(ValueError):
+        store.load("small")
+
+
+def test_map_session_uses_editor_map():
+    session = MapSession(None)
+    state = session.configure({"map": _small_map(), "start": [0, 0], "goal": [2, 2]})
+    assert state["setup"]["map_id"] == "small"
+    session.update(3)
+    assert session.telemetry() == {"map_row": 1, "map_column": 2, "map_status": "OK"}
+    session.mark_anchor({"ref": [2, 2]})
+    assert session.telemetry()["map_row"] == 2

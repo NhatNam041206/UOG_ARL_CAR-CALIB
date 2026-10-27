@@ -125,35 +125,79 @@
         <div id="tuneFields"></div>
       </div>
       <div class="tab-pane" data-pane="map">
-        <h2>Campus map</h2>
+        <h2>Tile map</h2>
+        <div class="map-toolbar">
+          <button data-map-tool="draw" class="active">Draw path</button>
+          <button data-map-tool="erase">Erase</button>
+          <button data-map-tool="pan">Pan</button>
+          <button data-map-tool="measure">Measure</button>
+          <button id="mapClearMeasure">Clear measurement</button>
+          <button data-map-tool="anchor">Place anchor</button>
+          <button data-map-tool="start">Set start</button>
+          <button data-map-tool="goal">Set goal</button>
+          <button id="mapPlan">Plan route</button>
+          <button id="mapZoomIn">Zoom +</button>
+          <button id="mapZoomOut">Zoom −</button>
+          <button id="mapFit">Fit map</button>
+          <button id="mapFollow">Về xe</button>
+          <button id="mapClearDraft" class="danger">Clear</button>
+        </div>
+        <div id="mapMeasurement" class="map-note map-measure">Measurement: select the Measure tool, then click two tiles.</div>
+        <canvas id="mapCanvas" width="1000" height="760" aria-label="Map grid with row and column rulers"></canvas>
+        <p id="mapStatus" class="map-status"></p>
+
+        <h3>Xe trên map</h3>
         <div class="row">
-          <span class="muted">xuất phát</span>
-          <select id="mapStart"></select>
           <select id="mapMode">
-            <option value="heading">đi thẳng hướng</option>
-            <option value="goal">đi tới đích</option>
+            <option value="goal">đi theo route start → goal</option>
+            <option value="heading">đi thẳng từ start theo hướng</option>
           </select>
-          <select id="mapHeading">
+          <select id="mapHeading" style="display:none">
             <option value="east">east (→)</option>
             <option value="west">west (←)</option>
             <option value="north">north (↑)</option>
             <option value="south">south (↓)</option>
           </select>
-          <select id="mapGoal" style="display:none"></select>
-          <button id="mapSet" class="primary">đặt xuất phát</button>
-          <button id="mapClear">xoá</button>
-        </div>
-        <div class="row">
-          <span class="muted">xe đang ở mốc</span>
-          <select id="mapAnchor"></select>
-          <button id="mapAnchorBtn">sửa vị trí</button>
-          <span class="muted">click lên map để chọn ô (row,column)</span>
+          <button id="mapUse" class="primary" title="gửi map đang mở + start/goal cho xe">Dùng cho xe</button>
+          <button id="mapLiveClear">Bỏ theo dõi</button>
         </div>
         <div class="row">
           <span id="mapPill" class="pill pill-idle">chưa đặt</span>
           <span id="mapDetail" class="muted"></span>
         </div>
-        <div class="map-wrap"><canvas id="mapCanvas"></canvas></div>
+
+        <h3>Map</h3>
+        <div class="map-form">
+          <label>Map name<input id="mapId" value="campus-path" pattern="[a-z0-9_-]+"></label>
+          <label>Tile side (metres)<input id="mapTileSize" type="number" min="0.01" step="0.001" placeholder="e.g. 0.60"></label>
+          <label>Robot width (m)<input id="mapRobotWidth" type="number" value="0.30" step="0.01"></label>
+          <label>Robot length (m)<input id="mapRobotLength" type="number" value="0.35" step="0.01"></label>
+          <label>Safety margin (m)<input id="mapMargin" type="number" value="0.05" min="0" step="0.01"></label>
+        </div>
+        <p class="map-note" id="mapExtent">Map edges are defined by the outermost drawn path cells.</p>
+        <div class="row">
+          <select id="mapSaved"><option value="">—</option></select>
+          <button id="mapLoad">Load</button>
+          <button id="mapSave" class="primary">Validate and save</button>
+          <button id="mapDelete" class="danger">Delete map</button>
+        </div>
+
+        <h3>Visual anchors</h3>
+        <div class="map-form">
+          <label>Anchor<select id="mapAnchorSelect"><option value="">New anchor</option></select></label>
+          <label>Anchor ID<input id="mapAnchorId" placeholder="e.g. room-a101"></label>
+          <label>Label<input id="mapAnchorLabel" placeholder="optional, e.g. A101"></label>
+          <label>Row<input id="mapAnchorRow" readonly></label>
+          <label>Column<input id="mapAnchorColumn" readonly></label>
+        </div>
+        <div class="row">
+          <button id="mapSaveAnchor">Create / update anchor</button>
+          <button id="mapDeleteAnchor">Delete anchor</button>
+          <button id="mapAnchorStart">→ start</button>
+          <button id="mapAnchorGoal">→ goal</button>
+          <button id="mapAnchorHere" title="xe đang đứng ở mốc này: sửa vị trí">Xe đang ở mốc này</button>
+        </div>
+        <p class="muted">Ô chưa vẽ là blocked. Map lưu từ dashboard nằm trên Pi (TILE_MAP_DIR), dạng JSON (cũng là YAML hợp lệ, dùng được trong ARL_AUTOCAR).</p>
       </div>
       <div class="tab-pane" data-pane="precal">
         <h2>Pre-calibrate</h2>
@@ -240,6 +284,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-map-precal"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261027-map-survey"></script>
 </body>
 </html>

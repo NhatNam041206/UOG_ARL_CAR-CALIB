@@ -65,6 +65,7 @@ from unified_calibration_components import UnifiedCalibrator, CalibrationProcess
 from runtime.sasc_experiment_log import SascExperimentLogger
 from runtime.precalibrate import PreCalibrator
 from positioning.map_session import MapSession
+from positioning.map_store import MapStore, plan_route
 
 logger = logging.getLogger("pi5")
 
@@ -444,6 +445,7 @@ def main() -> None:
     )
     # Dashboard Map tab (tile count -> campus map cell) and Pre-calibrate tab.
     map_session = MapSession.from_env()
+    map_store = MapStore()
     precal = PreCalibrator()
     manual_override = ManualOverrideController.from_env(
         center_angle=90.0 + _env_float(("SERVO_CENTER_ANGLE",), -8.0),
@@ -632,6 +634,14 @@ def main() -> None:
         )
 
         http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
+        http.add_route("GET", "/api/map/maps", lambda _q: {"maps": map_store.list_maps()})
+        http.add_route("GET", "/api/map/load", lambda q: map_store.load((q.get("id") or [""])[0]))
+        http.add_route("POST", "/api/map/save", map_store.save)
+        http.add_route("POST", "/api/map/delete", lambda body: map_store.delete(body.get("id", "")))
+        http.add_route(
+            "POST", "/api/map/plan",
+            lambda body: plan_route(body.get("map"), body.get("start"), body.get("goal")),
+        )
         http.add_route("GET", "/api/map/state", lambda _q: map_session.state())
         http.add_route("POST", "/api/map/start", map_session.configure)
         http.add_route("POST", "/api/map/anchor", map_session.mark_anchor)
