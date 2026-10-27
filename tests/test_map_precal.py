@@ -256,3 +256,18 @@ def test_map_session_uses_editor_map():
     assert session.telemetry() == {"map_row": 1, "map_column": 2, "map_status": "OK"}
     session.mark_anchor({"ref": [2, 2]})
     assert session.telemetry()["map_row"] == 2
+
+
+def test_anchor_off_route_replans_to_goal():
+    session = _session()
+    session.configure({"start": "AAD-1", "goal": "gym-01"})
+    session.update(2)
+    off_route = [-30, 10]  # a runnable cell next to the AAD-1 -> gym-01 row
+    assert session._map.is_runnable(tuple(off_route))
+    state = session.mark_anchor({"ref": off_route})
+    assert state["position"]["row"] == -30 and state["position"]["column"] == 10
+    assert state["setup"]["path"][0] == off_route and state["setup"]["path"][-1] == [-31, 21]
+    session.update(3)
+    assert session.telemetry()["map_status"] == "OK"
+    with pytest.raises(ValueError):
+        session.mark_anchor({"ref": [100, 100]})

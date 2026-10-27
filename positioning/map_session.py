@@ -148,10 +148,30 @@ class MapSession:
         """The car is at this anchor (or "r,c") now."""
         if self._map is None:
             raise ValueError("no tile map loaded")
-        cell = self._resolve(self._map, body.get("ref"))
+        tile_map = self._map
+        cell = self._resolve(tile_map, body.get("ref"))
+        if not tile_map.is_runnable(cell):
+            raise ValueError(f"anchor cell {cell} is not runnable")
         with self._lock:
             if self._tracker is None:
-                raise ValueError("set a start first")
+                raise ValueError("save a start position in the Map tab first")
+            tracker = self._tracker
+            path = tracker.path
+        if path is not None and cell not in path:
+            # Off the planned route: re-plan from the anchor to the goal and
+            # count from here (the saved start is unchanged).
+            new_path = tile_map.shortest_path(cell, path[-1])
+            new_tracker = TilePositionTracker(tile_map, cell, path=new_path)
+            panel = MapPanel(tile_map, [list(c) for c in new_path])
+            with self._lock:
+                self._tracker = new_tracker
+                self._base_count = self._last_count
+                self._setup["path"] = [list(c) for c in new_path]
+                self._panel = panel
+                self._position = new_tracker.update(0).as_dict()
+                self._trail.append(list(cell))
+            return self.state()
+        with self._lock:
             count = self._last_count - self._base_count
             self._tracker.apply_anchor(cell, count)
             self._position = self._tracker.update(count).as_dict()
