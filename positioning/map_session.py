@@ -25,7 +25,7 @@ from positioning.tile_position import HEADINGS, TileMap, TilePositionTracker
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "campus-path.json"
+DEFAULT_MAP = Path(__file__).resolve().parents[1] / "maps" / "tile_maps" / "campus-path.json"
 
 
 class MapSession:

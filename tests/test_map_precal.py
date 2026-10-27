@@ -17,7 +17,7 @@ from runtime.calib_tuning import TuneBlockedError
 from runtime.pi5_http import Pi5HttpServer
 from runtime.precalibrate import PreCalibrator
 
-CAMPUS_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "campus-path.json"
+CAMPUS_MAP = Path(__file__).resolve().parents[1] / "maps" / "tile_maps" / "campus-path.json"
 
 
 def _session() -> MapSession:

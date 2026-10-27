@@ -33,7 +33,7 @@ from positioning.tile_position import TileMap, TilePositionTracker  # noqa: E402
 from scripts.replay_cross_lines import _find_video  # noqa: E402
 from vision.cross_line_counter import CrossLineConfig, CrossLineCounter  # noqa: E402
 
-DEFAULT_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "campus-path.json"
+DEFAULT_MAP = Path(__file__).resolve().parents[1] / "maps" / "tile_maps" / "campus-path.json"
 
 
 def draw_map(tile_map: TileMap, path, visited, bad, scale: int = 10) -> np.ndarray:

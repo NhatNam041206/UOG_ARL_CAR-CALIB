@@ -7,7 +7,8 @@ same route preview (shortest four-direction route, distance and turn count).
 
 Maps are saved as JSON, which is also valid YAML, so a saved file loads in
 ARL_AUTOCAR unchanged (rename it to ``.yaml`` for its survey tool). Bundled
-maps in the repo (``routes/tile_maps``) are read-only; maps saved from the
+maps in the repo (``maps/tile_maps``; not under ``routes/``, which the Pi
+deploy archive skips) are read-only; maps saved from the
 dashboard go to a writable directory outside the release folder so they
 survive redeploys.
 """
@@ -24,7 +25,7 @@ from typing import Any
 from positioning.tile_position import TileMap
 
 MAP_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-BUNDLED_DIR = Path(__file__).resolve().parents[1] / "routes" / "tile_maps"
+BUNDLED_DIR = Path(__file__).resolve().parents[1] / "maps" / "tile_maps"
 DEFAULT_ROBOT = {"width_m": 0.30, "length_m": 0.35, "safety_margin_m": 0.05}
 
 

@@ -8,7 +8,7 @@ import pytest
 
 from positioning.tile_position import TileMap, TilePositionTracker
 
-CAMPUS_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "campus-path.json"
+CAMPUS_MAP = Path(__file__).resolve().parents[1] / "maps" / "tile_maps" / "campus-path.json"
 
 
 def _l_map() -> TileMap:

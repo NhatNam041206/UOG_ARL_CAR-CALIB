@@ -1872,6 +1872,7 @@ if (mapCanvas) {
       const want = (liveState && liveState.setup && liveState.setup.map_id) || "campus-path";
       const pick = maps.some(m => m.id === want) ? want : (maps[0] && maps[0].id);
       if (pick) { q("mapSaved").value = pick; await loadMap(pick); }
+      else status("Không có map nào trên Pi (maps/tile_maps hoặc TILE_MAP_DIR). Vẽ map mới hoặc deploy lại.", true);
       if (liveState && liveState.setup) {
         start = liveState.setup.start || null; goal = liveState.setup.goal || null; route = liveState.setup.path || [];
       }

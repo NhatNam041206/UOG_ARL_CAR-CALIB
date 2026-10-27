@@ -79,7 +79,7 @@ Writes `cross_lines.csv`, `cross_summary.json` and, with `--video`,
 ## Placing the count on the campus map
 
 `positioning/tile_position.py` maps the count onto the campus tile map
-(`routes/tile_maps/campus-path.json`, a JSON copy of
+(`maps/tile_maps/campus-path.json`, a JSON copy of
 `NhatNam041206/ARL_AUTOCAR` `routes/tile_maps/campus-path.yaml`; a `.yaml` map
 also loads when PyYAML is installed). Cells are `(row, column)`; row grows
 south (down on the map image), column grows east.
@@ -114,7 +114,8 @@ four-direction route with distance and turn count). Validation matches the
 survey tool (`positioning/map_store.py`): lowercase `map_id`, positive tile
 size, at least one cell, unique anchors on runnable cells.
 
-- Maps: repo maps in `routes/tile_maps/` are read-only ("(repo)"). Maps saved
+- Maps: repo maps in `maps/tile_maps/` are read-only ("(repo)"; not under
+  `routes/`, which `deploy_pi5_remote.sh` leaves out of the archive). Maps saved
   from the dashboard go to `TILE_MAP_DIR` (default
   `$ROUTE_LOG_ROOT/tile_maps`, outside the release folder) as JSON, which is
   also valid YAML, so ARL_AUTOCAR loads them. No NPZ artifact is written.
