@@ -91,7 +91,7 @@ const scriptModeSel = document.getElementById("scriptMode");
 const durationUnit = document.getElementById("durationUnit");
 const TILE_ACTIONS = new Set(["forward", "straight"]);
 function stepUsesTiles(action) {
-  return scriptModeSel && scriptModeSel.value === "tiles" && TILE_ACTIONS.has(action);
+  return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
 }
 function stepAmount(s) {
   return s.tiles != null ? `${s.tiles} ô` : `${Number(s.duration_s).toFixed(1)} s`;
@@ -110,7 +110,7 @@ async function loadStepsFromMap() {
     resetEditor();
     render();
     const tiles = j.steps.reduce((n, s) => n + (s.tiles || 0), 0);
-    hint.textContent = `từ map ${j.map_id}: ${j.path.length - 1} ô, ${j.steps.filter(s => s.action.startsWith("turn")).length} lần rẽ (${tiles} ô forward)`;
+    hint.textContent = `A* từ map ${j.map_id}: ${j.path.length - 1} ô, ${j.steps.filter(s => s.action.startsWith("turn")).length} lần rẽ (${tiles} ô forward). Sửa được từng action trước khi chạy.`;
   } catch (e) {
     hint.textContent = "lỗi: " + e.message;
   }
@@ -118,8 +118,9 @@ async function loadStepsFromMap() {
 function applyScriptMode() {
   const mode = scriptModeSel.value;
   const hint = document.getElementById("scriptModeHint");
-  document.getElementById("stepsFromMap").style.display = mode === "tiles" ? "" : "none";
-  document.getElementById("stepEditorRow").style.display = mode === "astar" ? "none" : "";
+  const fromMap = document.getElementById("stepsFromMap");
+  fromMap.style.display = mode === "time" ? "none" : "";
+  fromMap.textContent = mode === "astar" ? "tính lại A*" : "tạo từ map";
   hint.textContent = mode === "time" ? "" : (mode === "tiles"
     ? "forward/straight đi theo số ô (bộ đếm vạch ngang), rẽ vẫn theo giây"
     : "");
@@ -160,7 +161,7 @@ function render() {
       else if (i + 1 === currentRunningStep) tr.classList.add("active");
       else tr.classList.add("pending");
     }
-    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${stepAmount(s)}</td><td>${isRunning || (scriptModeSel && scriptModeSel.value === "astar") ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
+    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${stepAmount(s)}</td><td>${isRunning ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);

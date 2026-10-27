@@ -560,9 +560,11 @@ def main() -> None:
             script_mode = str(payload.get("mode") or "time")
             map_path = None
             if script_mode == "astar":
-                # A* mode: drive the planned route from the saved map start.
+                # A* mode: the dashboard loads the steps planned from the saved
+                # map start (/api/map/saved_steps); the operator may edit them,
+                # so run what was sent and fall back to the plan if empty.
                 plan = map_session.saved_route_steps()
-                steps = validate_route_steps(plan["steps"])
+                steps = validate_route_steps(payload.get("steps") or plan["steps"])
                 map_path = plan["path"]
             else:
                 steps = validate_route_steps(payload.get("steps", []))

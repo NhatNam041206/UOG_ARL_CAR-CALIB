@@ -155,7 +155,7 @@ vars in `runtime/precalibrate.py`.
 | --- | --- | --- |
 | 1 · time | every step `{action, duration_s}` (as before) | time |
 | 2 · tiles | forward/straight `{action, tiles}`, other actions by seconds; typed, or "tạo từ map" fills them from the saved start → goal | tile count |
-| 3 · A* | the Pi builds the steps from the saved start → goal when the run starts (`mode: "astar"` on `/route/script`) | tile count |
+| 3 · A* | the A* route from the saved start → goal is loaded as an editable action list ("tính lại A*" reloads it); the edited list runs, tagged `script_mode: "astar"` with `map_path` | tile count |
 
 This is the first place the counter has motion authority: a tile step stops
 the forward drive when the counter has seen N seams since the step began.
