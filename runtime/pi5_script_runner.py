@@ -186,7 +186,8 @@ class Pi5ScriptRunner:
             # counter does not see the seams in time.
             duration_s = float(tiles) * TILE_STEP_MAX_S_PER_TILE
             target = max(1, int(tiles) - self._tile_count_lead)
-            count0 = int(self._tile_count_getter()) if self._tile_count_getter else 0
+            last_count = int(self._tile_count_getter()) if self._tile_count_getter else 0
+            done_tiles = 0
         else:
             duration_s = max(0.0, float(step.get("duration_s", 1.0)))
 
@@ -235,7 +236,13 @@ class Pi5ScriptRunner:
                 timed_out = self._step_elapsed_s >= self._step_duration_s
                 last_tick = now
             if tiles is not None:
-                done_tiles = int(self._tile_count_getter()) - count0  # type: ignore[misc]
+                # Add up increments instead of subtracting a start value: the
+                # counter is reset to 0 when the route session opens, which
+                # can happen just after this step has started.
+                count = int(self._tile_count_getter())  # type: ignore[misc]
+                if count > last_count:
+                    done_tiles += count - last_count
+                last_count = count
                 with self._lock:
                     self._step_tiles_done = done_tiles
                 if done_tiles >= target:

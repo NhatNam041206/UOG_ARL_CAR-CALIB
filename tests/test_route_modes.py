@@ -117,3 +117,19 @@ def test_map_frozen_while_turning_and_panel():
     assert session.telemetry()["map_column"] == 9  # 5 + 3 + 1
     panel = session.render_panel(480, 360)
     assert panel.shape == (480, 360, 3)
+
+
+def test_tile_step_survives_counter_reset_at_route_start():
+    # The route session resets the counter to 0 right after the script starts.
+    count = {"n": 25}
+    runner, cmds = _runner(count)
+    assert runner.submit([{"action": "forward", "tiles": 3}])
+    assert _wait(lambda: runner.current_action() == "forward")
+    count["n"] = 0
+    time.sleep(0.12)
+    count["n"] = 2
+    time.sleep(0.12)
+    assert runner.is_running()
+    count["n"] = 3
+    assert _wait(lambda: not runner.is_running())
+    assert cmds[-1] == "STOP"
