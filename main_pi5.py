@@ -65,7 +65,7 @@ from unified_calibration_components import UnifiedCalibrator, CalibrationProcess
 from runtime.sasc_experiment_log import SascExperimentLogger
 from runtime.precalibrate import PreCalibrator
 from positioning.map_session import MapSession
-from positioning.map_store import MapStore, plan_route
+from positioning.map_store import MapStore, plan_route, plan_steps
 
 logger = logging.getLogger("pi5")
 
@@ -408,6 +408,9 @@ def main() -> None:
     route_raw_video_enabled = _env_bool("ROUTE_RAW_VIDEO_ENABLED", False)
     route_raw_writer: cv2.VideoWriter | None = None
     route_raw_disabled = False
+    # Map view next to the overlay in route.avi when a map start is saved.
+    route_video_map_panel = _env_bool("ROUTE_VIDEO_MAP_PANEL", True)
+    route_video_panel_w = 0
     # Dashboard "record" hold: keeps the route session open with or without a
     # script, so it is only finalized once both the hold and the script end.
     record_hold = False
@@ -549,11 +552,20 @@ def main() -> None:
         _steps: list[dict[str, Any]] = []
         script_runner = Pi5ScriptRunner()
         script_runner.set_handlers(_base_handler, _servo_handler, _relay_handler)
+        script_runner.set_tile_count_getter(lambda: calibrator.cross_counter.tile_count)
 
         def _submit_script(body: str) -> bool:
             nonlocal current_sasc_scene_type
             payload = json.loads(body)
-            steps = validate_route_steps(payload.get("steps", []))
+            script_mode = str(payload.get("mode") or "time")
+            map_path = None
+            if script_mode == "astar":
+                # A* mode: drive the planned route from the saved map start.
+                plan = map_session.saved_route_steps()
+                steps = validate_route_steps(plan["steps"])
+                map_path = plan["path"]
+            else:
+                steps = validate_route_steps(payload.get("steps", []))
             preset_name = str(payload.get("preset_name") or "").strip()
             ok = script_runner.submit(steps)
             if ok:
@@ -565,10 +577,13 @@ def main() -> None:
                     session.append_meta("script_runs", {
                         "start_frame": session.total_frames,
                         "script_steps": steps,
+                        "script_mode": script_mode,
                         "preset_name": preset_name,
                     })
                 elif _start_route_session("SCRIPT", {
                     "script_steps": steps,
+                    "script_mode": script_mode,
+                    "map_path": map_path,
                     "source": "dashboard_direct",
                     "preset_name": preset_name,
                 }):
@@ -647,6 +662,11 @@ def main() -> None:
         http.add_route("POST", "/api/map/start", map_session.configure)
         http.add_route("POST", "/api/map/anchor", map_session.mark_anchor)
         http.add_route("POST", "/api/map/clear", map_session.clear)
+        http.add_route(
+            "POST", "/api/map/steps",
+            lambda body: plan_steps(body.get("map"), body.get("start"), body.get("goal")),
+        )
+        http.add_route("GET", "/api/map/saved_steps", lambda _q: map_session.saved_route_steps())
         http.add_route("GET", "/api/precal", precal.status)
         http.add_route("POST", "/api/precal/capture", lambda body: precal.capture(tune_manager, body))
         http.start()
@@ -660,6 +680,7 @@ def main() -> None:
             return
         try:
             route_session.attach_meta("cross_tile_count", calibrator.cross_counter.tile_count)
+            route_session.attach_meta("map_final", map_session.telemetry())
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",
@@ -851,7 +872,13 @@ def main() -> None:
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
-            map_session.update(cross_result.tile_count)
+            # Seams seen while turning in place or reversing do not move the
+            # car along the map.
+            map_session.update(
+                cross_result.tile_count,
+                frozen=script_runner is not None
+                and script_runner.current_action() in ("turn_left", "turn_right", "backward", "stop", "pause"),
+            )
             precal.observe(
                 frame,
                 calibration.telemetry,
@@ -947,10 +974,23 @@ def main() -> None:
                     try:
                         if route_video_writer is None and not route_video_disabled:
                             frame_h, frame_w = display_frame.shape[:2]
-                            route_video_writer = _open_route_video_writer(frame_w, frame_h)
+                            # The panel width is fixed per route (the writer's size is).
+                            route_video_panel_w = (
+                                int(frame_h * 0.75)
+                                if route_video_map_panel and map_session.render_panel(8, 8) is not None
+                                else 0
+                            )
+                            route_video_writer = _open_route_video_writer(frame_w + route_video_panel_w, frame_h)
+                            route_session.attach_meta("video_map_panel_w", route_video_panel_w)
                             route_video_disabled = route_video_writer is None
                         if route_video_writer is not None:
-                            route_video_writer.write(display_frame)
+                            video_frame = display_frame
+                            if route_video_panel_w:
+                                panel = map_session.render_panel(display_frame.shape[0], route_video_panel_w)
+                                if panel is None:
+                                    panel = np.zeros((display_frame.shape[0], route_video_panel_w, 3), np.uint8)
+                                video_frame = np.hstack((display_frame, panel))
+                            route_video_writer.write(video_frame)
                         if route_raw_video_enabled and route_raw_writer is None and not route_raw_disabled:
                             raw_h, raw_w = frame.shape[:2]
                             route_raw_writer = _open_route_video_writer(

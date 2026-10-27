@@ -148,3 +148,39 @@ applies the measured VP angle as `vp_center_deg`, "Lưu VP row" applies the
 VP y as `vp_horizon_y` (Apply only; Save in the Tune tab to keep). Starting a
 route while a check is red asks for confirmation. Thresholds: `PRECAL_*` env
 vars in `runtime/precalibrate.py`.
+
+## Script modes (Script tab)
+
+| Mode | Steps | Ends a forward step |
+| --- | --- | --- |
+| 1 · time | every step `{action, duration_s}` (as before) | time |
+| 2 · tiles | forward/straight `{action, tiles}`, other actions by seconds; typed, or "tạo từ map" fills them from the saved start → goal | tile count |
+| 3 · A* | the Pi builds the steps from the saved start → goal when the run starts (`mode: "astar"` on `/route/script`) | tile count |
+
+This is the first place the counter has motion authority: a tile step stops
+the forward drive when the counter has seen N seams since the step began.
+
+- A path becomes straight runs (`forward N tiles`) and 90-degree turns in
+  place (`turn_left` / `turn_right` for `TILE_TURN_90_S`, default 1.5 s;
+  calibrate on the floor). Rows grow south, so east → south is a right turn.
+  The car must start facing along the first segment. U-turns are rejected.
+- Safety: a tile step that has not seen its seams after
+  `TILE_STEP_MAX_S_PER_TILE` (5 s) x N stops the script with `last_error`
+  ("tile step timed out"). This time also counts toward
+  `ROUTE_MAX_TOTAL_DURATION_S`. `ROUTE_MAX_STEP_TILES` (200) caps one step.
+- The counter line looks ahead of the car, so a step may stop early or late
+  by about one tile; `TILE_STEP_COUNT_LEAD` (default 0) subtracts that many
+  seams from every target once a measured run shows the offset.
+- Seams seen while turning in place, reversing or stopped do not move the car
+  on the map.
+- `route_summary.json` records `script_mode`, `map_path` (A*), `map_start` and
+  `map_final`.
+
+## Map in the recorded video
+
+When a map start is saved, `route.avi` has a map view next to the overlay
+(width 0.75 x frame height): runnable cells, planned path (blue), trail
+(orange) and the car (green OK, red otherwise), with the cell and tile count
+on top. `extra_meta.video_map_panel_w` gives the panel width;
+`scripts/replay_route.py` crops it before replaying the overlay video.
+`ROUTE_VIDEO_MAP_PANEL=false` turns it off. `route_raw.avi` is unchanged.

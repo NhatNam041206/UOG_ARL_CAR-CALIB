@@ -84,6 +84,54 @@ if (actionDistanceInput) actionDistanceInput.addEventListener("input", () => {
 });
 refreshAvgSpeed();
 
+// Script modes: 1 time (every step by seconds), 2 tiles (forward/straight
+// steps by tile count, turns by seconds; typed or built from the saved map
+// route), 3 A* (the Pi builds the steps from the saved start -> goal).
+const scriptModeSel = document.getElementById("scriptMode");
+const durationUnit = document.getElementById("durationUnit");
+const TILE_ACTIONS = new Set(["forward", "straight"]);
+function stepUsesTiles(action) {
+  return scriptModeSel && scriptModeSel.value === "tiles" && TILE_ACTIONS.has(action);
+}
+function stepAmount(s) {
+  return s.tiles != null ? `${s.tiles} ô` : `${Number(s.duration_s).toFixed(1)} s`;
+}
+function updateDurationUnit() {
+  if (durationUnit) durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : "seconds";
+}
+async function loadStepsFromMap() {
+  const hint = document.getElementById("scriptModeHint");
+  try {
+    const r = await fetch("/api/map/saved_steps" + qp);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || r.status);
+    steps.length = 0;
+    j.steps.forEach(s => steps.push(s));
+    resetEditor();
+    render();
+    const tiles = j.steps.reduce((n, s) => n + (s.tiles || 0), 0);
+    hint.textContent = `từ map ${j.map_id}: ${j.path.length - 1} ô, ${j.steps.filter(s => s.action.startsWith("turn")).length} lần rẽ (${tiles} ô forward)`;
+  } catch (e) {
+    hint.textContent = "lỗi: " + e.message;
+  }
+}
+function applyScriptMode() {
+  const mode = scriptModeSel.value;
+  const hint = document.getElementById("scriptModeHint");
+  document.getElementById("stepsFromMap").style.display = mode === "tiles" ? "" : "none";
+  document.getElementById("stepEditorRow").style.display = mode === "astar" ? "none" : "";
+  hint.textContent = mode === "time" ? "" : (mode === "tiles"
+    ? "forward/straight đi theo số ô (bộ đếm vạch ngang), rẽ vẫn theo giây"
+    : "");
+  updateDurationUnit();
+  if (mode === "astar") loadStepsFromMap();
+}
+if (scriptModeSel) {
+  scriptModeSel.onchange = applyScriptMode;
+  actionInput.addEventListener("change", updateDurationUnit);
+  document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
+}
+
 function resetEditor() {
   editingIndex = -1;
   addBtn.textContent = "+ add step";
@@ -95,7 +143,8 @@ function loadEditorFromStep(idx) {
   if (!step) return;
   editingIndex = idx;
   actionInput.value = step.action;
-  durationInput.value = String(step.duration_s);
+  durationInput.value = String(step.tiles != null ? step.tiles : step.duration_s);
+  updateDurationUnit();
   addBtn.textContent = "save edit";
   cancelEditBtn.style.display = "";
 }
@@ -111,7 +160,7 @@ function render() {
       else if (i + 1 === currentRunningStep) tr.classList.add("active");
       else tr.classList.add("pending");
     }
-    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
+    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${stepAmount(s)}</td><td>${isRunning || (scriptModeSel && scriptModeSel.value === "astar") ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);
@@ -120,13 +169,20 @@ function render() {
 addBtn.onclick = () => {
   if (isRunning) return;
   const action = actionInput.value;
-  const duration_s = parseFloat(durationInput.value || "0");
-  if (!isFinite(duration_s) || duration_s <= 0) { runDetail.textContent = "duration phải > 0"; return; }
+  const amount = parseFloat(durationInput.value || "0");
+  let step;
+  if (stepUsesTiles(action)) {
+    if (!Number.isInteger(amount) || amount < 1) { runDetail.textContent = "số ô phải là số nguyên ≥ 1"; return; }
+    step = {action, tiles: amount};
+  } else {
+    if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
+    step = {action, duration_s: amount};
+  }
   if (editingIndex >= 0 && editingIndex < steps.length) {
-    steps[editingIndex] = {action, duration_s};
+    steps[editingIndex] = step;
     resetEditor();
   } else {
-    steps.push({action, duration_s});
+    steps.push(step);
   }
   render();
 };
@@ -173,7 +229,7 @@ async function playSingleStep(idx) {
   try {
     const r = await fetch("/route/script/step" + qp, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: step.action, duration_s: step.duration_s}),
+      body: JSON.stringify(step),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -225,7 +281,7 @@ runBtn.onclick = async () => {
   const presetSel = document.getElementById("presetSelect");
   const presetInput = document.getElementById("presetName");
   const preset_name = (presetSel && presetSel.value) || (presetInput && presetInput.value.trim()) || null;
-  const body = {steps, preset_name, description: null};
+  const body = {steps, preset_name, description: null, mode: scriptModeSel ? scriptModeSel.value : "time"};
   const r = await fetch("/route/script" + qp, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { runDetail.textContent = "error: " + JSON.stringify(j.detail || r.status); return; }
@@ -724,19 +780,21 @@ async function pollStatus() {
       currentRunningStep = st.current_step || 0;
       if (st.running) {
         const total = st.total || 0;
-        const stepDur = (st.step && Number(st.step.duration_s)) || 0;
-        const stepElapsed = Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
+        const stepTiles = st.step && st.step.tiles != null ? Number(st.step.tiles) : null;
+        const stepDur = stepTiles != null ? stepTiles : ((st.step && Number(st.step.duration_s)) || 0);
+        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
+        const unit = stepTiles != null ? " ô" : "s";
         setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
         const pauseReason = st.pause_reason === "object_detected"
           ? "object"
           : (st.pause_reason === "manual_override" ? "manual" : (st.pause_reason || "script"));
         runDetail.textContent = action
-          ? `${action} · ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`
+          ? `${action} · ${stepTiles != null ? stepElapsed : stepElapsed.toFixed(1)} / ${stepTiles != null ? stepDur : stepDur.toFixed(1)}${unit}`
           : "";
         if (st.paused && action) {
-          runDetail.textContent = `${action} - paused ${safeText(pauseReason)} - ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`;
+          runDetail.textContent = `${action} - paused ${safeText(pauseReason)} - ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}${unit}`;
         }
         const overallRatio = total ? ((currentRunningStep - 1 + fillRatio) / total) : 0;
         progressBar.style.width = (overallRatio * 100).toFixed(1) + "%";
@@ -1091,7 +1149,7 @@ function renderSummaryScript(s) {
   const script = extra.script || {};
   const stepsRows = (script.steps || []).map((st, i) => {
     const d = Number(st.duration_s);
-    const dTxt = Number.isFinite(d) ? d.toFixed(1) + " s" : "-";
+    const dTxt = st.tiles != null ? `${st.tiles} ô` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-");
     return `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${dTxt}</td></tr>`;
   }).join("");
   const stepsTable = stepsRows
@@ -1167,7 +1225,9 @@ document.getElementById("presetLoad").onclick = async () => {
   const j = await r.json();
   const p = j.preset || {};
   steps.length = 0;
-  (p.steps || []).forEach(s => steps.push({action: s.action, duration_s: Number(s.duration_s)}));
+  (p.steps || []).forEach(s => steps.push(s.tiles != null
+    ? {action: s.action, tiles: Number(s.tiles)}
+    : {action: s.action, duration_s: Number(s.duration_s)}));
   presetName.value = p.name || name;
   resetEditor();
   render();

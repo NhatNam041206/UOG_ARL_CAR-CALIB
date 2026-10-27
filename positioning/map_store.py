@@ -209,3 +209,14 @@ class MapStore:
             raise ValueError("only maps saved from the dashboard can be deleted")
         path.unlink()
         return {"deleted": map_id}
+
+
+def plan_steps(data: Any, start: Any, goal: Any) -> dict[str, Any]:
+    """Route preview plus the script steps that drive it (tile mode / A* mode)."""
+    from positioning.route_steps import path_to_steps, turn_duration_s
+
+    plan = plan_route(data, start, goal)
+    cells = [tuple(c) for c in plan["cells"]]
+    plan["steps"] = path_to_steps(cells)
+    plan["turn_s"] = turn_duration_s()
+    return plan

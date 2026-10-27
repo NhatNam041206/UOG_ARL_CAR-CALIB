@@ -44,6 +44,16 @@
       <div class="tab-pane active" data-pane="script">
       <h2>Route script builder</h2>
       <div class="row">
+        <span class="muted">chế độ:</span>
+        <select id="scriptMode">
+          <option value="time">1 · theo thời gian</option>
+          <option value="tiles">2 · theo số ô</option>
+          <option value="astar">3 · theo đường A* (map)</option>
+        </select>
+        <button id="stepsFromMap" style="display:none" title="tạo step từ start → goal đã lưu ở tab Map">tạo từ map</button>
+        <span class="muted" id="scriptModeHint"></span>
+      </div>
+      <div class="row" id="stepEditorRow">
         <select id="action">
           <option value="forward">forward (FORWARD + center)</option>
           <option value="backward">backward (BACKWARD + reversed steer)</option>
@@ -55,7 +65,7 @@
           <option value="stop">stop / pause</option>
         </select>
         <input id="duration" type="number" min="0" step="0.5" value="2">
-        <span class="muted">seconds</span>
+        <span class="muted" id="durationUnit">seconds</span>
         <input id="actionDistance" type="number" min="0" step="any" placeholder="distance (m)" style="max-width:130px">
         <span class="muted" id="avgSpeedLabel"></span>
         <button id="add">+ add step</button>
@@ -286,6 +296,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-map-dir"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261027-modes"></script>
 </body>
 </html>

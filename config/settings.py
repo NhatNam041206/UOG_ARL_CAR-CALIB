@@ -239,6 +239,9 @@ ROUTE_ACCEPT_MAX_GAP_RATIO = _get_float("ROUTE_ACCEPT_MAX_GAP_RATIO", 0.25)
 ROUTE_MAX_STEPS = _get_int("ROUTE_MAX_STEPS", 64)
 ROUTE_MAX_STEP_DURATION_S = _get_float("ROUTE_MAX_STEP_DURATION_S", 30.0)
 ROUTE_MAX_TOTAL_DURATION_S = _get_float("ROUTE_MAX_TOTAL_DURATION_S", 300.0)
+# Tile steps ("forward N tiles", counted by the cross-line counter).
+ROUTE_MAX_STEP_TILES = _get_int("ROUTE_MAX_STEP_TILES", 200)
+TILE_STEP_MAX_S_PER_TILE = _get_float("TILE_STEP_MAX_S_PER_TILE", 5.0)  # safety timeout per tile
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]

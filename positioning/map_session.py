@@ -20,6 +20,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from positioning.map_panel import MapPanel
 from positioning.map_store import default_saved_dir, validate_map_data
 from positioning.tile_position import HEADINGS, TileMap, TilePositionTracker
 
@@ -40,6 +43,7 @@ class MapSession:
         self._last_count = 0
         self._position: dict[str, Any] | None = None
         self._trail: list[list[int]] = []
+        self._panel: MapPanel | None = None
         self._load_saved_start()
 
     @classmethod
@@ -122,7 +126,9 @@ class MapSession:
         }
         if persist:
             self._persist_start(saved)
+        panel = MapPanel(tile_map, None if path is None else [list(c) for c in path])
         with self._lock:
+            self._panel = panel
             self._start_body = saved
             self._map = tile_map
             self._tracker = tracker
@@ -158,6 +164,7 @@ class MapSession:
             self._start_file.unlink(missing_ok=True)
         with self._lock:
             self._start_body = None
+            self._panel = None
             self._tracker = None
             self._setup = {}
             self._position = None
@@ -192,6 +199,21 @@ class MapSession:
         except (ValueError, KeyError) as exc:
             logger.warning("Saved map start no longer valid: %s", exc)
 
+    def saved_route_steps(self) -> dict[str, Any]:
+        """Steps for the A* route from the saved start to the saved goal."""
+        from positioning.route_steps import path_to_steps
+
+        with self._lock:
+            body = self._start_body
+            path = self._setup.get("path")
+            map_id = self._setup.get("map_id")
+        if body is None:
+            raise ValueError("save a start position in the Map tab first")
+        if not path or body.get("goal") is None:
+            raise ValueError("the saved start has no goal: set a goal and save again")
+        cells = [(int(r), int(c)) for r, c in path]
+        return {"map_id": map_id, "path": [list(c) for c in cells], "steps": path_to_steps(cells)}
+
     def start_summary(self) -> dict[str, Any] | None:
         """The saved start without the map cells (for route_summary.json)."""
         with self._lock:
@@ -204,8 +226,12 @@ class MapSession:
                 "goal": self._start_body["goal"],
             }
 
-    def update(self, tile_count: int) -> None:
+    def update(self, tile_count: int, frozen: bool = False) -> None:
+        """New tile count. frozen: the car is not driving forward (turning in
+        place, reversing), so seams counted now do not move it on the map."""
         with self._lock:
+            if frozen:
+                self._base_count += int(tile_count) - self._last_count
             self._last_count = int(tile_count)
             if self._tracker is None:
                 return
@@ -214,6 +240,19 @@ class MapSession:
             if not self._trail or self._trail[-1] != cell:
                 self._trail.append(cell)
             self._position = position.as_dict()
+
+    def render_panel(self, height: int, width: int) -> np.ndarray | None:
+        """Map view around the car for the recorded video (None if no start)."""
+        with self._lock:
+            panel = self._panel
+            if panel is None or self._tracker is None:
+                return None
+            state = {
+                "position": None if self._position is None else dict(self._position),
+                "trail": list(self._trail[-400:]),
+                "tiles": self._last_count - self._base_count,
+            }
+        return panel.render(height, width, state)
 
     def telemetry(self) -> dict[str, Any]:
         with self._lock:

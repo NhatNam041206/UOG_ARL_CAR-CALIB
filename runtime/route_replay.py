@@ -213,8 +213,13 @@ def replay_video(
     calibrator: Any,
     *,
     max_frames: int | None = None,
+    crop_right_px: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Run ``calibrator.process_frame`` over every frame; return (rows, frame width)."""
+    """Run ``calibrator.process_frame`` over every frame; return (rows, frame width).
+
+    crop_right_px drops the map panel that route.avi carries on the right
+    (``extra_meta.video_map_panel_w``).
+    """
     import cv2
 
     cap = cv2.VideoCapture(str(video_path))
@@ -227,6 +232,8 @@ def replay_video(
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
+            if crop_right_px > 0:
+                frame = frame[:, : frame.shape[1] - crop_right_px]
             frame_width = int(frame.shape[1])
             start = time.perf_counter()
             result = calibrator.process_frame(frame, len(rows))
