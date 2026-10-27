@@ -500,7 +500,8 @@ def main() -> None:
             session.attach_meta("calib_tune", tune_manager.status())
             session.start(time.monotonic())
             calibrator.cross_counter.reset()
-            map_session.counter_reset()
+            map_session.route_start()
+            session.attach_meta("map_start", map_session.start_summary())
         except OSError as exc:
             storage.mark_error(exc)
             logger.warning("Route recording disabled: %s", exc)

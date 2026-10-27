@@ -1843,21 +1843,22 @@ if (mapCanvas) {
     try {
       liveState = await apiJson("/api/map/start", body);
       if (liveState.setup && liveState.setup.path) route = liveState.setup.path;
-      renderLive(); status("Xe đang được theo dõi trên map này.");
+      renderLive(); status("Đã lưu vị trí xuất phát. Bắt đầu route sẽ đặt xe ở đây và reset bộ đếm ô.");
     } catch (e) { status("lỗi: " + e.message, true); }
   };
   q("mapLiveClear").onclick = async () => {
-    try { liveState = await apiJson("/api/map/clear", {}); renderLive(); } catch (e) { status("lỗi: " + e.message, true); }
+    if (!confirm("Xoá vị trí xuất phát đã lưu trên Pi?")) return;
+    try { liveState = await apiJson("/api/map/clear", {}); renderLive(); status("Đã xoá vị trí xuất phát."); } catch (e) { status("lỗi: " + e.message, true); }
   };
   function renderLive() {
     const st = liveState, pill = q("mapPill"), detail = q("mapDetail");
     if (!st || !st.configured || !st.position) {
-      pill.className = "pill pill-idle"; pill.textContent = "chưa theo dõi"; detail.textContent = "";
+      pill.className = "pill pill-idle"; pill.textContent = "chưa lưu xuất phát"; detail.textContent = "";
     } else {
       const p = st.position, setup = st.setup || {};
       pill.className = "pill " + (p.status === "OK" ? "pill-running" : "pill-error"); pill.textContent = p.status;
       const how = setup.goal ? `route tới (${setup.goal.join(",")}), ${setup.path.length - 1} ô` : `hướng ${setup.heading}`;
-      detail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · ${how} · map ${setup.map_id || "?"}`;
+      detail.textContent = `ô (${p.row},${p.column}) · ${st.tiles} ô đã đi · xuất phát (${setup.start.join(",")}) · ${how} · map ${setup.map_id || "?"}`;
     }
     draw();
   }
@@ -1883,6 +1884,24 @@ if (mapCanvas) {
   draw();
   setInterval(pollMap, 500);
 }
+
+// Saved map start next to "bắt đầu route" (route start resets the tile count
+// and puts the car back there).
+const runMapStart = document.getElementById("runMapStart");
+async function pollRunMapStart() {
+  if (!runMapStart || activeTab() !== "script") return;
+  try {
+    const st = await apiJson("/api/map/state");
+    const setup = st.setup || {};
+    runMapStart.textContent = st.saved_start && setup.start
+      ? `Map: xuất phát (${setup.start.join(",")})${setup.goal ? ` → goal (${setup.goal.join(",")})` : ` hướng ${setup.heading}`} · bắt đầu route sẽ reset bộ đếm ô về đây (sửa ở tab Map)`
+      : "Map: chưa lưu vị trí xuất phát (tab Map)";
+  } catch (e) {
+    runMapStart.textContent = "";
+  }
+}
+pollRunMapStart();
+setInterval(pollRunMapStart, 3000);
 
 // ---------------------------------------------------------------------------
 // §14 Pre-calibrate tab: stationary checklist before a run.

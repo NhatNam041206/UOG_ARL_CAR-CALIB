@@ -118,13 +118,20 @@ size, at least one cell, unique anchors on runnable cells.
   from the dashboard go to `TILE_MAP_DIR` (default
   `$ROUTE_LOG_ROOT/tile_maps`, outside the release folder) as JSON, which is
   also valid YAML, so ARL_AUTOCAR loads them. No NPZ artifact is written.
-- Live position: "Dùng cho xe" sends the map open in the editor plus start and
-  goal (or start and a heading) to the Pi. The Pi follows the tile count and
+- Saved start: "Lưu vị trí xuất phát" sends the map open in the editor plus
+  start and goal (or start and a heading) to the Pi, which saves it in
+  `TILE_MAP_START_FILE` (default `$TILE_MAP_DIR/start_position.json`) and
+  reloads it after a restart. Every route start ("bắt đầu route" or record)
+  resets the tile count to 0 and puts the car back on the saved start; the
+  start goes into `route_summary.json` as `extra_meta.map_start`. Change it by
+  editing start/goal on the map and saving again; "Xoá vị trí đã lưu" removes
+  it. The Script tab shows the saved start above the run button.
+- Live position: the Pi follows the tile count and
   logs `map_row`, `map_column`, `map_status` (`UNSET` / `OK` /
   `CONTRADICTORY` / `PAST_END`) in the route CSV and `/api/status`. The car's
   cell and trail are drawn on the editor; "Về xe" centres on it. "Xe đang ở
-  mốc này" resets the position to the selected anchor. The position survives
-  the counter reset at route start. The map has no motion authority.
+  mốc này" resets the position to the selected anchor during a run. The map
+  has no motion authority.
 - Endpoints: `/api/map/maps`, `/api/map/load?id=`, `/api/map/save`,
   `/api/map/delete`, `/api/map/plan`, `/api/map/start`, `/api/map/anchor`,
   `/api/map/clear`, `/api/map/state`.

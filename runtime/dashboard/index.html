@@ -72,7 +72,8 @@
         <button id="presetSave">save current</button>
       </div>
 
-      <div class="row route-runbar" style="margin-top:18px">
+      <div class="row muted" id="runMapStart" style="margin:14px 0 0;font-size:14px"></div>
+      <div class="row route-runbar" style="margin-top:6px">
         <button id="run" class="primary" title="chạy script, tự record route">▶ bắt đầu route</button>
         <button id="record" class="primary" title="giữ record mở, kể cả khi chưa/không chạy script">● bắt đầu record</button>
         <label class="switch" title="relay light toggle">
@@ -147,6 +148,7 @@
         <p id="mapStatus" class="map-status"></p>
 
         <h3>Xe trên map</h3>
+        <p class="muted">Chọn start (Set start, hoặc anchor → start) và goal hoặc hướng, rồi bấm Lưu. Mỗi lần bấm "bắt đầu route", bộ đếm ô về 0 và xe được đặt lại ở start đã lưu. Muốn đổi thì sửa trên map rồi Lưu lại.</p>
         <div class="row">
           <select id="mapMode">
             <option value="goal">đi theo route start → goal</option>
@@ -158,8 +160,8 @@
             <option value="north">north (↑)</option>
             <option value="south">south (↓)</option>
           </select>
-          <button id="mapUse" class="primary" title="gửi map đang mở + start/goal cho xe">Dùng cho xe</button>
-          <button id="mapLiveClear">Bỏ theo dõi</button>
+          <button id="mapUse" class="primary" title="lưu map đang mở + start/goal trên Pi; Bắt đầu route sẽ đưa xe về đây">Lưu vị trí xuất phát</button>
+          <button id="mapLiveClear">Xoá vị trí đã lưu</button>
         </div>
         <div class="row">
           <span id="mapPill" class="pill pill-idle">chưa đặt</span>
@@ -284,6 +286,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-map-survey"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261027-map-start"></script>
 </body>
 </html>

@@ -24,11 +24,13 @@ def _session() -> MapSession:
     return MapSession(TileMap.load(CAMPUS_MAP))
 
 
-def test_map_session_follows_count_and_keeps_position_across_counter_reset():
-    session = _session()
+def test_map_session_follows_count_and_route_start_returns_to_saved_start(tmp_path):
+    start_file = tmp_path / "start_position.json"
+    session = MapSession(TileMap.load(CAMPUS_MAP), start_file)
     assert session.telemetry()["map_status"] == "UNSET"
     session.update(7)  # counter already running before the start is set
     state = session.configure({"start": "AAD-1", "goal": "gym-01"})
+    assert state["saved_start"] is True and start_file.is_file()
     assert state["setup"]["start"] == [-31, 5]
     assert len(state["setup"]["path"]) == 17
     assert state["tiles"] == 0
@@ -36,13 +38,22 @@ def test_map_session_follows_count_and_keeps_position_across_counter_reset():
     session.update(10)
     assert session.telemetry() == {"map_row": -31, "map_column": 8, "map_status": "OK"}
 
-    session.counter_reset()  # route start: counter back to 0
+    session.route_start()  # counter back to 0, car back on the saved start
     session.update(0)
-    assert session.telemetry()["map_column"] == 8
-    session.update(13)
+    assert session.telemetry()["map_column"] == 5
+    session.update(16)
     assert session.telemetry()["map_column"] == 21
-    session.update(14)
+    session.update(17)
     assert session.telemetry()["map_status"] == "PAST_END"
+    assert session.start_summary() == {"map_id": "campus-path", "start": [-31, 5], "heading": None, "goal": [-31, 21]}
+
+    # survives a restart
+    reloaded = MapSession(TileMap.load(CAMPUS_MAP), start_file)
+    assert reloaded.state()["setup"]["start"] == [-31, 5]
+    reloaded.clear()
+    assert not start_file.exists()
+    reloaded.route_start()
+    assert reloaded.telemetry()["map_status"] == "UNSET"
 
 
 def test_map_session_anchor_and_validation():

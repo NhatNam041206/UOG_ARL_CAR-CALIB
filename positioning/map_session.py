@@ -5,17 +5,22 @@ open in its editor plus a start cell and a heading or goal, the main loop
 feeds the cross-line tile count every frame, and the current cell goes to
 /api/status and the route CSV. Thread-safe because the HTTP server calls in
 from its own threads. Map files and route preview live in map_store.
+
+The start (map + start cell + heading/goal) is saved to a file and survives
+restarts. Every route start resets the tile count and puts the car back on
+the saved start.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any
 
-from positioning.map_store import validate_map_data
+from positioning.map_store import default_saved_dir, validate_map_data
 from positioning.tile_position import HEADINGS, TileMap, TilePositionTracker
 
 logger = logging.getLogger(__name__)
@@ -24,8 +29,10 @@ DEFAULT_MAP = Path(__file__).resolve().parents[1] / "routes" / "tile_maps" / "ca
 
 
 class MapSession:
-    def __init__(self, tile_map: TileMap | None) -> None:
+    def __init__(self, tile_map: TileMap | None, start_file: Path | None = None) -> None:
         self._map = tile_map
+        self._start_file = start_file
+        self._start_body: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._tracker: TilePositionTracker | None = None
         self._setup: dict[str, Any] = {}
@@ -33,15 +40,34 @@ class MapSession:
         self._last_count = 0
         self._position: dict[str, Any] | None = None
         self._trail: list[list[int]] = []
+        self._load_saved_start()
 
     @classmethod
     def from_env(cls) -> "MapSession":
         path = Path(os.getenv("TILE_MAP_PATH", str(DEFAULT_MAP)))
+        start_file = Path(os.getenv("TILE_MAP_START_FILE", str(default_saved_dir() / "start_position.json")))
         try:
-            return cls(TileMap.load(path))
+            tile_map = TileMap.load(path)
         except (OSError, ValueError, KeyError) as exc:
             logger.warning("Tile map unavailable (%s): %s", path, exc)
-            return cls(None)
+            tile_map = None
+        return cls(tile_map, start_file)
+
+    def _load_saved_start(self) -> None:
+        if self._start_file is None or not self._start_file.is_file():
+            return
+        try:
+            self.configure(json.loads(self._start_file.read_text(encoding="utf-8")), persist=False)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("Saved map start ignored (%s): %s", self._start_file, exc)
+
+    def _persist_start(self, body: dict[str, Any]) -> None:
+        if self._start_file is None:
+            return
+        self._start_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._start_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(body), encoding="utf-8")
+        tmp.replace(self._start_file)
 
     # ------------------------------------------------------------------ #
     # Dashboard API
@@ -68,9 +94,13 @@ class MapSession:
             return int(ref[0]), int(ref[1])
         return tile_map.resolve_cell(str(ref or "").strip())
 
-    def configure(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Body: {"map"?: map data, "start": cell, "heading": ...} or {..., "goal": cell}."""
-        tile_map = TileMap.from_dict(validate_map_data(body["map"])) if body.get("map") else self._map
+    def configure(self, body: dict[str, Any], persist: bool = True) -> dict[str, Any]:
+        """Save and arm the start.
+
+        Body: {"map"?: map data, "start": cell, "heading": ...} or {..., "goal": cell}.
+        """
+        map_data = validate_map_data(body["map"]) if body.get("map") else None
+        tile_map = TileMap.from_dict(map_data) if map_data else self._map
         if tile_map is None:
             raise ValueError("no tile map loaded")
         start = self._resolve(tile_map, body.get("start"))
@@ -84,7 +114,16 @@ class MapSession:
         if goal_ref is not None:
             path = tile_map.shortest_path(start, self._resolve(tile_map, goal_ref))
         tracker = TilePositionTracker(tile_map, start, heading=heading, path=path)
+        saved = {
+            "map": map_data,
+            "start": list(start),
+            "heading": heading,
+            "goal": None if path is None else list(path[-1]),
+        }
+        if persist:
+            self._persist_start(saved)
         with self._lock:
+            self._start_body = saved
             self._map = tile_map
             self._tracker = tracker
             self._base_count = self._last_count
@@ -114,7 +153,11 @@ class MapSession:
         return self.state()
 
     def clear(self, _body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Stop tracking and forget the saved start."""
+        if self._start_file is not None:
+            self._start_file.unlink(missing_ok=True)
         with self._lock:
+            self._start_body = None
             self._tracker = None
             self._setup = {}
             self._position = None
@@ -126,6 +169,7 @@ class MapSession:
             return {
                 "available": self._map is not None,
                 "configured": self._tracker is not None,
+                "saved_start": self._start_body is not None,
                 "setup": dict(self._setup),
                 "tiles": self._last_count - self._base_count,
                 "position": None if self._position is None else dict(self._position),
@@ -135,11 +179,30 @@ class MapSession:
     # ------------------------------------------------------------------ #
     # Main loop
     # ------------------------------------------------------------------ #
-    def counter_reset(self) -> None:
-        """The tile counter went back to 0 (route start): keep the position."""
+    def route_start(self) -> None:
+        """Route start: the tile counter is back at 0, the car is at the saved start."""
         with self._lock:
-            self._base_count -= self._last_count
             self._last_count = 0
+            self._base_count = 0
+            body = self._start_body
+        if body is None:
+            return
+        try:
+            self.configure(dict(body), persist=False)
+        except (ValueError, KeyError) as exc:
+            logger.warning("Saved map start no longer valid: %s", exc)
+
+    def start_summary(self) -> dict[str, Any] | None:
+        """The saved start without the map cells (for route_summary.json)."""
+        with self._lock:
+            if self._start_body is None:
+                return None
+            return {
+                "map_id": self._setup.get("map_id"),
+                "start": self._start_body["start"],
+                "heading": self._start_body["heading"],
+                "goal": self._start_body["goal"],
+            }
 
     def update(self, tile_count: int) -> None:
         with self._lock:
