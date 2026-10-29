@@ -898,7 +898,9 @@ def main() -> None:
             heading_ms = 0.0
             if grid_heading_mode == "always" or (grid_heading_mode == "script" and script_running):
                 t_heading = time.monotonic()
-                turn_yaw.estimator.set_horizon_seed(calibrator._vision._vp_horizon_y)
+                # No horizon seed from the lane tune: its vp_horizon_y is a
+                # hand-tuned search row (-120 on 10-29) far from the real
+                # horizon (~-340), and it rejected every grid VP.
                 turn_yaw.update(
                     frame,
                     now=now,

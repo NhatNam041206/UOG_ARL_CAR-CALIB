@@ -25,6 +25,13 @@ phase correlation of the upper image band. The pixels-per-degree factor for
 that is learned from frames where both measures exist. With neither, it
 coasts on the last yaw rate for `GRID_HEADING_COAST_MAX_S` (0.5 s).
 
+A vanishing point must lie above row `GRID_HEADING_MAX_VP_Y` (-60, Tune key
+`grid_max_vp_y`); a point inside the frame is a tile corner where two seams
+cross. The horizon is learned from two-VP frames only. It is not seeded from
+the lane tune's `vp_horizon_y`: in the 10-29 run that row was -120 while the
+grid horizon was about -340, so every VP was rejected, the heading was never
+valid and the 90° turn finished on time at about 60°.
+
 The estimator runs while a script runs (`GRID_HEADING_MODE=script`, or
 `always` / `off`). On the cloud test machine it costs about 2 ms per frame,
 plus about 1 ms for phase correlation, which runs only during degree steps.

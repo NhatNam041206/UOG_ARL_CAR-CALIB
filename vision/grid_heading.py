@@ -55,6 +55,10 @@ class GridHeadingConfig:
     g_px: float = 675.0  # used until enough two-VP frames are seen
     horizon_y: float | None = None  # seed; learned online when None
     horizon_tol_px: float = 80.0
+    # A floor VP lies above the top of the image (horizon ~-340 px on the car).
+    # Below this row a "VP" is a tile corner where two seams of different
+    # families cross, which would win RANSAC with segments of both families.
+    max_vp_y: float = -60.0
     pc_band: float = 0.25  # top fraction of the frame used by phase correlation
     pc_scale: float = 0.5
     pc_min_response: float = 0.05
@@ -78,6 +82,7 @@ class GridHeadingConfig:
             min_inliers=_get_int("GRID_HEADING_MIN_INLIERS", d.min_inliers),
             g_px=_get_float("GRID_HEADING_G_PX", d.g_px),
             horizon_tol_px=_get_float("GRID_HEADING_HORIZON_TOL_PX", d.horizon_tol_px),
+            max_vp_y=_get_float("GRID_HEADING_MAX_VP_Y", d.max_vp_y),
             pc_band=_get_float("GRID_HEADING_PC_BAND", d.pc_band),
             pc_scale=_get_float("GRID_HEADING_PC_SCALE", d.pc_scale),
             pc_min_response=_get_float("GRID_HEADING_PC_MIN_RESPONSE", d.pc_min_response),
@@ -186,6 +191,9 @@ class GridHeadingEstimator:
         if not keep.any():
             return None, empty
         pts = pts[keep] / pts[keep, 2:3]
+        pts = pts[pts[:, 1] < self.config.max_vp_y]
+        if not len(pts):
+            return None, empty
         to_vp = np.arctan2(pts[:, 1:2] - mid[None, :, 1], pts[:, 0:1] - mid[None, :, 0])
         d = np.abs((seg_ang[None, :] - to_vp + np.pi / 2) % np.pi - np.pi / 2)
         masks = d < tol

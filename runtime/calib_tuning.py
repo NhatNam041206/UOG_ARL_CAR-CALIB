@@ -163,6 +163,7 @@ GRID_PARAMS: tuple[tuple[TuneParam, str], ...] = (
     (TuneParam("grid_min_line_px", "Grid heading", "Min line length (px)", "int", 10, 400, 1), "min_line_px"),
     (TuneParam("grid_inlier_tol_deg", "Grid heading", "VP inlier tolerance (deg)", "float", 0.5, 10.0, 0.1), "inlier_tol_deg"),
     (TuneParam("grid_horizon_tol_px", "Grid heading", "VP horizon tolerance (px)", "float", 10.0, 400.0, 1.0), "horizon_tol_px"),
+    (TuneParam("grid_max_vp_y", "Grid heading", "VP must be above row (px, <0 = above image)", "float", -1000.0, 0.0, 5.0), "max_vp_y"),
     (TuneParam("grid_coast_max_s", "Grid heading", "Coast without heading (s)", "float", 0.0, 2.0, 0.05), "coast_max_s"),
 )
 

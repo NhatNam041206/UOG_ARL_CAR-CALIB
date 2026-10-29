@@ -95,3 +95,15 @@ def test_tracker_reset_zeroes_yaw():
     tracker.update(tile_floor(10.0), now=0.1)
     tracker.reset()
     assert tracker.sample(now=0.1).yaw_deg == 0.0
+
+
+def test_tile_corner_inside_the_frame_is_not_a_vanishing_point():
+    # Two perpendicular seams crossing at (320, 200), each broken into three
+    # segments: every segment points at the corner, so it used to win RANSAC.
+    segs = []
+    for (dx, dy) in ((1.0, 0.3), (-0.3, 1.0)):
+        for a, b in ((-250, -150), (-100, 0), (60, 200)):
+            segs.append([320 + a * dx, 200 + a * dy, 320 + b * dx, 200 + b * dy])
+    est = GridHeadingEstimator(GridHeadingConfig())
+    p, _mask = est._vp_ransac(np.array(segs, dtype=float))
+    assert p is None or p[1] < est.config.max_vp_y
