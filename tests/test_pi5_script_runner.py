@@ -195,3 +195,17 @@ def test_left_and_right_steps_use_per_side_steer_offsets(monkeypatch: pytest.Mon
     # A right offset past the servo range is clamped to 0, not sent as a negative angle.
     runner.turn.right_steer_deg = 80.0
     assert runner._steer_angle(-1) == 0.0
+
+
+def test_turn_steps_report_rotation_for_the_map():
+    turns: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.turn.nominal_omega_dps = 900.0
+    runner.set_turn_done_callback(turns.append)
+    assert runner.submit([{"action": "right", "duration_s": 0.1}, {"action": "forward", "duration_s": 0.05}]) is True
+    deadline = time.monotonic() + 1.0
+    while runner.is_running() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(turns) == 1
+    assert turns[0] < -45.0

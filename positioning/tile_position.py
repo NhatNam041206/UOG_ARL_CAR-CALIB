@@ -129,6 +129,7 @@ class TilePosition:
     index: int  # steps from the start (or from the last anchor's path index)
     cell: Cell
     status: str  # OK, CONTRADICTORY (cell not runnable), PAST_END (path mode)
+    heading: str | None = None  # heading mode: current heading after turns
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +138,7 @@ class TilePosition:
             "row": self.cell[0],
             "column": self.cell[1],
             "status": self.status,
+            "heading": self.heading,
         }
 
 
@@ -169,13 +171,27 @@ class TilePositionTracker:
         index = tile_count + self._offset
         if self.path is not None:
             if index >= len(self.path):
-                return TilePosition(tile_count, index, self.path[-1], "PAST_END")
+                return TilePosition(tile_count, index, self.path[-1], "PAST_END", self.heading)
             cell = self.path[index]
         else:
             dr, dc = HEADINGS[self.heading]  # type: ignore[index]
             cell = (self._origin[0] + dr * index, self._origin[1] + dc * index)
         status = "OK" if self.map.is_runnable(cell) else "CONTRADICTORY"
-        return TilePosition(tile_count, index, cell, status)
+        return TilePosition(tile_count, index, cell, status, self.heading)
+
+    def apply_turn(self, quarter_turns: int, tile_count: int) -> None:
+        """The car turned quarter_turns x 90 degrees (left positive) at its
+        current cell. Heading mode: later tiles go along the new heading from
+        here. Path mode: the path already holds the corner, nothing changes."""
+        if self.path is not None or quarter_turns % 4 == 0:
+            return
+        here = self.update(tile_count).cell
+        dr, dc = HEADINGS[self.heading]  # type: ignore[index]
+        for _ in range(quarter_turns % 4):
+            dr, dc = -dc, dr  # left: north -> west -> south -> east
+        self.heading = next(name for name, d in HEADINGS.items() if d == (dr, dc))
+        self._origin = here
+        self._offset = -tile_count
 
     def apply_anchor(self, anchor_cell: Cell, tile_count: int) -> None:
         """The car is at anchor_cell now (tile_count seams counted so far)."""

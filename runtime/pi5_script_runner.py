@@ -96,6 +96,7 @@ class Pi5ScriptRunner:
         self._heading_reset: Callable[[], None] | None = None
         self._heading_sample: Callable[[], Any] | None = None
         self._step_degrees_done = 0.0
+        self._turn_done_cb: Callable[[float], None] | None = None
         self._last_turn: dict[str, Any] | None = None
         self.turn = TurnSettings()
         self._last_error = ""
@@ -131,6 +132,15 @@ class Pi5ScriptRunner:
         """
         self._heading_reset = reset_fn
         self._heading_sample = sample_fn
+
+    def set_turn_done_callback(self, fn: Callable[[float], None]) -> None:
+        """Called after each completed turn step with the rotation, left positive.
+
+        Degree steps report the degrees asked for (the step ran until the
+        heading showed them); time steps report duration x nominal yaw rate.
+        The map rounds it to quarter turns.
+        """
+        self._turn_done_cb = fn
 
     def needs_heading(self) -> bool:
         """True while the current step reads the heading (main loop runs the estimator)."""
@@ -408,7 +418,18 @@ class Pi5ScriptRunner:
                     self._fail_step(f"tile step timed out: {done_tiles}/{target} tiles in {duration_s:.0f} s")
                     break
             elif timed_out:
+                if action in ("left", "right", "turn_left", "turn_right"):
+                    sign = 1.0 if action in ("left", "turn_left") else -1.0
+                    self._turn_done(sign * duration_s * cfg.nominal_omega_dps)
                 break
+
+    def _turn_done(self, rotation_deg: float) -> None:
+        if self._turn_done_cb is None:
+            return
+        try:
+            self._turn_done_cb(rotation_deg)
+        except Exception:
+            logger.exception("turn-done callback failed")
 
     def _fail_step(self, msg: str) -> None:
         """Stop the script; the runner's finally block sends STOP."""
@@ -441,6 +462,7 @@ class Pi5ScriptRunner:
         logger.info("Turn done: %s", turn)
         with self._lock:
             self._last_turn = turn
+        self._turn_done((1.0 if action in ("left", "turn_left") else -1.0) * float(degrees))
 
     def _publish_current_command(self, base_cmd: str, angle: float | None) -> None:
         if self._base_cb is not None:

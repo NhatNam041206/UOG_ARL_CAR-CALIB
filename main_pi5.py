@@ -564,6 +564,7 @@ def main() -> None:
         script_runner.set_tile_count_getter(lambda: calibrator.cross_counter.tile_count)
         if grid_heading_mode != "off":
             script_runner.set_heading_source(turn_yaw.request_reset, turn_yaw.sample)
+            script_runner.set_turn_done_callback(map_session.apply_turn)
 
         def _submit_script(body: str) -> bool:
             nonlocal current_sasc_scene_type
@@ -914,12 +915,13 @@ def main() -> None:
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
-            # Seams seen while turning in place or reversing do not move the
-            # car along the map.
+            # Seams seen while turning (in place or on an arc) or reversing do
+            # not move the car along the map; the turn rotates the map heading
+            # when it ends (map_session.apply_turn).
             map_session.update(
                 cross_result.tile_count,
                 frozen=script_runner is not None
-                and script_runner.current_action() in ("turn_left", "turn_right", "backward", "stop", "pause"),
+                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right", "backward", "stop", "pause"),
             )
             precal.observe(
                 frame,

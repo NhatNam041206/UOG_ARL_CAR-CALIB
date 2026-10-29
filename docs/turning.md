@@ -100,6 +100,18 @@ have not been tuned on the car yet.
 10-28 runs) instead of `turn_left`/`turn_right`. `TILE_SETTLE_S` > 0 adds a
 settle step after every turn.
 
+## Map position through turns
+
+While a `left`, `right`, `turn_left` or `turn_right` step runs, seams counted
+by the cross-line counter do not move the car on the map. When a turn step
+ends, the runner reports its rotation (the degrees asked for on a degree step,
+duration × `TURN_NOMINAL_OMEGA_DPS` on a time step). The map rounds it to
+quarter turns. In heading mode (start + heading) it rotates the heading and
+counts on from the current cell; `position.heading` shows the new heading. In
+path mode the A* path already holds the corner, so only the freeze applies.
+The car is assumed to end the turn on the cell where it started it: the
+movement along the arc needs `R_eff` and `L` (see below).
+
 ## Dashboard Tune tab
 
 The turn, settle and grid-heading parameters are also in the Tune tab, in the

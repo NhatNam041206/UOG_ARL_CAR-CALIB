@@ -178,6 +178,19 @@ class MapSession:
             self._trail.append(list(cell))
         return self.state()
 
+    def apply_turn(self, rotation_deg: float) -> None:
+        """A script turn finished: rotate the map heading by the nearest
+        multiple of 90 degrees (left positive). Seams counted during the
+        turn were frozen by update(), so the car stays on its cell."""
+        quarter = int(round(float(rotation_deg) / 90.0))
+        with self._lock:
+            if self._tracker is None or quarter == 0:
+                return
+            count = self._last_count - self._base_count
+            self._tracker.apply_turn(quarter, count)
+            self._position = self._tracker.update(count).as_dict()
+            logger.info("Map turn %+d x 90 deg -> heading %s", quarter, self._tracker.heading)
+
     def clear(self, _body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Stop tracking and forget the saved start."""
         if self._start_file is not None:
