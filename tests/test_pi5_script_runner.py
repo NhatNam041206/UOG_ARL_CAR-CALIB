@@ -183,3 +183,15 @@ def test_settle_exits_early_once_aligned():
     assert runner.submit([{"action": "settle", "duration_s": 3.0}]) is True
     _wait_done(runner)
     assert time.monotonic() - t0 < 1.0
+
+
+def test_left_and_right_steps_use_per_side_steer_offsets(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    runner = Pi5ScriptRunner()
+    runner.turn.left_steer_deg = 70.0
+    runner.turn.right_steer_deg = 50.0
+    assert runner._steer_angle(+1) == pytest.approx(62.0 + 70.0)
+    assert runner._steer_angle(-1) == pytest.approx(62.0 - 50.0)
+    # A right offset past the servo range is clamped to 0, not sent as a negative angle.
+    runner.turn.right_steer_deg = 80.0
+    assert runner._steer_angle(-1) == 0.0

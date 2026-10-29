@@ -32,6 +32,23 @@ The route CSV gets `grid_psi`, `grid_vps`, `grid_lines`, `grid_g_px`,
 `grid_ms`, `turn_yaw`, `turn_omega`, `turn_yaw_src`, `turn_px_per_deg`, and
 the per-stage times `capture_ms`, `calib_ms` and `heading_ms`.
 
+## Left and right commands
+
+| Action | Base | Servo |
+|--------|------|-------|
+| `left` | `FORWARD` (0,1,0) | centre + `TURN_LEFT_STEER_DEG` (Ackermann arc) |
+| `right` | `FORWARD` (0,1,0) | centre − `TURN_RIGHT_STEER_DEG` |
+| `turn_left` | `TURN_LEFT` (1,0,0) | not set |
+| `turn_right` | `TURN_RIGHT` (0,1,1) | not set |
+
+Centre is `90 + SERVO_CENTER_ANGLE`. The script runner sends these servo
+values directly, so the Servo group's trim, gains and kicks (vision path
+only) do not apply. Both offsets default to `MAX_STEERING_OFFSET` and can be
+changed in the Tune tab group **Turning**. The servo value is clamped to
+0..180: with `SERVO_CENTER_ANGLE=-28` (centre 62) any right offset above 62
+gives servo 0, so the 10-28 runs with offset 80 steered 80° left but only 62°
+right.
+
 ## Degree steps
 
 `{"action": "left", "degrees": 90}` also works with `right`, `turn_left` and

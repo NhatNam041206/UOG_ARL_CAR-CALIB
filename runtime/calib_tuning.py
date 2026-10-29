@@ -140,6 +140,8 @@ def attr_binding(param: TuneParam, owner: Any, attr: str) -> TuneBinding:
 # Degree turns + settle (runtime.pi5_script_runner.TurnSettings) and the grid
 # heading estimator (vision.grid_heading.GridHeadingConfig).
 TURN_PARAMS: tuple[tuple[TuneParam, str], ...] = (
+    (TuneParam("turn_left_steer_deg", "Turning", "Left step: servo offset from centre (deg)", "float", 0.0, 90.0, 0.5), "left_steer_deg"),
+    (TuneParam("turn_right_steer_deg", "Turning", "Right step: servo offset from centre (deg)", "float", 0.0, 90.0, 0.5), "right_steer_deg"),
     (TuneParam("turn_latency_s", "Turning", "Command-to-camera latency (s)", "float", 0.0, 2.0, 0.01), "latency_s"),
     (TuneParam("turn_nominal_omega_dps", "Turning", "Nominal yaw rate (deg/s)", "float", 5.0, 120.0, 1.0), "nominal_omega_dps"),
     (TuneParam("turn_timeout_factor", "Turning", "Timeout (x nominal turn time)", "float", 1.0, 5.0, 0.1), "timeout_factor"),

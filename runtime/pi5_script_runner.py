@@ -19,9 +19,11 @@ from config.settings import (
     SETTLE_RATE_DPS,
     TILE_STEP_MAX_S_PER_TILE,
     TURN_HEADING_LOST_S,
+    TURN_LEFT_STEER_DEG,
     TURN_LATENCY_S,
     TURN_NOMINAL_OMEGA_DPS,
     TURN_ON_HEADING_LOST,
+    TURN_RIGHT_STEER_DEG,
     TURN_TIMEOUT_FACTOR,
 )
 from runtime.resource_limits import turn_timeout_s, validate_route_steps
@@ -33,6 +35,8 @@ logger = logging.getLogger(__name__)
 class TurnSettings:
     """Degree-turn and settle parameters; live-tunable from the dashboard Tune tab."""
 
+    left_steer_deg: float = TURN_LEFT_STEER_DEG
+    right_steer_deg: float = TURN_RIGHT_STEER_DEG
     latency_s: float = TURN_LATENCY_S
     nominal_omega_dps: float = TURN_NOMINAL_OMEGA_DPS
     timeout_factor: float = TURN_TIMEOUT_FACTOR
@@ -83,7 +87,6 @@ class Pi5ScriptRunner:
         self._servo_cb: Callable[[float], None] | None = None
         self._relay_cb: Callable[[str], None] | None = None
         self._center_angle: float = 90.0 + float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
-        self._max_steer: float = float(os.getenv("MAX_STEERING_OFFSET", "60"))
         # Tile steps: the counter line looks ahead of the car, so a step can
         # stop this many seams early (calibrate on a measured run).
         self._tile_count_lead = int(os.getenv("TILE_STEP_COUNT_LEAD", "0"))
@@ -110,6 +113,15 @@ class Pi5ScriptRunner:
     def set_tile_count_getter(self, fn: Callable[[], int]) -> None:
         """Running cross-line tile count (needed for {"tiles": N} steps)."""
         self._tile_count_getter = fn
+
+    def _steer_angle(self, side: int) -> float:
+        """Servo angle for a `left` (+1) or `right` (-1) step, clamped to 0..180."""
+        offset = self.turn.left_steer_deg if side > 0 else self.turn.right_steer_deg
+        angle = self._center_angle + side * abs(float(offset))
+        clamped = max(0.0, min(180.0, angle))
+        if clamped != angle:
+            logger.warning("%s steer %.1f clamped to servo %.1f", "left" if side > 0 else "right", angle, clamped)
+        return clamped
 
     def set_heading_source(self, reset_fn: Callable[[], None], sample_fn: Callable[[], Any]) -> None:
         """Turn yaw tracker (needed for {"degrees": N} and settle steps).
@@ -273,10 +285,10 @@ class Pi5ScriptRunner:
             angle = self._center_angle
         elif action == "left":
             base_cmd = "FORWARD"
-            angle = self._center_angle + self._max_steer
+            angle = self._steer_angle(+1)
         elif action == "right":
             base_cmd = "FORWARD"
-            angle = self._center_angle - self._max_steer
+            angle = self._steer_angle(-1)
         elif action == "turn_left":
             base_cmd = "TURN_LEFT"
             angle = None

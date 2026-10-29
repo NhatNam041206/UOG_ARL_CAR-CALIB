@@ -251,6 +251,10 @@ TURN_NOMINAL_OMEGA_DPS = _get_float("TURN_NOMINAL_OMEGA_DPS", 40.0)  # full lock
 TURN_TIMEOUT_FACTOR = _get_float("TURN_TIMEOUT_FACTOR", 2.0)  # x nominal turn time
 TURN_HEADING_LOST_S = _get_float("TURN_HEADING_LOST_S", 0.6)
 TURN_ON_HEADING_LOST = _get_str("TURN_ON_HEADING_LOST", "time").strip().lower()  # time | stop
+# Servo offset from centre for `left` / `right` steps, per side (servo deg).
+# Both fall back to MAX_STEERING_OFFSET (the old symmetric value, 60 in the runner).
+TURN_LEFT_STEER_DEG = _get_float("TURN_LEFT_STEER_DEG", _get_float("MAX_STEERING_OFFSET", 60.0))
+TURN_RIGHT_STEER_DEG = _get_float("TURN_RIGHT_STEER_DEG", _get_float("MAX_STEERING_OFFSET", 60.0))
 # Settle step: slow straight drive steered on grid heading + lane offset.
 SETTLE_K_PSI = _get_float("SETTLE_K_PSI", 1.0)  # servo deg per heading deg
 SETTLE_K_OFFSET = _get_float("SETTLE_K_OFFSET", 20.0)  # servo deg per lane_offset_ratio
