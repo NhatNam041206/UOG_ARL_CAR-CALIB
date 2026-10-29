@@ -1289,6 +1289,18 @@ let tuneDraft = {};
 let tuneTouched = false;
 let tuneEditing = false;
 let tuneRenderedSchema = "";
+// Group filter: "" = ALL. Remembered per browser; hidden groups keep their staged values.
+const tuneGroupFilter = document.getElementById("tuneGroupFilter");
+let tuneGroup = "";
+try { tuneGroup = localStorage.getItem("tuneGroup") || ""; } catch (e) { tuneGroup = ""; }
+
+function renderTuneGroupOptions(groups) {
+  if (!tuneGroupFilter) return;
+  if (tuneGroup && !groups.includes(tuneGroup)) tuneGroup = "";
+  tuneGroupFilter.innerHTML = `<option value="">ALL</option>` + groups
+    .map(g => `<option value="${safeText(g)}">${safeText(g)}</option>`).join("");
+  tuneGroupFilter.value = tuneGroup;
+}
 
 function tuneSchemaSig(schema) {
   return (schema || []).map(s => s.key).join(",");
@@ -1333,8 +1345,9 @@ function renderTuneFields() {
     if (!byGroup[spec.group]) byGroup[spec.group] = [];
     byGroup[spec.group].push(spec);
   });
+  renderTuneGroupOptions(Object.keys(byGroup));
   let html = "";
-  Object.keys(byGroup).forEach(group => {
+  Object.keys(byGroup).filter(group => !tuneGroup || group === tuneGroup).forEach(group => {
     html += `<h3>${safeText(group)}</h3>`;
     byGroup[group].forEach(spec => {
       const key = spec.key;
@@ -1434,6 +1447,13 @@ if (tuneFields) {
     updateTunePair(key, value);
     renderTuneStatus();
   });
+}
+if (tuneGroupFilter) {
+  tuneGroupFilter.onchange = () => {
+    tuneGroup = tuneGroupFilter.value;
+    try { localStorage.setItem("tuneGroup", tuneGroup); } catch (e) { /* private window */ }
+    renderTuneFields();
+  };
 }
 if (tuneApplyBtn) tuneApplyBtn.onclick = () => tunePost("/api/tune", {values: tuneDraft}, "PUT");
 if (tuneSaveBtn) tuneSaveBtn.onclick = () => tunePost("/api/tune/save");

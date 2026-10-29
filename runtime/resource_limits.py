@@ -37,9 +37,14 @@ VALID_ROUTE_ACTIONS = frozenset({
 })
 
 
-def turn_timeout_s(degrees: float) -> float:
+def turn_timeout_s(
+    degrees: float,
+    latency_s: float = TURN_LATENCY_S,
+    nominal_omega_dps: float = TURN_NOMINAL_OMEGA_DPS,
+    timeout_factor: float = TURN_TIMEOUT_FACTOR,
+) -> float:
     """Safety timeout of a degrees step; also what it counts toward the route total."""
-    return TURN_TIMEOUT_FACTOR * float(degrees) / max(1.0, TURN_NOMINAL_OMEGA_DPS) + TURN_LATENCY_S
+    return timeout_factor * float(degrees) / max(1.0, nominal_omega_dps) + latency_s
 
 # Dashboard configuration is persistent control data, not disposable telemetry.
 # Keep this explicit even when a deployment accidentally mounts log_root and

@@ -71,13 +71,11 @@ def _wait_done(runner: Pi5ScriptRunner, timeout: float = 5.0) -> None:
     assert runner.is_running() is False
 
 
-def test_degree_turn_stops_at_target_minus_latency_lead(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "TURN_LATENCY_S", 0.1)
+def test_degree_turn_stops_at_target_minus_latency_lead():
     heading = _FakeHeading(omega=200.0)
     base_cmds: list[str] = []
     runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.1
     runner.set_handlers(base_cmds.append, lambda _a: None, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     t0 = time.monotonic()
@@ -94,13 +92,11 @@ def test_degree_turn_stops_at_target_minus_latency_lead(monkeypatch):
     assert base_cmds[0] == "FORWARD" and base_cmds[-1] == "STOP"
 
 
-def test_right_degree_turn_uses_negative_yaw(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "TURN_LATENCY_S", 0.0)
+def test_right_degree_turn_uses_negative_yaw():
     heading = _FakeHeading(omega=-60.0)
     angles: list[float] = []
     runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.0
     runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     assert runner.submit([{"action": "right", "degrees": 30}]) is True
@@ -109,15 +105,13 @@ def test_right_degree_turn_uses_negative_yaw(monkeypatch):
     assert angles[0] < runner._center_angle
 
 
-def test_degree_turn_falls_back_to_time_when_heading_is_lost(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "TURN_LATENCY_S", 0.05)
-    monkeypatch.setattr(mod, "TURN_HEADING_LOST_S", 0.1)
-    monkeypatch.setattr(mod, "TURN_NOMINAL_OMEGA_DPS", 100.0)
-    monkeypatch.setattr(mod, "TURN_ON_HEADING_LOST", "time")
+def test_degree_turn_falls_back_to_time_when_heading_is_lost():
     heading = _FakeHeading(valid=False)
     runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.heading_lost_s = 0.1
+    runner.turn.nominal_omega_dps = 100.0
+    runner.turn.finish_on_time = "time" == "time"
     runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     assert runner.submit([{"action": "left", "degrees": 30}]) is True
@@ -127,15 +121,13 @@ def test_degree_turn_falls_back_to_time_when_heading_is_lost(monkeypatch):
     assert turn["elapsed_s"] == pytest.approx(0.3, abs=0.1)
 
 
-def test_degree_turn_stops_script_when_heading_lost_and_mode_stop(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "TURN_LATENCY_S", 0.05)
-    monkeypatch.setattr(mod, "TURN_HEADING_LOST_S", 0.1)
-    monkeypatch.setattr(mod, "TURN_ON_HEADING_LOST", "stop")
+def test_degree_turn_stops_script_when_heading_lost_and_mode_stop():
     heading = _FakeHeading(valid=False)
     base_cmds: list[str] = []
     runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.heading_lost_s = 0.1
+    runner.turn.finish_on_time = "stop" == "time"
     runner.set_handlers(base_cmds.append, lambda _a: None, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     assert runner.submit([{"action": "left", "degrees": 90}, {"action": "forward", "duration_s": 1.0}]) is True
@@ -154,18 +146,16 @@ def test_degree_steps_need_a_heading_source():
         runner.submit([{"action": "settle", "duration_s": 1.0}])
 
 
-def test_settle_steers_right_when_car_points_left_and_is_rate_limited(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "SETTLE_K_PSI", 1.0)
-    monkeypatch.setattr(mod, "SETTLE_K_OFFSET", 0.0)
-    monkeypatch.setattr(mod, "SETTLE_MAX_STEER", 20.0)
-    monkeypatch.setattr(mod, "SETTLE_RATE_DPS", 50.0)
-    monkeypatch.setattr(mod, "SETTLE_EXIT_HOLD_S", 0.0)
+def test_settle_steers_right_when_car_points_left_and_is_rate_limited():
     heading = _FakeHeading(omega=0.0, psi=15.0, offset=0.0)
     base_cmds: list[str] = []
     angles: list[float] = []
     runner = Pi5ScriptRunner()
+    runner.turn.settle_k_psi = 1.0
+    runner.turn.settle_k_offset = 0.0
+    runner.turn.settle_max_steer = 20.0
+    runner.turn.settle_rate_dps = 50.0
+    runner.turn.settle_exit_hold_s = 0.0
     runner.set_handlers(base_cmds.append, angles.append, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     assert runner.vision_pid_active() is True
@@ -183,12 +173,10 @@ def test_settle_steers_right_when_car_points_left_and_is_rate_limited(monkeypatc
     assert max(steps) <= 50.0 * 0.15
 
 
-def test_settle_exits_early_once_aligned(monkeypatch):
-    import runtime.pi5_script_runner as mod
-
-    monkeypatch.setattr(mod, "SETTLE_EXIT_HOLD_S", 0.15)
+def test_settle_exits_early_once_aligned():
     heading = _FakeHeading(omega=0.0, psi=1.0, offset=0.02)
     runner = Pi5ScriptRunner()
+    runner.turn.settle_exit_hold_s = 0.15
     runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
     runner.set_heading_source(heading.reset, heading.sample)
     t0 = time.monotonic()

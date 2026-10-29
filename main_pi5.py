@@ -55,10 +55,10 @@ from runtime.route_logging import (
     export_routes_xlsx,
     update_route_distance,
 )
-from runtime.pi5_script_runner import Pi5ScriptRunner
+from runtime.pi5_script_runner import Pi5ScriptRunner, TurnSettings
 from runtime.latest_frame import LatestFrameCapture
 from vision.grid_heading import TurnYawTracker
-from runtime.calib_tuning import CalibTuneManager
+from runtime.calib_tuning import CalibTuneManager, turning_bindings
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from runtime.dashboard_stream import DashboardStreamBroker
@@ -274,6 +274,7 @@ def main() -> None:
     # GRID_HEADING_MODE: script (while a script runs), always, off.
     turn_yaw = TurnYawTracker()
     grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
+    turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -451,6 +452,7 @@ def main() -> None:
         calibrator,
         tune_file,
         idle_getter=_tune_idle_state,
+        extras=turning_bindings(turn_settings, turn_yaw.estimator.config),
     )
     # Dashboard Map tab (tile count -> campus map cell) and Pre-calibrate tab.
     map_session = MapSession.from_env()
@@ -557,6 +559,7 @@ def main() -> None:
 
         _steps: list[dict[str, Any]] = []
         script_runner = Pi5ScriptRunner()
+        script_runner.turn = turn_settings
         script_runner.set_handlers(_base_handler, _servo_handler, _relay_handler)
         script_runner.set_tile_count_getter(lambda: calibrator.cross_counter.tile_count)
         if grid_heading_mode != "off":

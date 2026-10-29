@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from config.settings import (
@@ -21,10 +22,29 @@ from config.settings import (
     TURN_LATENCY_S,
     TURN_NOMINAL_OMEGA_DPS,
     TURN_ON_HEADING_LOST,
+    TURN_TIMEOUT_FACTOR,
 )
 from runtime.resource_limits import turn_timeout_s, validate_route_steps
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TurnSettings:
+    """Degree-turn and settle parameters; live-tunable from the dashboard Tune tab."""
+
+    latency_s: float = TURN_LATENCY_S
+    nominal_omega_dps: float = TURN_NOMINAL_OMEGA_DPS
+    timeout_factor: float = TURN_TIMEOUT_FACTOR
+    heading_lost_s: float = TURN_HEADING_LOST_S
+    finish_on_time: bool = TURN_ON_HEADING_LOST != "stop"
+    settle_k_psi: float = SETTLE_K_PSI
+    settle_k_offset: float = SETTLE_K_OFFSET
+    settle_max_steer: float = SETTLE_MAX_STEER
+    settle_rate_dps: float = SETTLE_RATE_DPS
+    settle_exit_psi_deg: float = SETTLE_EXIT_PSI_DEG
+    settle_exit_offset: float = SETTLE_EXIT_OFFSET
+    settle_exit_hold_s: float = SETTLE_EXIT_HOLD_S
 
 BASE_MAP: dict[str, tuple[int, int, int]] = {
     "STOP": (0, 0, 0),
@@ -74,6 +94,7 @@ class Pi5ScriptRunner:
         self._heading_sample: Callable[[], Any] | None = None
         self._step_degrees_done = 0.0
         self._last_turn: dict[str, Any] | None = None
+        self.turn = TurnSettings()
         self._last_error = ""
 
     def set_handlers(
@@ -225,8 +246,9 @@ class Pi5ScriptRunner:
         action = step.get("action", "stop")
         tiles = step.get("tiles")
         degrees = step.get("degrees")
+        cfg = self.turn
         if degrees is not None:
-            duration_s = turn_timeout_s(float(degrees))
+            duration_s = turn_timeout_s(float(degrees), cfg.latency_s, cfg.nominal_omega_dps, cfg.timeout_factor)
             # Left turns give positive yaw.
             turn_sign = 1.0 if action in ("left", "turn_left") else -1.0
             if self._heading_reset is not None:
@@ -302,20 +324,20 @@ class Pi5ScriptRunner:
                     last_valid_elapsed = elapsed
                 omega = turn_sign * float(sample.omega_dps) if valid and sample.omega_dps is not None else 0.0
                 if omega < 5.0:
-                    omega = TURN_NOMINAL_OMEGA_DPS
-                omega = min(omega, 2.0 * TURN_NOMINAL_OMEGA_DPS)
-                # The camera sees the car TURN_LATENCY_S late and the stop takes
+                    omega = cfg.nominal_omega_dps
+                omega = min(omega, 2.0 * cfg.nominal_omega_dps)
+                # The camera sees the car latency_s late and the stop takes
                 # as long to act: the car keeps turning omega * latency after this.
-                lead = omega * TURN_LATENCY_S
+                lead = omega * cfg.latency_s
                 with self._lock:
                     self._step_degrees_done = seen
                 if fallback_end_s is None and valid and seen >= float(degrees) - lead:
                     self._record_turn(action, degrees, seen, omega, lead, elapsed, sample.source, False)
                     break
                 # At the start the car has not moved yet (latency), so allow that long.
-                lost = elapsed - max(last_valid_elapsed, TURN_LATENCY_S)
-                if fallback_end_s is None and not valid and lost > TURN_HEADING_LOST_S:
-                    if TURN_ON_HEADING_LOST == "stop":
+                lost = elapsed - max(last_valid_elapsed, cfg.latency_s)
+                if fallback_end_s is None and not valid and lost > cfg.heading_lost_s:
+                    if not cfg.finish_on_time:
                         self._fail_step(f"turn stopped: heading lost at {seen:.0f}/{degrees:.0f} deg")
                         break
                     # Finish open loop: both latencies cancel, so the turn takes degrees / omega.
@@ -335,17 +357,17 @@ class Pi5ScriptRunner:
                     # psi > 0: the car points left of the grid; offset > 0: lane
                     # centre is to the right. Both need a right correction, and
                     # right is below centre.
-                    u = SETTLE_K_PSI * float(sample.psi_deg) + SETTLE_K_OFFSET * offset
-                    target = self._center_angle - max(-SETTLE_MAX_STEER, min(SETTLE_MAX_STEER, u))
+                    u = cfg.settle_k_psi * float(sample.psi_deg) + cfg.settle_k_offset * offset
+                    target = self._center_angle - max(-cfg.settle_max_steer, min(cfg.settle_max_steer, u))
                     aligned = (
-                        abs(float(sample.psi_deg)) <= SETTLE_EXIT_PSI_DEG
+                        abs(float(sample.psi_deg)) <= cfg.settle_exit_psi_deg
                         and sample.lane_offset_ratio is not None
-                        and abs(offset) <= SETTLE_EXIT_OFFSET
+                        and abs(offset) <= cfg.settle_exit_offset
                     )
                     settle_ok_s = settle_ok_s + dt if aligned else 0.0
                 else:
                     settle_ok_s = 0.0
-                step_max = SETTLE_RATE_DPS * dt
+                step_max = cfg.settle_rate_dps * dt
                 current = angle if angle is not None else self._center_angle
                 new_angle = current + max(-step_max, min(step_max, target - current))
                 if abs(new_angle - current) >= 0.5:
@@ -354,7 +376,7 @@ class Pi5ScriptRunner:
                         self._current_angle = angle
                     if self._servo_cb is not None:
                         self._servo_cb(angle)
-                if SETTLE_EXIT_HOLD_S > 0 and settle_ok_s >= SETTLE_EXIT_HOLD_S:
+                if cfg.settle_exit_hold_s > 0 and settle_ok_s >= cfg.settle_exit_hold_s:
                     break
                 if timed_out:
                     break

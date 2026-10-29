@@ -76,6 +76,15 @@ have not been tuned on the car yet.
 10-28 runs) instead of `turn_left`/`turn_right`. `TILE_SETTLE_S` > 0 adds a
 settle step after every turn.
 
+## Dashboard Tune tab
+
+The turn, settle and grid-heading parameters are also in the Tune tab, in the
+groups **Turning**, **Settle** and **Grid heading**. Their env values above
+are the defaults. Apply and Save work as for the vision parameters, and saved
+values go to `calib_tune.json`. The group selector above the fields shows a
+single group or ALL. `GRID_HEADING_MODE`, the camera settings and the A*
+settings are env-only: they take effect at start-up or when a plan is made.
+
 ## Camera latency
 
 `CAMERA_BUFFER_SIZE` (1) sets `CAP_PROP_BUFFERSIZE`. `CAMERA_LATEST_FRAME=true`
