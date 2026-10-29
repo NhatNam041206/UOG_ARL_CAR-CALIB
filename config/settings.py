@@ -242,6 +242,23 @@ ROUTE_MAX_TOTAL_DURATION_S = _get_float("ROUTE_MAX_TOTAL_DURATION_S", 300.0)
 # Tile steps ("forward N tiles", counted by the cross-line counter).
 ROUTE_MAX_STEP_TILES = _get_int("ROUTE_MAX_STEP_TILES", 200)
 TILE_STEP_MAX_S_PER_TILE = _get_float("TILE_STEP_MAX_S_PER_TILE", 5.0)  # safety timeout per tile
+# Closed-loop turns ("left 90 degrees"): stop when the yaw seen by the grid
+# heading reaches degrees - yaw_rate * TURN_LATENCY_S (command-to-camera delay,
+# ~0.65 s measured on 2026-10-28).
+ROUTE_MAX_STEP_DEGREES = _get_float("ROUTE_MAX_STEP_DEGREES", 180.0)
+TURN_LATENCY_S = _get_float("TURN_LATENCY_S", 0.65)
+TURN_NOMINAL_OMEGA_DPS = _get_float("TURN_NOMINAL_OMEGA_DPS", 40.0)  # full lock, measured 38-40 deg/s
+TURN_TIMEOUT_FACTOR = _get_float("TURN_TIMEOUT_FACTOR", 2.0)  # x nominal turn time
+TURN_HEADING_LOST_S = _get_float("TURN_HEADING_LOST_S", 0.6)
+TURN_ON_HEADING_LOST = _get_str("TURN_ON_HEADING_LOST", "time").strip().lower()  # time | stop
+# Settle step: slow straight drive steered on grid heading + lane offset.
+SETTLE_K_PSI = _get_float("SETTLE_K_PSI", 1.0)  # servo deg per heading deg
+SETTLE_K_OFFSET = _get_float("SETTLE_K_OFFSET", 20.0)  # servo deg per lane_offset_ratio
+SETTLE_MAX_STEER = _get_float("SETTLE_MAX_STEER", 25.0)  # servo deg from centre
+SETTLE_RATE_DPS = _get_float("SETTLE_RATE_DPS", 60.0)  # servo slew limit
+SETTLE_EXIT_PSI_DEG = _get_float("SETTLE_EXIT_PSI_DEG", 3.0)
+SETTLE_EXIT_OFFSET = _get_float("SETTLE_EXIT_OFFSET", 0.1)
+SETTLE_EXIT_HOLD_S = _get_float("SETTLE_EXIT_HOLD_S", 0.3)  # 0 disables the early exit
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]

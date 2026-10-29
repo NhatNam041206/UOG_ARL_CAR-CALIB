@@ -76,3 +76,18 @@ def test_invalid_inputs_are_rejected():
     tracker = TilePositionTracker(tile_map, (0, 0), path=path)
     with pytest.raises(ValueError):
         tracker.apply_anchor((3, 4), tile_count=1)
+
+
+def test_path_to_steps_degree_turns_with_settle(monkeypatch):
+    from positioning.route_steps import path_to_steps
+
+    monkeypatch.setenv("TILE_TURN_DEGREES", "true")
+    monkeypatch.setenv("TILE_TURN_ACTION", "steer")
+    monkeypatch.setenv("TILE_SETTLE_S", "1.5")
+    steps = path_to_steps([(0, 0), (0, 1), (1, 1)])
+    assert steps == [
+        {"action": "forward", "tiles": 1},
+        {"action": "right", "degrees": 90.0},
+        {"action": "settle", "duration_s": 1.5},
+        {"action": "forward", "tiles": 1},
+    ]

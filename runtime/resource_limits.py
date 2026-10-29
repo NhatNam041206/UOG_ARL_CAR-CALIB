@@ -13,20 +13,33 @@ from config.settings import (
     DATA_MAX_BYTES,
     DATA_RETENTION_DAYS,
     DISK_MIN_FREE_BYTES,
+    ROUTE_MAX_STEP_DEGREES,
     ROUTE_MAX_STEP_DURATION_S,
     ROUTE_MAX_STEP_TILES,
     ROUTE_MAX_STEPS,
     ROUTE_MAX_TOTAL_DURATION_S,
     TILE_STEP_MAX_S_PER_TILE,
+    TURN_LATENCY_S,
+    TURN_NOMINAL_OMEGA_DPS,
+    TURN_TIMEOUT_FACTOR,
 )
 
 # Actions that may run by tile count: the car drives forward under vision
 # steering, so the cross-line counter sees the seams pass.
 TILE_ROUTE_ACTIONS = frozenset({"forward", "straight"})
 
+# Actions that may run by degrees: the grid heading watches the yaw and the
+# runner stops the turn when it is reached.
+DEGREE_ROUTE_ACTIONS = frozenset({"left", "right", "turn_left", "turn_right"})
+
 VALID_ROUTE_ACTIONS = frozenset({
-    "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause",
+    "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
 })
+
+
+def turn_timeout_s(degrees: float) -> float:
+    """Safety timeout of a degrees step; also what it counts toward the route total."""
+    return TURN_TIMEOUT_FACTOR * float(degrees) / max(1.0, TURN_NOMINAL_OMEGA_DPS) + TURN_LATENCY_S
 
 # Dashboard configuration is persistent control data, not disposable telemetry.
 # Keep this explicit even when a deployment accidentally mounts log_root and
@@ -73,6 +86,24 @@ def validate_route_steps(raw_steps: Any) -> list[dict[str, Any]]:
                     f"(tile steps count {TILE_STEP_MAX_S_PER_TILE:g} s per tile)"
                 )
             normalized.append({"action": action, "tiles": tiles})
+            continue
+        if raw_step.get("degrees") not in (None, ""):
+            degrees = raw_step.get("degrees")
+            if isinstance(degrees, bool) or not isinstance(degrees, (int, float)) or not math.isfinite(degrees):
+                raise ScriptValidationError(f"step {index} degrees must be a number")
+            if action not in DEGREE_ROUTE_ACTIONS:
+                raise ScriptValidationError(f"step {index}: only left/right/turn_left/turn_right can run by degrees")
+            if not 5.0 <= float(degrees) <= ROUTE_MAX_STEP_DEGREES:
+                raise ScriptValidationError(
+                    f"step {index} degrees must be between 5 and {ROUTE_MAX_STEP_DEGREES:g}"
+                )
+            total_duration += turn_timeout_s(float(degrees))
+            if total_duration > ROUTE_MAX_TOTAL_DURATION_S:
+                raise ScriptValidationError(
+                    f"total route duration must not exceed {ROUTE_MAX_TOTAL_DURATION_S:g} seconds "
+                    "(degree steps count their safety timeout)"
+                )
+            normalized.append({"action": action, "degrees": float(degrees)})
             continue
         try:
             duration = float(raw_step.get("duration_s", 0.0))

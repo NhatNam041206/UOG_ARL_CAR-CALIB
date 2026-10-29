@@ -95,3 +95,16 @@ def test_lan_dashboard_requires_token() -> None:
     server = Pi5HttpServer(host="0.0.0.0", port=0, token="")
     with pytest.raises(ValueError, match="DASHBOARD_TOKEN"):
         server.start()
+
+
+def test_degree_steps_validate_action_and_range():
+    from runtime.resource_limits import ScriptValidationError, validate_route_steps
+
+    assert validate_route_steps([{"action": "left", "degrees": 90}]) == [{"action": "left", "degrees": 90.0}]
+    assert validate_route_steps([{"action": "settle", "duration_s": 1.5}]) == [{"action": "settle", "duration_s": 1.5}]
+    for bad in ({"action": "forward", "degrees": 90}, {"action": "left", "degrees": 1}, {"action": "left", "degrees": "x"}):
+        try:
+            validate_route_steps([bad])
+        except ScriptValidationError:
+            continue
+        raise AssertionError(f"accepted {bad}")

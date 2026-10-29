@@ -163,6 +163,8 @@ the forward drive when the counter has seen N seams since the step began.
 - A path becomes straight runs (`forward N tiles`) and 90-degree turns in
   place (`turn_left` / `turn_right` for `TILE_TURN_90_S`, default 1.5 s;
   calibrate on the floor). Rows grow south, so east → south is a right turn.
+  `TILE_TURN_DEGREES`, `TILE_TURN_ACTION` and `TILE_SETTLE_S` switch to
+  closed-loop degree turns and settle steps (see `docs/turning.md`).
   The car must start facing along the first segment. U-turns are rejected.
 - Safety: a tile step that has not seen its seams after
   `TILE_STEP_MAX_S_PER_TILE` (5 s) x N stops the script with `last_error`

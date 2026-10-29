@@ -62,10 +62,15 @@
           <option value="turn_left">turn left (base 1 0 0)</option>
           <option value="turn_right">turn right (base 0 1 1)</option>
           <option value="straight">straight (alias)</option>
+          <option value="settle">settle (đi chậm, nắn hướng theo lưới gạch)</option>
           <option value="stop">stop / pause</option>
         </select>
         <input id="duration" type="number" min="0" step="0.5" value="2">
         <span class="muted" id="durationUnit">seconds</span>
+        <select id="turnUnit" style="display:none" title="degrees = rẽ vòng kín: dừng khi camera thấy đã quay đủ góc">
+          <option value="s">seconds</option>
+          <option value="deg">degrees</option>
+        </select>
         <input id="actionDistance" type="number" min="0" step="any" placeholder="distance (m)" style="max-width:130px">
         <span class="muted" id="avgSpeedLabel"></span>
         <button id="add">+ add step</button>
@@ -297,6 +302,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-anchor-ux"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261029-degree-turns"></script>
 </body>
 </html>

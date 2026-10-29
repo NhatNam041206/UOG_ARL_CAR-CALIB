@@ -8,8 +8,21 @@ import threading
 import time
 from typing import Any, Callable
 
-from config.settings import TILE_STEP_MAX_S_PER_TILE
-from runtime.resource_limits import validate_route_steps
+from config.settings import (
+    SETTLE_EXIT_HOLD_S,
+    SETTLE_EXIT_OFFSET,
+    SETTLE_EXIT_PSI_DEG,
+    SETTLE_K_OFFSET,
+    SETTLE_K_PSI,
+    SETTLE_MAX_STEER,
+    SETTLE_RATE_DPS,
+    TILE_STEP_MAX_S_PER_TILE,
+    TURN_HEADING_LOST_S,
+    TURN_LATENCY_S,
+    TURN_NOMINAL_OMEGA_DPS,
+    TURN_ON_HEADING_LOST,
+)
+from runtime.resource_limits import turn_timeout_s, validate_route_steps
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +36,11 @@ BASE_MAP: dict[str, tuple[int, int, int]] = {
     "TURN_RIGHT": (0, 1, 1),
 }
 
-_VALID_ACTIONS = {"forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause"}
+_VALID_ACTIONS = {
+    "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
+}
+# Steps that pin the servo themselves, so the vision PID must not publish.
+_SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle")
 
 
 class Pi5ScriptRunner:
@@ -52,6 +69,11 @@ class Pi5ScriptRunner:
         self._tile_count_lead = int(os.getenv("TILE_STEP_COUNT_LEAD", "0"))
         self._tile_count_getter: Callable[[], int] | None = None
         self._step_tiles_done = 0
+        # Degree steps and settle read the grid heading (vision/grid_heading.py).
+        self._heading_reset: Callable[[], None] | None = None
+        self._heading_sample: Callable[[], Any] | None = None
+        self._step_degrees_done = 0.0
+        self._last_turn: dict[str, Any] | None = None
         self._last_error = ""
 
     def set_handlers(
@@ -67,6 +89,21 @@ class Pi5ScriptRunner:
     def set_tile_count_getter(self, fn: Callable[[], int]) -> None:
         """Running cross-line tile count (needed for {"tiles": N} steps)."""
         self._tile_count_getter = fn
+
+    def set_heading_source(self, reset_fn: Callable[[], None], sample_fn: Callable[[], Any]) -> None:
+        """Turn yaw tracker (needed for {"degrees": N} and settle steps).
+
+        sample_fn returns an object with yaw_deg, omega_dps, psi_deg,
+        lane_offset_ratio and valid (vision.grid_heading.YawSample).
+        """
+        self._heading_reset = reset_fn
+        self._heading_sample = sample_fn
+
+    def needs_heading(self) -> bool:
+        """True while the current step reads the heading (main loop runs the estimator)."""
+        with self._lock:
+            step = self._current_step if self._running else None
+        return step is not None and (step.get("degrees") is not None or step.get("action") == "settle")
 
     def current_action(self) -> str | None:
         with self._lock:
@@ -86,7 +123,7 @@ class Pi5ScriptRunner:
             if not self._running or self._current_step is None:
                 return True
             action = self._current_step.get("action", "stop")
-        return action not in ("left", "right", "backward")
+        return action not in _SERVO_PINNED_ACTIONS
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -101,6 +138,8 @@ class Pi5ScriptRunner:
                 "step_elapsed_s": self._step_elapsed_s,
                 "step_remaining_s": remaining,
                 "step_tiles_done": self._step_tiles_done,
+                "step_degrees_done": round(self._step_degrees_done, 1),
+                "last_turn": dict(self._last_turn) if self._last_turn is not None else None,
                 "last_error": self._last_error,
             }
 
@@ -108,6 +147,9 @@ class Pi5ScriptRunner:
         normalized_steps = validate_route_steps(steps)
         if any("tiles" in s for s in normalized_steps) and self._tile_count_getter is None:
             raise ValueError("tile steps need the cross-line counter")
+        needs_heading = any(s.get("degrees") is not None or s.get("action") == "settle" for s in normalized_steps)
+        if needs_heading and self._heading_sample is None:
+            raise ValueError("degree and settle steps need the grid heading")
         with self._lock:
             if self._running:
                 return False
@@ -117,6 +159,7 @@ class Pi5ScriptRunner:
             self._step_elapsed_s = 0.0
             self._step_duration_s = 0.0
             self._steps = normalized_steps
+            self._last_turn = None
             self._last_error = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -181,7 +224,16 @@ class Pi5ScriptRunner:
     def _execute_step(self, step: dict[str, Any]) -> None:
         action = step.get("action", "stop")
         tiles = step.get("tiles")
-        if tiles is not None:
+        degrees = step.get("degrees")
+        if degrees is not None:
+            duration_s = turn_timeout_s(float(degrees))
+            # Left turns give positive yaw.
+            turn_sign = 1.0 if action in ("left", "turn_left") else -1.0
+            if self._heading_reset is not None:
+                self._heading_reset()
+            last_valid_elapsed = 0.0
+            fallback_end_s: float | None = None
+        elif tiles is not None:
             # Safety timeout: the step fails (and the script stops) if the
             # counter does not see the seams in time.
             duration_s = float(tiles) * TILE_STEP_MAX_S_PER_TILE
@@ -209,6 +261,10 @@ class Pi5ScriptRunner:
         elif action == "turn_right":
             base_cmd = "TURN_RIGHT"
             angle = None
+        elif action == "settle":
+            base_cmd = "FORWARD"
+            angle = self._center_angle
+            settle_ok_s = 0.0
         else:
             base_cmd = "STOP"
             angle = None
@@ -217,6 +273,7 @@ class Pi5ScriptRunner:
             self._step_elapsed_s = 0.0
             self._step_duration_s = duration_s
             self._step_tiles_done = 0
+            self._step_degrees_done = 0.0
             self._current_base_cmd = base_cmd
             self._current_angle = angle
 
@@ -232,10 +289,76 @@ class Pi5ScriptRunner:
                 if self._paused:
                     last_tick = now
                     continue
-                self._step_elapsed_s += now - last_tick
+                dt = now - last_tick
+                self._step_elapsed_s += dt
+                elapsed = self._step_elapsed_s
                 timed_out = self._step_elapsed_s >= self._step_duration_s
                 last_tick = now
-            if tiles is not None:
+            if degrees is not None:
+                sample = self._heading_sample() if self._heading_sample is not None else None
+                valid = sample is not None and bool(sample.valid)
+                seen = turn_sign * float(sample.yaw_deg) if sample is not None else 0.0
+                if valid:
+                    last_valid_elapsed = elapsed
+                omega = turn_sign * float(sample.omega_dps) if valid and sample.omega_dps is not None else 0.0
+                if omega < 5.0:
+                    omega = TURN_NOMINAL_OMEGA_DPS
+                omega = min(omega, 2.0 * TURN_NOMINAL_OMEGA_DPS)
+                # The camera sees the car TURN_LATENCY_S late and the stop takes
+                # as long to act: the car keeps turning omega * latency after this.
+                lead = omega * TURN_LATENCY_S
+                with self._lock:
+                    self._step_degrees_done = seen
+                if fallback_end_s is None and valid and seen >= float(degrees) - lead:
+                    self._record_turn(action, degrees, seen, omega, lead, elapsed, sample.source, False)
+                    break
+                # At the start the car has not moved yet (latency), so allow that long.
+                lost = elapsed - max(last_valid_elapsed, TURN_LATENCY_S)
+                if fallback_end_s is None and not valid and lost > TURN_HEADING_LOST_S:
+                    if TURN_ON_HEADING_LOST == "stop":
+                        self._fail_step(f"turn stopped: heading lost at {seen:.0f}/{degrees:.0f} deg")
+                        break
+                    # Finish open loop: both latencies cancel, so the turn takes degrees / omega.
+                    fallback_end_s = float(degrees) / omega
+                    logger.warning("Turn: heading lost at %.0f deg, finishing on time (%.2f s)", seen, fallback_end_s)
+                if fallback_end_s is not None and elapsed >= fallback_end_s:
+                    self._record_turn(action, degrees, seen, omega, lead, elapsed, "time", True)
+                    break
+                if timed_out:
+                    self._fail_step(f"turn timed out: {seen:.0f}/{degrees:.0f} deg in {duration_s:.1f} s")
+                    break
+            elif action == "settle":
+                target = self._center_angle
+                sample = self._heading_sample() if self._heading_sample is not None else None
+                if sample is not None and sample.valid and sample.psi_deg is not None:
+                    offset = float(sample.lane_offset_ratio) if sample.lane_offset_ratio is not None else 0.0
+                    # psi > 0: the car points left of the grid; offset > 0: lane
+                    # centre is to the right. Both need a right correction, and
+                    # right is below centre.
+                    u = SETTLE_K_PSI * float(sample.psi_deg) + SETTLE_K_OFFSET * offset
+                    target = self._center_angle - max(-SETTLE_MAX_STEER, min(SETTLE_MAX_STEER, u))
+                    aligned = (
+                        abs(float(sample.psi_deg)) <= SETTLE_EXIT_PSI_DEG
+                        and sample.lane_offset_ratio is not None
+                        and abs(offset) <= SETTLE_EXIT_OFFSET
+                    )
+                    settle_ok_s = settle_ok_s + dt if aligned else 0.0
+                else:
+                    settle_ok_s = 0.0
+                step_max = SETTLE_RATE_DPS * dt
+                current = angle if angle is not None else self._center_angle
+                new_angle = current + max(-step_max, min(step_max, target - current))
+                if abs(new_angle - current) >= 0.5:
+                    angle = new_angle
+                    with self._lock:
+                        self._current_angle = angle
+                    if self._servo_cb is not None:
+                        self._servo_cb(angle)
+                if SETTLE_EXIT_HOLD_S > 0 and settle_ok_s >= SETTLE_EXIT_HOLD_S:
+                    break
+                if timed_out:
+                    break
+            elif tiles is not None:
                 # Add up increments instead of subtracting a start value: the
                 # counter is reset to 0 when the route session opens, which
                 # can happen just after this step has started.
@@ -248,14 +371,42 @@ class Pi5ScriptRunner:
                 if done_tiles >= target:
                     break
                 if timed_out:
-                    msg = f"tile step timed out: {done_tiles}/{target} tiles in {duration_s:.0f} s"
-                    logger.warning("Route script stopped: %s", msg)
-                    with self._lock:
-                        self._last_error = msg
-                        self._running = False
+                    self._fail_step(f"tile step timed out: {done_tiles}/{target} tiles in {duration_s:.0f} s")
                     break
             elif timed_out:
                 break
+
+    def _fail_step(self, msg: str) -> None:
+        """Stop the script; the runner's finally block sends STOP."""
+        logger.warning("Route script stopped: %s", msg)
+        with self._lock:
+            self._last_error = msg
+            self._running = False
+
+    def _record_turn(
+        self,
+        action: str,
+        degrees: float,
+        seen: float,
+        omega: float,
+        lead: float,
+        elapsed: float,
+        source: str,
+        fallback: bool,
+    ) -> None:
+        turn = {
+            "action": action,
+            "degrees": float(degrees),
+            "seen_at_stop_deg": round(seen, 1),
+            "omega_dps": round(omega, 1),
+            "lead_deg": round(lead, 1),
+            "elapsed_s": round(elapsed, 2),
+            "source": source,
+            "fallback_time": fallback,
+        }
+        logger.info("Turn done: %s", turn)
+        with self._lock:
+            self._last_turn = turn
 
     def _publish_current_command(self, base_cmd: str, angle: float | None) -> None:
         if self._base_cb is not None:

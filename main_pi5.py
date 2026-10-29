@@ -56,6 +56,8 @@ from runtime.route_logging import (
     update_route_distance,
 )
 from runtime.pi5_script_runner import Pi5ScriptRunner
+from runtime.latest_frame import LatestFrameCapture
+from vision.grid_heading import TurnYawTracker
 from runtime.calib_tuning import CalibTuneManager
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
@@ -268,6 +270,10 @@ def main() -> None:
     # Core algorithm
     # ------------------------------------------------------------------ #
     calibrator = UnifiedCalibrator(telemetry_enabled=True)
+    # Heading vs the tile grid: yaw for degree turns, heading for settle steps.
+    # GRID_HEADING_MODE: script (while a script runs), always, off.
+    turn_yaw = TurnYawTracker()
+    grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -553,6 +559,8 @@ def main() -> None:
         script_runner = Pi5ScriptRunner()
         script_runner.set_handlers(_base_handler, _servo_handler, _relay_handler)
         script_runner.set_tile_count_getter(lambda: calibrator.cross_counter.tile_count)
+        if grid_heading_mode != "off":
+            script_runner.set_heading_source(turn_yaw.request_reset, turn_yaw.sample)
 
         def _submit_script(body: str) -> bool:
             nonlocal current_sasc_scene_type
@@ -747,9 +755,16 @@ def main() -> None:
                     logger.info("Camera opened at index %d", idx)
                     test.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     test.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    # Fewer queued frames = less command-to-camera delay.
+                    buffer_size = _env_int(("CAMERA_BUFFER_SIZE",), 1)
+                    if buffer_size > 0:
+                        test.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
                     with camera_lock:
                         camera_state["current"] = idx
                         camera_state["requested"] = idx
+                    if _env_bool("CAMERA_LATEST_FRAME", False):
+                        logger.info("Camera reader: newest frame only")
+                        return LatestFrameCapture(test)
                     return test
                 test.release()
             logger.warning("No camera found across %s, retrying in 0.5s...", candidates)
@@ -834,7 +849,9 @@ def main() -> None:
                 _base_handler("STOP")
                 cap = acquire_camera(requested_idx)
 
+            t_read = time.monotonic()
             ret, frame = cap.read()
+            capture_ms = (time.monotonic() - t_read) * 1000.0
             if not ret or frame is None:
                 logger.warning("Frame %d capture failed, re-acquiring camera...", frame_num)
                 try:
@@ -850,6 +867,7 @@ def main() -> None:
                 frame = cv2.flip(frame, -1)
 
             # --- calibration ---
+            t_calib = time.monotonic()
             try:
                 calibration = calibrator.process_frame(frame, frame_num)
                 display_frame = calibrator.render_frame(frame, calibration)
@@ -859,6 +877,7 @@ def main() -> None:
                 _base_handler("STOP")
                 break
 
+            calib_ms = (time.monotonic() - t_calib) * 1000.0
             theta = calibration.observation_angle
             servo_angle = calibration.steering_angle
             fsm_state = calibration.control_state
@@ -871,6 +890,22 @@ def main() -> None:
 
             object_status = object_detector.process(frame, now=now)
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
+
+            # --- heading vs tile grid (degree turns, settle steps) ---
+            heading_ms = 0.0
+            if grid_heading_mode == "always" or (grid_heading_mode == "script" and script_running):
+                t_heading = time.monotonic()
+                turn_yaw.estimator.set_horizon_seed(calibrator._vision._vp_horizon_y)
+                turn_yaw.update(
+                    frame,
+                    now=now,
+                    lane_offset_ratio=calibration.telemetry.get("lane_offset_ratio"),
+                    # Phase correlation only matters while a turn is measured.
+                    use_phase=script_runner is not None and script_runner.needs_heading(),
+                )
+                heading_ms = (time.monotonic() - t_heading) * 1000.0
+            else:
+                turn_yaw.last_heading = None  # no stale heading in the CSV
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
@@ -1041,8 +1076,12 @@ def main() -> None:
                 "theta_src": "live" if theta is not None else ("stale" if last_known_theta is not None else "none"),
                 "servo": f"{servo_angle:.2f}",
                 "loop_ms": f"{loop_ms:.1f}",
+                "capture_ms": f"{capture_ms:.1f}",
+                "calib_ms": f"{calib_ms:.1f}",
+                "heading_ms": f"{heading_ms:.1f}",
                 "base": last_base_cmd,
             })
+            tel.update(turn_yaw.telemetry())
             tel.update(manual_decision.telemetry())
             tel.update(object_status.telemetry())
             tel.update(cross_result.telemetry())

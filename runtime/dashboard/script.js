@@ -90,14 +90,26 @@ refreshAvgSpeed();
 const scriptModeSel = document.getElementById("scriptMode");
 const durationUnit = document.getElementById("durationUnit");
 const TILE_ACTIONS = new Set(["forward", "straight"]);
+// Turns can run by degrees: the Pi stops them when the grid heading has seen the angle.
+const DEGREE_ACTIONS = new Set(["left", "right", "turn_left", "turn_right"]);
+const turnUnitSel = document.getElementById("turnUnit");
 function stepUsesTiles(action) {
   return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
 }
+function stepUsesDegrees(action) {
+  return !!turnUnitSel && DEGREE_ACTIONS.has(action) && turnUnitSel.value === "deg";
+}
 function stepAmount(s) {
-  return s.tiles != null ? `${s.tiles} ô` : `${Number(s.duration_s).toFixed(1)} s`;
+  if (s.tiles != null) return `${s.tiles} ô`;
+  if (s.degrees != null) return `${Number(s.degrees).toFixed(0)}°`;
+  return `${Number(s.duration_s).toFixed(1)} s`;
 }
 function updateDurationUnit() {
-  if (durationUnit) durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : "seconds";
+  if (turnUnitSel) turnUnitSel.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "" : "none";
+  if (durationUnit) {
+    durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : (stepUsesDegrees(actionInput.value) ? "" : "seconds");
+    durationUnit.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "none" : "";
+  }
 }
 async function loadStepsFromMap() {
   const hint = document.getElementById("scriptModeHint");
@@ -130,6 +142,7 @@ function applyScriptMode() {
 if (scriptModeSel) {
   scriptModeSel.onchange = applyScriptMode;
   actionInput.addEventListener("change", updateDurationUnit);
+  if (turnUnitSel) turnUnitSel.addEventListener("change", updateDurationUnit);
   document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
 }
 
@@ -144,7 +157,8 @@ function loadEditorFromStep(idx) {
   if (!step) return;
   editingIndex = idx;
   actionInput.value = step.action;
-  durationInput.value = String(step.tiles != null ? step.tiles : step.duration_s);
+  durationInput.value = String(step.tiles != null ? step.tiles : (step.degrees != null ? step.degrees : step.duration_s));
+  if (turnUnitSel) turnUnitSel.value = step.degrees != null ? "deg" : "s";
   updateDurationUnit();
   addBtn.textContent = "save edit";
   cancelEditBtn.style.display = "";
@@ -175,6 +189,9 @@ addBtn.onclick = () => {
   if (stepUsesTiles(action)) {
     if (!Number.isInteger(amount) || amount < 1) { runDetail.textContent = "số ô phải là số nguyên ≥ 1"; return; }
     step = {action, tiles: amount};
+  } else if (stepUsesDegrees(action)) {
+    if (!isFinite(amount) || amount < 5 || amount > 180) { runDetail.textContent = "góc phải từ 5 đến 180 độ"; return; }
+    step = {action, degrees: amount};
   } else {
     if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
     step = {action, duration_s: amount};
@@ -782,10 +799,13 @@ async function pollStatus() {
       if (st.running) {
         const total = st.total || 0;
         const stepTiles = st.step && st.step.tiles != null ? Number(st.step.tiles) : null;
-        const stepDur = stepTiles != null ? stepTiles : ((st.step && Number(st.step.duration_s)) || 0);
-        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
+        const stepDeg = st.step && st.step.degrees != null ? Number(st.step.degrees) : null;
+        const stepCount = stepTiles != null ? stepTiles : stepDeg;
+        const stepDur = stepCount != null ? stepCount : ((st.step && Number(st.step.duration_s)) || 0);
+        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0)
+          : (stepDeg != null ? Number(st.step_degrees_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0));
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
-        const unit = stepTiles != null ? " ô" : "s";
+        const unit = stepTiles != null ? " ô" : (stepDeg != null ? "°" : "s");
         setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
         const pauseReason = st.pause_reason === "object_detected"
@@ -1150,7 +1170,7 @@ function renderSummaryScript(s) {
   const script = extra.script || {};
   const stepsRows = (script.steps || []).map((st, i) => {
     const d = Number(st.duration_s);
-    const dTxt = st.tiles != null ? `${st.tiles} ô` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-");
+    const dTxt = st.tiles != null ? `${st.tiles} ô` : (st.degrees != null ? `${Number(st.degrees).toFixed(0)}°` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-"));
     return `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${dTxt}</td></tr>`;
   }).join("");
   const stepsTable = stepsRows
@@ -1228,7 +1248,9 @@ document.getElementById("presetLoad").onclick = async () => {
   steps.length = 0;
   (p.steps || []).forEach(s => steps.push(s.tiles != null
     ? {action: s.action, tiles: Number(s.tiles)}
-    : {action: s.action, duration_s: Number(s.duration_s)}));
+    : (s.degrees != null
+      ? {action: s.action, degrees: Number(s.degrees)}
+      : {action: s.action, duration_s: Number(s.duration_s)})));
   presetName.value = p.name || name;
   resetEditor();
   render();
