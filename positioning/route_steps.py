@@ -16,6 +16,8 @@ Turn steps follow the environment:
 * TILE_TURN_ACTION: "turn" for turn_left/turn_right (base states) or
   "steer" for left/right (forward on full steering lock, Ackermann arc).
 * TILE_SETTLE_S > 0 adds a settle step of that length after every turn.
+* TILE_TURN_ANCHOR=true (with degrees): each turn first nudges forward until
+  the cross line after V sits at row y* ({"anchor": "next_line"}).
 """
 
 from __future__ import annotations
@@ -82,6 +84,7 @@ def path_to_steps(path: list[Cell], turn_s: float | None = None) -> list[dict[st
     by_degrees = _env_bool("TILE_TURN_DEGREES", False)
     steer = os.getenv("TILE_TURN_ACTION", "turn").strip().lower() == "steer"
     settle_s = _settle_s()
+    anchor = by_degrees and _env_bool("TILE_TURN_ANCHOR", False)
     steps: list[dict[str, Any]] = []
     prev: Cell | None = None
     for seg in path_segments(path):
@@ -89,7 +92,10 @@ def path_to_steps(path: list[Cell], turn_s: float | None = None) -> list[dict[st
             action = _turn(prev, seg["direction"])
             if steer:
                 action = action.removeprefix("turn_")
-            steps.append({"action": action, "degrees": 90.0} if by_degrees else {"action": action, "duration_s": turn_s})
+            if by_degrees:
+                steps.append({"action": action, "degrees": 90.0, **({"anchor": "next_line"} if anchor else {})})
+            else:
+                steps.append({"action": action, "duration_s": turn_s})
             if settle_s > 0:
                 steps.append({"action": "settle", "duration_s": settle_s})
         steps.append({"action": "forward", "tiles": seg["tiles"]})

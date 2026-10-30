@@ -97,11 +97,11 @@ function stepUsesTiles(action) {
   return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
 }
 function stepUsesDegrees(action) {
-  return !!turnUnitSel && DEGREE_ACTIONS.has(action) && turnUnitSel.value === "deg";
+  return !!turnUnitSel && DEGREE_ACTIONS.has(action) && turnUnitSel.value.startsWith("deg");
 }
 function stepAmount(s) {
   if (s.tiles != null) return `${s.tiles} ô`;
-  if (s.degrees != null) return `${Number(s.degrees).toFixed(0)}°`;
+  if (s.degrees != null) return `${Number(s.degrees).toFixed(0)}°` + (s.anchor ? " @V+1" : "");
   return `${Number(s.duration_s).toFixed(1)} s`;
 }
 function updateDurationUnit() {
@@ -158,7 +158,7 @@ function loadEditorFromStep(idx) {
   editingIndex = idx;
   actionInput.value = step.action;
   durationInput.value = String(step.tiles != null ? step.tiles : (step.degrees != null ? step.degrees : step.duration_s));
-  if (turnUnitSel) turnUnitSel.value = step.degrees != null ? "deg" : "s";
+  if (turnUnitSel) turnUnitSel.value = step.degrees != null ? (step.anchor ? "deg_anchor" : "deg") : "s";
   updateDurationUnit();
   addBtn.textContent = "save edit";
   cancelEditBtn.style.display = "";
@@ -192,6 +192,7 @@ addBtn.onclick = () => {
   } else if (stepUsesDegrees(action)) {
     if (!isFinite(amount) || amount < 5 || amount > 180) { runDetail.textContent = "góc phải từ 5 đến 180 độ"; return; }
     step = {action, degrees: amount};
+    if (turnUnitSel.value === "deg_anchor") step.anchor = "next_line";
   } else {
     if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
     step = {action, duration_s: amount};
@@ -1460,6 +1461,31 @@ if (tuneSaveBtn) tuneSaveBtn.onclick = () => tunePost("/api/tune/save");
 if (tuneResetSavedBtn) tuneResetSavedBtn.onclick = () => tunePost("/api/tune/reset", {target: "saved"});
 if (tuneResetDefaultsBtn) tuneResetDefaultsBtn.onclick = () => tunePost("/api/tune/reset", {target: "defaults"});
 refreshTune(true);
+
+// Turn suggestion: from the last script's turns (latency + V+1 rows), Apply only.
+const turnSuggestBox = document.getElementById("turnSuggestBox");
+const turnSuggestText = document.getElementById("turnSuggestText");
+const turnSuggestApply = document.getElementById("turnSuggestApply");
+async function refreshTurnSuggest() {
+  if (!turnSuggestBox) return;
+  try {
+    const r = await fetch("/route/script/status" + qp);
+    const j = await r.json();
+    const st = (j && j.status) || {};
+    const sug = st.turn_suggest;
+    const log = (st.turn_log || []).filter(t => t.e_psi != null);
+    turnSuggestBox.hidden = !sug;
+    if (!sug) return;
+    const last = log.length ? log[log.length - 1] : null;
+    turnSuggestText.textContent = `${log.length} rẽ đo được` +
+      (last ? ` (cuối: e_ψ ${last.e_psi}°, e_y ${last.e_y_cm} cm)` : "") +
+      ` → latency ${sug.turn_latency_s} s, y* trái ${sug.turn_anchor_y_left}, y* phải ${sug.turn_anchor_y_right}`;
+    turnSuggestApply.disabled = !!st.running;
+  } catch (e) { /* offline */ }
+}
+if (turnSuggestApply) turnSuggestApply.onclick = () => tunePost("/api/turn/apply_suggestion", {});
+setInterval(refreshTurnSuggest, 3000);
+refreshTurnSuggest();
 setInterval(() => refreshTune(false), 1000);
 
 // §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──

@@ -100,6 +100,44 @@ have not been tuned on the car yet.
 10-28 runs) instead of `turn_left`/`turn_right`. `TILE_SETTLE_S` > 0 adds a
 settle step after every turn.
 
+## Turn approach to the next cross line
+
+`{"action": "left", "degrees": 90, "anchor": "next_line"}` (dashboard unit
+"degrees, start at V+1"; A* with `TILE_TURN_ANCHOR=true`) does not start the
+turn where the previous tile step ended. It locks onto the nearest cross line
+above the counter line (V+1; V has just crossed the counter line), drives
+forward with the vision PID until that line is `TURN_ANCHOR_SLOW_MARGIN` (0.08)
+rows above y* (`TURN_ANCHOR_Y_LEFT` / `_RIGHT`, row ratio, 0 = top), stops,
+and then nudges: wait `TURN_ANCHOR_WAIT_S` (0.3 s) at standstill so the line
+is sharp, measure, and pulse FORWARD for (y* − y) / k seconds (0.05..0.3 s),
+where k is the rows per second learned from the earlier pulses (first pulse
+`TURN_ANCHOR_PULSE_S`, 0.15 s). No speed is needed. The turn starts from
+standstill once the line is within `TURN_ANCHOR_TOL` (0.015) of y*, or past
+it. A line lost for `TURN_ANCHOR_LOST_S`, more than `TURN_ANCHOR_MAX_PULSES`
+(8) nudges or `TURN_ANCHOR_TIMEOUT_S` (8 s) stops the script.
+
+Set y* once per side: put the car by hand where the turn should start (the
+rear-axle point d_V = a − L/2 before V) and read the row of the next line on
+the HUD.
+
+### Turn errors and the suggestion
+
+The first frames of a `settle` step after a turn give `e_psi` (degrees the
+turn fell short; negative = too far) and `e_y_cm` (cm the new line runs past
+the middle of the tile row V..V+L; negative = short of it), from the grid
+heading and `lane_offset_ratio × TURN_TILE_CM`. Each turn adds an entry to
+`turn_log` in the runner status and in `route_summary.json`. From them the
+runner suggests
+
+    latency  -= alpha × e_psi / omega          (max 0.1 s per turn)
+    y*(side) -= alpha × e_y × tile_dy / L      (max 0.03 rows per turn)
+
+with `tile_dy` the image rows between V+1 and the line above it at the stop
+and alpha `TURN_ADAPT_ALPHA` (0.3). Turns that finished on time are skipped.
+The Tune tab shows the suggestion and an **Apply turn suggestion** button
+(Apply only; Save is still a separate click). All approach parameters are in
+the Tune group **Turn approach**.
+
 ## Map position through turns
 
 While a `left`, `right`, `turn_left` or `turn_right` step runs, seams counted

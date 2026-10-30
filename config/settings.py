@@ -263,6 +263,20 @@ SETTLE_RATE_DPS = _get_float("SETTLE_RATE_DPS", 60.0)  # servo slew limit
 SETTLE_EXIT_PSI_DEG = _get_float("SETTLE_EXIT_PSI_DEG", 3.0)
 SETTLE_EXIT_OFFSET = _get_float("SETTLE_EXIT_OFFSET", 0.1)
 SETTLE_EXIT_HOLD_S = _get_float("SETTLE_EXIT_HOLD_S", 0.3)  # 0 disables the early exit
+# Turn approach to the next cross line (step {"anchor": "next_line"}): the
+# turn starts from standstill once the seam above V sits at image row y*.
+TURN_ANCHOR_Y_LEFT = _get_float("TURN_ANCHOR_Y_LEFT", 0.65)  # row ratio, 0 = top; set by hand (docs/turning.md)
+TURN_ANCHOR_Y_RIGHT = _get_float("TURN_ANCHOR_Y_RIGHT", 0.65)
+TURN_ANCHOR_TOL = _get_float("TURN_ANCHOR_TOL", 0.015)
+TURN_ANCHOR_SLOW_MARGIN = _get_float("TURN_ANCHOR_SLOW_MARGIN", 0.08)  # stop this far before y*
+TURN_ANCHOR_PULSE_S = _get_float("TURN_ANCHOR_PULSE_S", 0.15)  # first nudge
+TURN_ANCHOR_WAIT_S = _get_float("TURN_ANCHOR_WAIT_S", 0.3)  # standstill before measuring
+TURN_ANCHOR_MAX_PULSES = int(_get_float("TURN_ANCHOR_MAX_PULSES", 8))
+TURN_ANCHOR_LOST_S = _get_float("TURN_ANCHOR_LOST_S", 0.5)
+TURN_ANCHOR_TIMEOUT_S = _get_float("TURN_ANCHOR_TIMEOUT_S", 8.0)  # whole approach
+TURN_TILE_CM = _get_float("TURN_TILE_CM", 60.0)  # tile size L for e_y
+TURN_ADAPT_ALPHA = _get_float("TURN_ADAPT_ALPHA", 0.3)
+
 # Passive lane shift during a forward step: steer back toward the old lane
 # until the lane shift detector sees the car cross back (vision/lane_shift.py).
 LANE_RECOVER = _get_bool("LANE_RECOVER", True)

@@ -70,6 +70,7 @@
         <select id="turnUnit" style="display:none" title="degrees = rẽ vòng kín: dừng khi camera thấy đã quay đủ góc">
           <option value="s">seconds</option>
           <option value="deg">degrees</option>
+          <option value="deg_anchor">degrees, start at V+1</option>
         </select>
         <input id="actionDistance" type="number" min="0" step="any" placeholder="distance (m)" style="max-width:130px">
         <span class="muted" id="avgSpeedLabel"></span>
@@ -143,6 +144,10 @@
           <select id="tuneGroupFilter" title="chỉ hiện tham số của một nhóm">
             <option value="">ALL</option>
           </select>
+        </div>
+        <div id="turnSuggestBox" class="row" hidden>
+          <span id="turnSuggestText" class="muted"></span>
+          <button id="turnSuggestApply" title="Apply the suggested latency and V+1 rows (Save stays separate)">Apply turn suggestion</button>
         </div>
         <div id="tuneFields"></div>
       </div>
@@ -308,6 +313,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261029-degree-turns"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261030-turn-anchor"></script>
 </body>
 </html>

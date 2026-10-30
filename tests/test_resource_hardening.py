@@ -108,3 +108,12 @@ def test_degree_steps_validate_action_and_range():
         except ScriptValidationError:
             continue
         raise AssertionError(f"accepted {bad}")
+
+
+def test_degree_steps_accept_only_the_next_line_anchor():
+    from runtime.resource_limits import ScriptValidationError, validate_route_steps
+
+    steps = validate_route_steps([{"action": "right", "degrees": 90, "anchor": "next_line"}])
+    assert steps == [{"action": "right", "degrees": 90.0, "anchor": "next_line"}]
+    with pytest.raises(ScriptValidationError):
+        validate_route_steps([{"action": "right", "degrees": 90, "anchor": "wall"}])

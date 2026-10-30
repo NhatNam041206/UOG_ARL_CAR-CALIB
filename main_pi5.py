@@ -277,6 +277,8 @@ def main() -> None:
     lane_shift = LaneShiftDetector()
     grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
     turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
+    # Latest cross lines for turn approach: (time, [y ratios], counter_y).
+    anchor_lines: list[tuple[float, list[float], float] | None] = [None]
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -567,6 +569,7 @@ def main() -> None:
         if grid_heading_mode != "off":
             script_runner.set_heading_source(turn_yaw.request_reset, turn_yaw.sample)
             script_runner.set_turn_done_callback(map_session.apply_turn)
+        script_runner.set_anchor_source(lambda: anchor_lines[0])
 
         def _submit_script(body: str) -> bool:
             nonlocal current_sasc_scene_type
@@ -665,6 +668,13 @@ def main() -> None:
             resetter=tune_manager.reset,
         )
 
+        def _apply_turn_suggestion(_body: dict[str, Any]) -> dict[str, Any]:
+            values = script_runner.turn_suggestion() if script_runner is not None else None
+            if not values:
+                raise ValueError("no turn with measured errors in the last script")
+            return tune_manager.apply(values)  # Apply only; Save stays a separate click
+
+        http.add_route("POST", "/api/turn/apply_suggestion", _apply_turn_suggestion)
         http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
         http.add_route("GET", "/api/map/maps", lambda _q: {"maps": map_store.list_maps()})
         http.add_route("GET", "/api/map/load", lambda q: map_store.load((q.get("id") or [""])[0]))
@@ -697,6 +707,9 @@ def main() -> None:
         try:
             route_session.attach_meta("cross_tile_count", calibrator.cross_counter.tile_count)
             route_session.attach_meta("map_final", map_session.telemetry())
+            if script_runner is not None:
+                route_session.attach_meta("turn_log", script_runner.status()["turn_log"])
+                route_session.attach_meta("turn_suggest", script_runner.turn_suggestion())
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",
@@ -917,6 +930,11 @@ def main() -> None:
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
+            anchor_lines[0] = (
+                time.monotonic(),
+                [line.y for line in cross_result.lines],
+                calibrator.cross_counter.config.counter_y,
+            )
             # Seams seen while turning (in place or on an arc) or reversing do
             # not move the car along the map; the turn rotates the map heading
             # when it ends (map_session.apply_turn).

@@ -19,6 +19,7 @@ from config.settings import (
     ROUTE_MAX_STEPS,
     ROUTE_MAX_TOTAL_DURATION_S,
     TILE_STEP_MAX_S_PER_TILE,
+    TURN_ANCHOR_TIMEOUT_S,
     TURN_LATENCY_S,
     TURN_NOMINAL_OMEGA_DPS,
     TURN_TIMEOUT_FACTOR,
@@ -102,13 +103,16 @@ def validate_route_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 raise ScriptValidationError(
                     f"step {index} degrees must be between 5 and {ROUTE_MAX_STEP_DEGREES:g}"
                 )
-            total_duration += turn_timeout_s(float(degrees))
+            anchor = raw_step.get("anchor") or None
+            if anchor is not None and anchor != "next_line":
+                raise ScriptValidationError(f"step {index} anchor must be \"next_line\"")
+            total_duration += turn_timeout_s(float(degrees)) + (TURN_ANCHOR_TIMEOUT_S if anchor else 0.0)
             if total_duration > ROUTE_MAX_TOTAL_DURATION_S:
                 raise ScriptValidationError(
                     f"total route duration must not exceed {ROUTE_MAX_TOTAL_DURATION_S:g} seconds "
                     "(degree steps count their safety timeout)"
                 )
-            normalized.append({"action": action, "degrees": float(degrees)})
+            normalized.append({"action": action, "degrees": float(degrees), **({"anchor": anchor} if anchor else {})})
             continue
         try:
             duration = float(raw_step.get("duration_s", 0.0))

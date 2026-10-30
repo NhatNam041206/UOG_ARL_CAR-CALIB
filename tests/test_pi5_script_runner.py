@@ -256,3 +256,72 @@ def test_lane_recovery_only_in_forward_steps():
     assert runner.submit([{"action": "left", "duration_s": 0.3}]) is True
     _wait(lambda: runner.current_action() == "left")
     assert runner.request_lane_recover(1) is False
+
+
+class _FakeFloor:
+    """Car on a tiled floor: FORWARD moves it at speed cm/s; seams every 60 cm
+    show at image row y = 1 - distance_ahead / 300 (0 = top)."""
+
+    def __init__(self, speed: float = 30.0, start_cm: float = 0.0) -> None:
+        self.speed = speed
+        self.s = start_cm
+        self.cmd = "STOP"
+        self.t = time.monotonic()
+        self.cmds: list[str] = []
+
+    def _advance(self) -> None:
+        now = time.monotonic()
+        if self.cmd == "FORWARD":
+            self.s += self.speed * (now - self.t)
+        self.t = now
+
+    def base(self, cmd: str) -> None:
+        self._advance()
+        self.cmd = cmd
+        self.cmds.append(cmd)
+
+    def lines(self):
+        self._advance()
+        ys = [1.0 - (k * 60.0 - self.s) / 300.0 for k in range(0, 10)]
+        return time.monotonic(), [y for y in ys if 0.05 < y < 0.95], 0.8
+
+
+def test_anchor_turn_nudges_to_the_target_row_then_logs_errors_and_suggests():
+    floor = _FakeFloor(speed=30.0, start_cm=-3.0)  # V just past the counter line (row 0.79), V+1 at 0.59
+    heading = _FakeHeading(omega=300.0, psi=-6.0, offset=-0.1)
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.anchor_y_left = 0.72
+    runner.turn.anchor_wait_s = 0.05
+    runner.set_handlers(floor.base, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_anchor_source(floor.lines)
+    assert runner.submit([
+        {"action": "left", "degrees": 90, "anchor": "next_line"},
+        {"action": "settle", "duration_s": 0.3},
+    ]) is True
+    _wait_done(runner, timeout=10.0)
+    status = runner.status()
+    assert status["last_error"] in (None, "")
+    anchor = status["last_turn"]["anchor"]
+    assert abs(anchor["y"] - 0.72) <= runner.turn.anchor_tol + 0.005
+    assert anchor["tile_dy"] == pytest.approx(0.2, abs=0.01)  # 60 cm / 300
+    assert "STOP" in floor.cmds
+    entry = status["turn_log"][-1]
+    assert entry["e_psi"] == pytest.approx(6.0)  # psi -6 after a left turn: turned too little
+    assert entry["e_y_cm"] == pytest.approx(6.0)  # centre 0.1 left of the car: past the row middle
+    sug = status["turn_suggest"]
+    assert sug["turn_latency_s"] < 0.05 + 1e-9
+    assert sug["turn_anchor_y_left"] < 0.72
+
+
+def test_anchor_turn_fails_without_lines():
+    runner = Pi5ScriptRunner()
+    runner.turn.anchor_lost_s = 0.2
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    heading = _FakeHeading(omega=300.0)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_anchor_source(lambda: (time.monotonic(), [], 0.8))
+    assert runner.submit([{"action": "left", "degrees": 90, "anchor": "next_line"}]) is True
+    _wait_done(runner)
+    assert "turn anchor" in runner.status()["last_error"]
