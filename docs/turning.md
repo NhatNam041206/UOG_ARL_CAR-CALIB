@@ -112,6 +112,27 @@ path mode the A* path already holds the corner, so only the freeze applies.
 The car is assumed to end the turn on the cell where it started it: the
 movement along the arc needs `R_eff` and `L` (see below).
 
+## Lane shifts (`vision/lane_shift.py`)
+
+When the car crosses a lane line, the lane tracker locks onto the next pair
+of seams and `lane_offset_ratio` jumps by about one lane width (+0.5 to -0.5
+when the car crosses its left line). A shift counts when the offset was held
+past `LANE_SHIFT_EDGE_RATIO` (0.25) for `LANE_SHIFT_HOLD_FRAMES` (3) frames,
+jumps by `LANE_SHIFT_JUMP_RATIO` (0.6), is held on the other side for as many
+frames, and the grid heading changes less than `LANE_SHIFT_MAX_PSI_CHANGE_DEG`
+(12°) across it. A tracker that flickers between the two lines of one lane
+does not count.
+
+- Active: a turn step is running or ended less than `LANE_SHIFT_ACTIVE_HOLD_S`
+  (2 s) ago. The tracker is re-locking after the turn; the map is handled by
+  the turn.
+- Passive: any other shift while the base drives. The map moves one row to
+  the side of travel (as an anchor, so path mode re-plans from there).
+
+The route CSV gets `lane_shift_side`, `lane_shift_kind`, `lane_shift_t` and
+`lane_shift_passive_count`. Replaying the eleven 10-28 runs finds two shifts,
+both in the stop right after a left turn (active), and no passive ones.
+
 ## Dashboard Tune tab
 
 The turn, settle and grid-heading parameters are also in the Tune tab, in the

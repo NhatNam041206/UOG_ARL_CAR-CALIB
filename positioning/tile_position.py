@@ -179,6 +179,17 @@ class TilePositionTracker:
         status = "OK" if self.map.is_runnable(cell) else "CONTRADICTORY"
         return TilePosition(tile_count, index, cell, status, self.heading)
 
+    def direction(self, tile_count: int) -> Cell:
+        """Direction of travel (dr, dc) at this tile count."""
+        if self.path is None:
+            return HEADINGS[self.heading]  # type: ignore[index]
+        if len(self.path) < 2:
+            return (0, 0)
+        # The step out of the current cell, or into it at the end of the path.
+        index = max(0, min(tile_count + self._offset, len(self.path) - 2))
+        a, b = self.path[index], self.path[index + 1]
+        return (b[0] - a[0], b[1] - a[1])
+
     def apply_turn(self, quarter_turns: int, tile_count: int) -> None:
         """The car turned quarter_turns x 90 degrees (left positive) at its
         current cell. Heading mode: later tiles go along the new heading from

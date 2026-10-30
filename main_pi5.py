@@ -58,6 +58,7 @@ from runtime.route_logging import (
 from runtime.pi5_script_runner import Pi5ScriptRunner, TurnSettings
 from runtime.latest_frame import LatestFrameCapture
 from vision.grid_heading import TurnYawTracker
+from vision.lane_shift import LaneShiftDetector
 from runtime.calib_tuning import CalibTuneManager, turning_bindings
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
@@ -273,6 +274,7 @@ def main() -> None:
     # Heading vs the tile grid: yaw for degree turns, heading for settle steps.
     # GRID_HEADING_MODE: script (while a script runs), always, off.
     turn_yaw = TurnYawTracker()
+    lane_shift = LaneShiftDetector()
     grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
     turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
     state: RobotState = calibrator.robot_state
@@ -923,6 +925,19 @@ def main() -> None:
                 frozen=script_runner is not None
                 and script_runner.current_action() in ("left", "right", "turn_left", "turn_right", "backward", "stop", "pause"),
             )
+            # A lane shift right after a commanded turn is the tracker
+            # re-locking (active); any other one moves the car a row sideways.
+            shift = lane_shift.update(
+                now,
+                calibration.telemetry.get("lane_offset_ratio"),
+                psi_deg=turn_yaw.last_heading.psi_deg if turn_yaw.last_heading is not None else None,
+                active=script_runner is not None
+                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right"),
+            )
+            if shift is not None:
+                logger.info("Lane shift: %s", shift.as_dict())
+                if not shift.active and last_base_cmd.upper() in ("FORWARD", "BACKWARD"):
+                    map_session.apply_lane_shift(shift.side)
             precal.observe(
                 frame,
                 calibration.telemetry,
@@ -1089,6 +1104,7 @@ def main() -> None:
                 "base": last_base_cmd,
             })
             tel.update(turn_yaw.telemetry())
+            tel.update(lane_shift.telemetry())
             tel.update(manual_decision.telemetry())
             tel.update(object_status.telemetry())
             tel.update(cross_result.telemetry())

@@ -191,6 +191,26 @@ class MapSession:
             self._position = self._tracker.update(count).as_dict()
             logger.info("Map turn %+d x 90 deg -> heading %s", quarter, self._tracker.heading)
 
+    def apply_lane_shift(self, side: int) -> None:
+        """A passive lane shift: the car moved one row sideways (side +1 =
+        to its left). Handled like an anchor at the neighbouring cell, so path
+        mode re-plans from there."""
+        with self._lock:
+            if self._tracker is None or self._map is None:
+                return
+            count = self._last_count - self._base_count
+            here = self._tracker.update(count).cell
+            dr, dc = self._tracker.direction(count)
+            if (dr, dc) == (0, 0):
+                return
+            left = (-dc, dr)
+            cell = (here[0] + side * left[0], here[1] + side * left[1])
+        try:
+            self.mark_anchor({"ref": list(cell)})
+            logger.info("Lane shift %s: map cell %s -> %s", "left" if side > 0 else "right", here, cell)
+        except ValueError as exc:
+            logger.warning("Lane shift to %s ignored: %s", cell, exc)
+
     def clear(self, _body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Stop tracking and forget the saved start."""
         if self._start_file is not None:
