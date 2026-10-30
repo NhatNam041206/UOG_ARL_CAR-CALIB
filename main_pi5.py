@@ -936,8 +936,15 @@ def main() -> None:
             )
             if shift is not None:
                 logger.info("Lane shift: %s", shift.as_dict())
-                if not shift.active and last_base_cmd.upper() in ("FORWARD", "BACKWARD"):
+                recover_side = script_runner.recovering() if script_runner is not None else 0
+                if recover_side and shift.side == -recover_side:
+                    # Back in the old lane: the recovery is done.
                     map_session.apply_lane_shift(shift.side)
+                    script_runner.lane_recovered()
+                elif not shift.active and last_base_cmd.upper() in ("FORWARD", "BACKWARD"):
+                    map_session.apply_lane_shift(shift.side)
+                    if script_runner is not None:
+                        script_runner.request_lane_recover(shift.side)
             precal.observe(
                 frame,
                 calibration.telemetry,

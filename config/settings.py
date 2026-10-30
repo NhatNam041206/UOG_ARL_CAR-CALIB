@@ -263,6 +263,11 @@ SETTLE_RATE_DPS = _get_float("SETTLE_RATE_DPS", 60.0)  # servo slew limit
 SETTLE_EXIT_PSI_DEG = _get_float("SETTLE_EXIT_PSI_DEG", 3.0)
 SETTLE_EXIT_OFFSET = _get_float("SETTLE_EXIT_OFFSET", 0.1)
 SETTLE_EXIT_HOLD_S = _get_float("SETTLE_EXIT_HOLD_S", 0.3)  # 0 disables the early exit
+# Passive lane shift during a forward step: steer back toward the old lane
+# until the lane shift detector sees the car cross back (vision/lane_shift.py).
+LANE_RECOVER = _get_bool("LANE_RECOVER", True)
+LANE_RECOVER_STEER_DEG = _get_float("LANE_RECOVER_STEER_DEG", 15.0)  # servo deg from centre
+LANE_RECOVER_TIMEOUT_S = _get_float("LANE_RECOVER_TIMEOUT_S", 3.0)
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]

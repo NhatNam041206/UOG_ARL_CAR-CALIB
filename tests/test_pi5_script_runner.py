@@ -209,3 +209,50 @@ def test_turn_steps_report_rotation_for_the_map():
         time.sleep(0.02)
     assert len(turns) == 1
     assert turns[0] < -45.0
+
+
+def _wait(cond, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_lane_recovery_steers_back_then_resumes_the_forward_step(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    angles: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
+    runner.turn.lane_recover_steer_deg = 15.0
+    assert runner.submit([{"action": "forward", "duration_s": 0.4}]) is True
+    _wait(lambda: runner.current_action() == "forward")
+    assert runner.request_lane_recover(+1) is True  # drifted left
+    _wait(lambda: runner.vision_pid_active() is False)
+    assert runner.recovering() == 1
+    assert angles[-1] == pytest.approx(62.0 - 15.0)  # steer right
+    elapsed = runner.status()["step_elapsed_s"]
+    time.sleep(0.2)
+    assert runner.status()["step_elapsed_s"] == pytest.approx(elapsed, abs=0.06)
+    runner.lane_recovered()
+    _wait(lambda: runner.vision_pid_active())
+    assert runner.recovering() == 0
+    _wait(lambda: not runner.is_running())
+    assert runner.status()["last_error"] in (None, "")
+
+
+def test_lane_recovery_times_out_and_stops_the_script():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.turn.lane_recover_timeout_s = 0.2
+    assert runner.submit([{"action": "forward", "duration_s": 5.0}]) is True
+    _wait(lambda: runner.current_action() == "forward")
+    assert runner.request_lane_recover(-1) is True
+    _wait(lambda: not runner.is_running())
+    assert "lane recovery failed" in runner.status()["last_error"]
+
+
+def test_lane_recovery_only_in_forward_steps():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    assert runner.submit([{"action": "left", "duration_s": 0.3}]) is True
+    _wait(lambda: runner.current_action() == "left")
+    assert runner.request_lane_recover(1) is False

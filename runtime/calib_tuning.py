@@ -153,6 +153,9 @@ TURN_PARAMS: tuple[tuple[TuneParam, str], ...] = (
     (TuneParam("settle_rate_dps", "Settle", "Servo slew limit (deg/s)", "float", 5.0, 300.0, 5.0), "settle_rate_dps"),
     (TuneParam("settle_exit_psi_deg", "Settle", "Exit: heading within (deg)", "float", 0.0, 15.0, 0.5), "settle_exit_psi_deg"),
     (TuneParam("settle_exit_offset", "Settle", "Exit: lane offset within", "float", 0.0, 0.5, 0.01), "settle_exit_offset"),
+    (TuneParam("lane_recover", "Lane shift", "Steer back after a passive shift (1) / no (0)", "int", 0, 1, 1), "lane_recover"),
+    (TuneParam("lane_recover_steer_deg", "Lane shift", "Recovery steer from centre (deg)", "float", 0.0, 60.0, 0.5), "lane_recover_steer_deg"),
+    (TuneParam("lane_recover_timeout_s", "Lane shift", "Recovery timeout (s)", "float", 0.5, 10.0, 0.1), "lane_recover_timeout_s"),
     (TuneParam("settle_exit_hold_s", "Settle", "Exit: hold (s, 0 = no early exit)", "float", 0.0, 2.0, 0.05), "settle_exit_hold_s"),
 )
 GRID_PARAMS: tuple[tuple[TuneParam, str], ...] = (

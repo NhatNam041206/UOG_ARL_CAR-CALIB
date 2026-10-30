@@ -129,6 +129,18 @@ does not count.
 - Passive: any other shift while the base drives. The map moves one row to
   the side of travel (as an anchor, so path mode re-plans from there).
 
+### Lane recovery
+
+A passive shift during a `forward` step pauses the step and steers back:
+`FORWARD` with the servo `LANE_RECOVER_STEER_DEG` (15°) from centre toward the
+old lane, vision PID off. When the detector sees the shift back, the map moves
+back too and the step resumes from centre with the vision PID (the recovery
+time does not count as step time). No shift back within
+`LANE_RECOVER_TIMEOUT_S` (3 s, paused time excluded) stops the script with
+`lane recovery failed`. `LANE_RECOVER=false` turns this off. All three are in
+the Tune group **Lane shift**; the runner status shows `lane_recovering`
+(+1 drifted left, -1 right, 0 none).
+
 The route CSV gets `lane_shift_side`, `lane_shift_kind`, `lane_shift_t` and
 `lane_shift_passive_count`. Replaying the eleven 10-28 runs finds two shifts,
 both in the stop right after a left turn (active), and no passive ones.

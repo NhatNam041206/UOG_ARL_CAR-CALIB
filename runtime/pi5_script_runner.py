@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from config.settings import (
+    LANE_RECOVER,
+    LANE_RECOVER_STEER_DEG,
+    LANE_RECOVER_TIMEOUT_S,
     SETTLE_EXIT_HOLD_S,
     SETTLE_EXIT_OFFSET,
     SETTLE_EXIT_PSI_DEG,
@@ -49,6 +52,9 @@ class TurnSettings:
     settle_exit_psi_deg: float = SETTLE_EXIT_PSI_DEG
     settle_exit_offset: float = SETTLE_EXIT_OFFSET
     settle_exit_hold_s: float = SETTLE_EXIT_HOLD_S
+    lane_recover: bool = LANE_RECOVER
+    lane_recover_steer_deg: float = LANE_RECOVER_STEER_DEG
+    lane_recover_timeout_s: float = LANE_RECOVER_TIMEOUT_S
 
 BASE_MAP: dict[str, tuple[int, int, int]] = {
     "STOP": (0, 0, 0),
@@ -97,6 +103,10 @@ class Pi5ScriptRunner:
         self._heading_sample: Callable[[], Any] | None = None
         self._step_degrees_done = 0.0
         self._turn_done_cb: Callable[[float], None] | None = None
+        # Lane recovery: side the car drifted to (+1 left), 0 = none pending.
+        self._recover_side = 0
+        self._recovering = False
+        self._recovered = threading.Event()
         self._last_turn: dict[str, Any] | None = None
         self.turn = TurnSettings()
         self._last_error = ""
@@ -158,10 +168,36 @@ class Pi5ScriptRunner:
         with self._lock:
             return self._running
 
+    def request_lane_recover(self, side: int) -> bool:
+        """A passive lane shift to `side` (+1 left) happened: steer back.
+
+        Only during a forward step; returns False when not taken."""
+        with self._lock:
+            step = self._current_step if self._running else None
+            if (
+                not self.turn.lane_recover
+                or step is None
+                or step.get("action") not in ("forward", "straight")
+                or self._recovering
+            ):
+                return False
+            self._recover_side = 1 if side > 0 else -1
+        self._recovered.clear()
+        return True
+
+    def recovering(self) -> int:
+        """Side being recovered from (+1 left, -1 right), 0 when not recovering."""
+        with self._lock:
+            return self._recover_side
+
+    def lane_recovered(self) -> None:
+        """The detector saw the car cross back into its lane."""
+        self._recovered.set()
+
     def vision_pid_active(self) -> bool:
         """True when current step should let vision PID control servo."""
         with self._lock:
-            if self._paused:
+            if self._paused or self._recovering:
                 return False
             if not self._running or self._current_step is None:
                 return True
@@ -183,6 +219,7 @@ class Pi5ScriptRunner:
                 "step_tiles_done": self._step_tiles_done,
                 "step_degrees_done": round(self._step_degrees_done, 1),
                 "last_turn": dict(self._last_turn) if self._last_turn is not None else None,
+                "lane_recovering": self._recover_side,
                 "last_error": self._last_error,
             }
 
@@ -338,6 +375,12 @@ class Pi5ScriptRunner:
                 elapsed = self._step_elapsed_s
                 timed_out = self._step_elapsed_s >= self._step_duration_s
                 last_tick = now
+                recover_side = self._recover_side
+            if recover_side:
+                if not self._recover_lane(recover_side, base_cmd):
+                    break
+                last_tick = time.monotonic()  # recovery time is not step time
+                continue
             if degrees is not None:
                 sample = self._heading_sample() if self._heading_sample is not None else None
                 valid = sample is not None and bool(sample.valid)
@@ -422,6 +465,45 @@ class Pi5ScriptRunner:
                     sign = 1.0 if action in ("left", "turn_left") else -1.0
                     self._turn_done(sign * duration_s * cfg.nominal_omega_dps)
                 break
+
+    def _recover_lane(self, side: int, base_cmd: str) -> bool:
+        """Steer back toward the lane the car drifted out of (side +1 = it
+        drifted left, so steer right) until lane_recovered() or timeout."""
+        cfg = self.turn
+        angle = max(0.0, min(180.0, self._center_angle - side * abs(cfg.lane_recover_steer_deg)))
+        with self._lock:
+            self._recovering = True
+            self._current_angle = angle
+        logger.warning("Lane recovery: drifted %s, steering back", "left" if side > 0 else "right")
+        self._publish_current_command(base_cmd, angle)
+        waited, last = 0.0, time.monotonic()
+        ok = False
+        while True:
+            if self._recovered.wait(0.05):
+                ok = True
+                break
+            now = time.monotonic()
+            with self._lock:
+                if not self._running:
+                    break
+                if not self._paused:
+                    waited += now - last
+            last = now
+            if waited >= cfg.lane_recover_timeout_s:
+                break
+        with self._lock:
+            self._recovering = False
+            self._recover_side = 0
+            self._current_angle = None
+        self._recovered.clear()
+        if ok:
+            logger.info("Lane recovery done in %.1f s", waited)
+            if self._servo_cb is not None:
+                self._servo_cb(self._center_angle)  # the vision PID takes over from centre
+            return True
+        if self.is_running():
+            self._fail_step(f"lane recovery failed after {waited:.1f} s")
+        return False
 
     def _turn_done(self, rotation_deg: float) -> None:
         if self._turn_done_cb is None:
