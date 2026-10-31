@@ -161,3 +161,25 @@ def test_tune_apply_updates_vp_horizon(tmp_path):
 
     assert status["values"]["vp_horizon_y"] == -450
     assert calibrator._vision._vp_horizon_y == pytest.approx(-450.0)
+
+
+def test_turning_groups_apply_to_runner_and_grid_config(tmp_path):
+    from runtime.calib_tuning import CalibTuneManager, turning_bindings
+    from runtime.pi5_script_runner import TurnSettings
+    from vision.grid_heading import GridHeadingConfig
+
+    turn, grid = TurnSettings(), GridHeadingConfig()
+    manager = CalibTuneManager(_fake_calibrator(), tmp_path / "tune.json", extras=turning_bindings(turn, grid))
+    status = manager.status()
+    groups = {s["group"] for s in status["schema"]}
+    assert {"Turning", "Settle", "Grid heading", "Vision"} <= groups
+    assert status["values"]["turn_finish_on_time"] == 1
+
+    manager.apply({"turn_latency_s": 0.4, "turn_finish_on_time": 0, "settle_k_psi": 1.5, "grid_dark_thresh": 20})
+    assert turn.latency_s == 0.4 and turn.finish_on_time is False and turn.settle_k_psi == 1.5
+    assert grid.dark_thresh == 20 and isinstance(grid.dark_thresh, int)
+
+    manager.save()
+    turn2, grid2 = TurnSettings(), GridHeadingConfig()
+    CalibTuneManager(_fake_calibrator(), tmp_path / "tune.json", extras=turning_bindings(turn2, grid2))
+    assert turn2.latency_s == 0.4 and grid2.dark_thresh == 20

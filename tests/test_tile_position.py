@@ -76,3 +76,45 @@ def test_invalid_inputs_are_rejected():
     tracker = TilePositionTracker(tile_map, (0, 0), path=path)
     with pytest.raises(ValueError):
         tracker.apply_anchor((3, 4), tile_count=1)
+
+
+def test_path_to_steps_degree_turns_with_settle(monkeypatch):
+    from positioning.route_steps import path_to_steps
+
+    monkeypatch.setenv("TILE_TURN_DEGREES", "true")
+    monkeypatch.setenv("TILE_TURN_ACTION", "steer")
+    monkeypatch.setenv("TILE_SETTLE_S", "1.5")
+    steps = path_to_steps([(0, 0), (0, 1), (1, 1)])
+    assert steps == [
+        {"action": "forward", "tiles": 1},
+        {"action": "right", "degrees": 90.0},
+        {"action": "settle", "duration_s": 1.5},
+        {"action": "forward", "tiles": 1},
+    ]
+
+
+def test_heading_mode_turn_rotates_heading_at_the_current_cell():
+    tracker = TilePositionTracker(_l_map(), (0, 0), heading="east")
+    assert tracker.update(4).cell == (0, 4)
+    tracker.apply_turn(-1, 4)  # right turn: east -> south
+    assert tracker.heading == "south"
+    assert tracker.update(4).cell == (0, 4)
+    assert tracker.update(7).cell == (3, 4)
+    tracker.apply_turn(2, 7)  # two left quarters: south -> north
+    assert tracker.update(8).cell == (2, 4)
+    assert tracker.update(8).as_dict()["heading"] == "north"
+
+
+def test_map_session_applies_script_turns_and_freezes_counts_during_them():
+    from positioning.map_session import MapSession
+
+    session = MapSession(_l_map())
+    session.configure({"start": [0, 0], "heading": "east"}, persist=False)
+    session.update(4)
+    session.update(5, frozen=True)  # seams seen while turning do not move the car
+    session.apply_turn(-87.0)
+    session.update(7)
+    position = session.state()["position"]
+    assert (position["row"], position["column"], position["heading"]) == (2, 4, "south")
+    session.apply_turn(20.0)  # less than half a quarter: no change
+    assert session.state()["position"]["heading"] == "south"

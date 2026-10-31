@@ -8,6 +8,16 @@ becomes straight segments driven by tile count and 90-degree turns in place:
 The car is assumed to start facing along the first segment (line it up in the
 Pre-calibrate tab). Rows grow south and columns east, so turning from east to
 south is a right turn.
+
+Turn steps follow the environment:
+
+* TILE_TURN_DEGREES=true: closed-loop turns, {"action": ..., "degrees": 90}
+  (the runner stops when the grid heading has seen the turn), else by time.
+* TILE_TURN_ACTION: "turn" for turn_left/turn_right (base states) or
+  "steer" for left/right (forward on full steering lock, Ackermann arc).
+* TILE_SETTLE_S > 0 adds a settle step of that length after every turn.
+* TILE_TURN_ANCHOR=true (with degrees): each turn first nudges forward until
+  the cross line after V sits at row y* ({"anchor": "next_line"}).
 """
 
 from __future__ import annotations
@@ -24,6 +34,18 @@ def turn_duration_s() -> float:
         return float(os.getenv("TILE_TURN_90_S", "1.5"))
     except ValueError:
         return 1.5
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    return default if raw is None else raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _settle_s() -> float:
+    try:
+        return max(0.0, float(os.getenv("TILE_SETTLE_S", "0")))
+    except ValueError:
+        return 0.0
 
 
 def _direction(a: Cell, b: Cell) -> Cell:
@@ -59,11 +81,23 @@ def _turn(prev: Cell, new: Cell) -> str:
 
 def path_to_steps(path: list[Cell], turn_s: float | None = None) -> list[dict[str, Any]]:
     turn_s = turn_duration_s() if turn_s is None else float(turn_s)
+    by_degrees = _env_bool("TILE_TURN_DEGREES", False)
+    steer = os.getenv("TILE_TURN_ACTION", "turn").strip().lower() == "steer"
+    settle_s = _settle_s()
+    anchor = by_degrees and _env_bool("TILE_TURN_ANCHOR", False)
     steps: list[dict[str, Any]] = []
     prev: Cell | None = None
     for seg in path_segments(path):
         if prev is not None:
-            steps.append({"action": _turn(prev, seg["direction"]), "duration_s": turn_s})
+            action = _turn(prev, seg["direction"])
+            if steer:
+                action = action.removeprefix("turn_")
+            if by_degrees:
+                steps.append({"action": action, "degrees": 90.0, **({"anchor": "next_line"} if anchor else {})})
+            else:
+                steps.append({"action": action, "duration_s": turn_s})
+            if settle_s > 0:
+                steps.append({"action": "settle", "duration_s": settle_s})
         steps.append({"action": "forward", "tiles": seg["tiles"]})
         prev = seg["direction"]
     return steps

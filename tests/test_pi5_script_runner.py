@@ -37,3 +37,354 @@ def test_runner_pause_freezes_step_elapsed_and_resume_republishes(pause_reason: 
 
     assert runner.is_running() is False
     assert base_cmds[-1] == "STOP"
+
+
+class _FakeHeading:
+    """Yaw grows at omega deg/s (left positive) once the step has reset it."""
+
+    def __init__(self, omega: float = 40.0, valid: bool = True, psi: float | None = None, offset: float | None = None):
+        self.omega = omega
+        self.valid = valid
+        self.psi = psi
+        self.offset = offset
+        self.t0 = time.monotonic()
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.t0 = time.monotonic()
+        self.resets += 1
+
+    def sample(self):
+        from vision.grid_heading import YawSample
+
+        dt = time.monotonic() - self.t0
+        return YawSample(
+            yaw_deg=self.omega * dt, omega_dps=self.omega, psi_deg=self.psi, source="grid",
+            age_s=0.0, valid=self.valid, lane_offset_ratio=self.offset,
+        )
+
+
+def _wait_done(runner: Pi5ScriptRunner, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while runner.is_running() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert runner.is_running() is False
+
+
+def test_degree_turn_stops_at_target_minus_latency_lead():
+    heading = _FakeHeading(omega=200.0)
+    base_cmds: list[str] = []
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.1
+    runner.set_handlers(base_cmds.append, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    t0 = time.monotonic()
+    assert runner.submit([{"action": "left", "degrees": 90}]) is True
+    _wait_done(runner)
+    took = time.monotonic() - t0
+    turn = runner.status()["last_turn"]
+    # omega is capped at 2x nominal (80 deg/s) -> lead 8 deg, stop at >= 82 deg.
+    assert turn["lead_deg"] == pytest.approx(8.0)
+    assert turn["seen_at_stop_deg"] >= 82.0
+    assert turn["fallback_time"] is False
+    assert took < 0.8
+    assert heading.resets == 1
+    assert base_cmds[0] == "FORWARD" and base_cmds[-1] == "STOP"
+
+
+def test_right_degree_turn_uses_negative_yaw():
+    heading = _FakeHeading(omega=-60.0)
+    angles: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.0
+    runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    assert runner.submit([{"action": "right", "degrees": 30}]) is True
+    _wait_done(runner)
+    assert runner.status()["last_turn"]["seen_at_stop_deg"] >= 30.0
+    assert angles[0] < runner._center_angle
+
+
+def test_degree_turn_falls_back_to_time_when_heading_is_lost():
+    heading = _FakeHeading(valid=False)
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.heading_lost_s = 0.1
+    runner.turn.nominal_omega_dps = 100.0
+    runner.turn.finish_on_time = "time" == "time"
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    assert runner.submit([{"action": "left", "degrees": 30}]) is True
+    _wait_done(runner)
+    turn = runner.status()["last_turn"]
+    assert turn["fallback_time"] is True
+    assert turn["elapsed_s"] == pytest.approx(0.3, abs=0.1)
+
+
+def test_degree_turn_stops_script_when_heading_lost_and_mode_stop():
+    heading = _FakeHeading(valid=False)
+    base_cmds: list[str] = []
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.heading_lost_s = 0.1
+    runner.turn.finish_on_time = "stop" == "time"
+    runner.set_handlers(base_cmds.append, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    assert runner.submit([{"action": "left", "degrees": 90}, {"action": "forward", "duration_s": 1.0}]) is True
+    _wait_done(runner)
+    assert "heading lost" in runner.status()["last_error"]
+    assert "FORWARD" == base_cmds[0] and base_cmds.count("FORWARD") == 1
+    assert base_cmds[-1] == "STOP"
+
+
+def test_degree_steps_need_a_heading_source():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    with pytest.raises(ValueError):
+        runner.submit([{"action": "left", "degrees": 90}])
+    with pytest.raises(ValueError):
+        runner.submit([{"action": "settle", "duration_s": 1.0}])
+
+
+def test_settle_steers_right_when_car_points_left_and_is_rate_limited():
+    heading = _FakeHeading(omega=0.0, psi=15.0, offset=0.0)
+    base_cmds: list[str] = []
+    angles: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.turn.settle_k_psi = 1.0
+    runner.turn.settle_k_offset = 0.0
+    runner.turn.settle_max_steer = 20.0
+    runner.turn.settle_rate_dps = 50.0
+    runner.turn.settle_exit_hold_s = 0.0
+    runner.set_handlers(base_cmds.append, angles.append, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    assert runner.vision_pid_active() is True
+    assert runner.submit([{"action": "settle", "duration_s": 0.6}]) is True
+    time.sleep(0.1)
+    assert runner.vision_pid_active() is False
+    assert runner.needs_heading() is True
+    _wait_done(runner)
+    centre = runner._center_angle
+    assert base_cmds[0] == "FORWARD"
+    assert min(angles) == pytest.approx(centre - 15.0, abs=0.6)
+    # Drop the recentre the runner sends when the script ends.
+    ramp = angles[:-1]
+    steps = [abs(b - a) for a, b in zip(ramp, ramp[1:])]
+    assert max(steps) <= 50.0 * 0.15
+
+
+def test_settle_exits_early_once_aligned():
+    heading = _FakeHeading(omega=0.0, psi=1.0, offset=0.02)
+    runner = Pi5ScriptRunner()
+    runner.turn.settle_exit_hold_s = 0.15
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    t0 = time.monotonic()
+    assert runner.submit([{"action": "settle", "duration_s": 3.0}]) is True
+    _wait_done(runner)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_left_and_right_steps_use_per_side_steer_offsets(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    runner = Pi5ScriptRunner()
+    runner.turn.left_steer_deg = 70.0
+    runner.turn.right_steer_deg = 50.0
+    assert runner._steer_angle(+1) == pytest.approx(62.0 + 70.0)
+    assert runner._steer_angle(-1) == pytest.approx(62.0 - 50.0)
+    # A right offset past the servo range is clamped to 0, not sent as a negative angle.
+    runner.turn.right_steer_deg = 80.0
+    assert runner._steer_angle(-1) == 0.0
+
+
+def test_turn_steps_report_rotation_for_the_map():
+    turns: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.turn.nominal_omega_dps = 900.0
+    runner.set_turn_done_callback(turns.append)
+    assert runner.submit([{"action": "right", "duration_s": 0.1}, {"action": "forward", "duration_s": 0.05}]) is True
+    deadline = time.monotonic() + 1.0
+    while runner.is_running() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(turns) == 1
+    assert turns[0] < -45.0
+
+
+def _wait(cond, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_lane_recovery_steers_back_then_resumes_the_forward_step(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    angles: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
+    runner.turn.lane_recover_steer_deg = 15.0
+    assert runner.submit([{"action": "forward", "duration_s": 0.4}]) is True
+    _wait(lambda: runner.current_action() == "forward")
+    assert runner.request_lane_recover(+1) is True  # drifted left
+    _wait(lambda: runner.vision_pid_active() is False)
+    assert runner.recovering() == 1
+    assert angles[-1] == pytest.approx(62.0 - 15.0)  # steer right
+    elapsed = runner.status()["step_elapsed_s"]
+    time.sleep(0.2)
+    assert runner.status()["step_elapsed_s"] == pytest.approx(elapsed, abs=0.06)
+    runner.lane_recovered()
+    _wait(lambda: runner.vision_pid_active())
+    assert runner.recovering() == 0
+    _wait(lambda: not runner.is_running())
+    assert runner.status()["last_error"] in (None, "")
+
+
+def test_lane_recovery_times_out_and_stops_the_script():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.turn.lane_recover_timeout_s = 0.2
+    assert runner.submit([{"action": "forward", "duration_s": 5.0}]) is True
+    _wait(lambda: runner.current_action() == "forward")
+    assert runner.request_lane_recover(-1) is True
+    _wait(lambda: not runner.is_running())
+    assert "lane recovery failed" in runner.status()["last_error"]
+
+
+def test_lane_recovery_only_in_forward_steps():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    assert runner.submit([{"action": "left", "duration_s": 0.3}]) is True
+    _wait(lambda: runner.current_action() == "left")
+    assert runner.request_lane_recover(1) is False
+
+
+class _FakeFloor:
+    """Car on a tiled floor: FORWARD moves it at speed cm/s; seams every 60 cm
+    show at image row y = 1 - distance_ahead / 300 (0 = top)."""
+
+    def __init__(self, speed: float = 30.0, start_cm: float = 0.0) -> None:
+        self.speed = speed
+        self.s = start_cm
+        self.cmd = "STOP"
+        self.t = time.monotonic()
+        self.cmds: list[str] = []
+
+    def _advance(self) -> None:
+        now = time.monotonic()
+        if self.cmd == "FORWARD":
+            self.s += self.speed * (now - self.t)
+        self.t = now
+
+    def base(self, cmd: str) -> None:
+        self._advance()
+        self.cmd = cmd
+        self.cmds.append(cmd)
+
+    def lines(self):
+        self._advance()
+        ys = [1.0 - (k * 60.0 - self.s) / 300.0 for k in range(0, 10)]
+        return time.monotonic(), [y for y in ys if 0.05 < y < 0.95], 0.8
+
+
+def test_anchor_turn_nudges_to_the_target_row_then_logs_errors_and_suggests():
+    floor = _FakeFloor(speed=30.0, start_cm=-3.0)  # V just past the counter line (row 0.79), V+1 at 0.59
+    heading = _FakeHeading(omega=300.0, psi=-6.0, offset=-0.1)
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.05
+    runner.turn.anchor_y_left = 0.72
+    runner.turn.anchor_wait_s = 0.05
+    runner.set_handlers(floor.base, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_anchor_source(floor.lines)
+    assert runner.submit([
+        {"action": "left", "degrees": 90, "anchor": "next_line"},
+        {"action": "settle", "duration_s": 0.3},
+    ]) is True
+    _wait_done(runner, timeout=10.0)
+    status = runner.status()
+    assert status["last_error"] in (None, "")
+    anchor = status["last_turn"]["anchor"]
+    assert abs(anchor["y"] - 0.72) <= runner.turn.anchor_tol + 0.005
+    assert anchor["tile_dy"] == pytest.approx(0.2, abs=0.01)  # 60 cm / 300
+    assert "STOP" in floor.cmds
+    entry = status["turn_log"][-1]
+    assert entry["e_psi"] == pytest.approx(6.0)  # psi -6 after a left turn: turned too little
+    assert entry["e_y_cm"] == pytest.approx(6.0)  # centre 0.1 left of the car: past the row middle
+    sug = status["turn_suggest"]
+    assert sug["turn_latency_s"] < 0.05 + 1e-9
+    assert sug["turn_anchor_y_left"] < 0.72
+
+
+def test_anchor_turn_fails_without_lines():
+    runner = Pi5ScriptRunner()
+    runner.turn.anchor_lost_s = 0.2
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    heading = _FakeHeading(omega=300.0)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_anchor_source(lambda: (time.monotonic(), [], 0.8))
+    assert runner.submit([{"action": "left", "degrees": 90, "anchor": "next_line"}]) is True
+    _wait_done(runner)
+    assert "turn anchor" in runner.status()["last_error"]
+
+
+class _VpFloor(_FakeFloor):
+    """Seams every 60 cm; a seam d cm ahead of the front axle shows at
+    row vp + k / (d - c) of a 480 px frame (vision/ground_range.py)."""
+
+    K, C, VP, H = 150000.0, 10.0, -340.0, 480
+
+    def lines(self):
+        self._advance()
+        ys = []
+        for k in range(0, 12):
+            d = k * 60.0 - self.s
+            if d - self.C > 1.0:
+                y = (self.VP + self.K / (d - self.C)) / self.H
+                if 0.05 < y < 0.95:
+                    ys.append(y)
+        return time.monotonic(), ys, 0.8, self.VP, self.H
+
+
+def test_anchor_target_comes_from_measured_turn_length_and_vp():
+    runner = Pi5ScriptRunner()
+    cfg = runner.turn
+    cfg.tile_cm, cfg.ground_k_px_cm, cfg.ground_c_cm = 60.0, _VpFloor.K, _VpFloor.C
+    cfg.anchor_y_left = 0.6
+    assert runner._anchor_target(1.0, -340.0, 480) == (0.6, "manual")  # a = 0
+    cfg.a_left_cm = 200.0  # d_V = 170, V+1 at 230 cm
+    y, src = runner._anchor_target(1.0, -340.0, 480)
+    assert src == "vp"
+    assert y == pytest.approx((-340.0 + 150000.0 / 220.0) / 480.0)
+    assert runner._anchor_target(1.0, None, None) == (0.6, "manual")
+    cfg.a_left_cm = 100.0  # V+1 at 130 cm: below the image
+    assert runner._anchor_target(1.0, -340.0, 480)[1] == "manual"
+
+
+def test_anchor_turn_with_vp_target_stops_with_v_plus_1_at_the_turn_distance():
+    floor = _VpFloor(speed=30.0, start_cm=23.0)  # V (240 cm seam) just past the counter line
+    heading = _FakeHeading(omega=300.0, psi=0.0, offset=-0.1)
+    runner = Pi5ScriptRunner()
+    cfg = runner.turn
+    cfg.latency_s = 0.05
+    cfg.anchor_wait_s = 0.05
+    cfg.tile_cm, cfg.ground_k_px_cm, cfg.ground_c_cm = 60.0, _VpFloor.K, _VpFloor.C
+    cfg.a_left_cm = 200.0
+    runner.set_handlers(floor.base, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_anchor_source(floor.lines)
+    assert runner.submit([
+        {"action": "left", "degrees": 90, "anchor": "next_line"},
+        {"action": "settle", "duration_s": 0.3},
+    ]) is True
+    _wait_done(runner, timeout=10.0)
+    status = runner.status()
+    assert status["last_error"] in (None, "")
+    anchor = status["last_turn"]["anchor"]
+    assert anchor["target_src"] == "vp"
+    assert anchor["vp_row"] == -340.0
+    y_px = anchor["y"] * _VpFloor.H
+    d = _VpFloor.C + _VpFloor.K / (y_px - _VpFloor.VP)
+    assert d == pytest.approx(230.0, abs=4.0)  # V+1 = d_V + L ahead of the front axle
+    sug = status["turn_suggest"]
+    assert sug["turn_a_left_cm"] == pytest.approx(200.0 + 0.3 * 6.0)  # turned late: start earlier
+    assert "turn_a_right_cm" not in sug

@@ -57,15 +57,21 @@
         <select id="action">
           <option value="forward">forward (FORWARD + center)</option>
           <option value="backward">backward (BACKWARD + reversed steer)</option>
-          <option value="left">left (FORWARD + max left)</option>
-          <option value="right">right (FORWARD + max right)</option>
+          <option value="left">left (FORWARD + left steer)</option>
+          <option value="right">right (FORWARD + right steer)</option>
           <option value="turn_left">turn left (base 1 0 0)</option>
           <option value="turn_right">turn right (base 0 1 1)</option>
           <option value="straight">straight (alias)</option>
+          <option value="settle">settle (đi chậm, nắn hướng theo lưới gạch)</option>
           <option value="stop">stop / pause</option>
         </select>
         <input id="duration" type="number" min="0" step="0.5" value="2">
         <span class="muted" id="durationUnit">seconds</span>
+        <select id="turnUnit" style="display:none" title="degrees = rẽ vòng kín: dừng khi camera thấy đã quay đủ góc">
+          <option value="s">seconds</option>
+          <option value="deg">degrees</option>
+          <option value="deg_anchor">degrees, start at V+1</option>
+        </select>
         <input id="actionDistance" type="number" min="0" step="any" placeholder="distance (m)" style="max-width:130px">
         <span class="muted" id="avgSpeedLabel"></span>
         <button id="add">+ add step</button>
@@ -132,6 +138,23 @@
           <button id="tuneResetSaved" disabled>Reset saved</button>
           <button id="tuneResetDefaults" class="danger" disabled>Reset defaults</button>
           <span id="tuneStatus" class="muted">loading…</span>
+        </div>
+        <div class="row">
+          <label class="muted" for="tuneGroupFilter">nhóm tham số</label>
+          <select id="tuneGroupFilter" title="chỉ hiện tham số của một nhóm">
+            <option value="">ALL</option>
+          </select>
+        </div>
+        <div id="turnSuggestBox" class="row" hidden>
+          <span id="turnSuggestText" class="muted"></span>
+          <button id="turnSuggestApply" title="Apply the suggested latency and V+1 rows (Save stays separate)">Apply turn suggestion</button>
+        </div>
+        <div id="groundBox" class="row" title="Car parked square to the seams. Tape from the front axle centre to the lowest seam on screen.">
+          <label class="muted" for="groundNearest">front axle → lowest seam (cm)</label>
+          <input id="groundNearest" type="number" min="1" step="0.5" style="width:6em">
+          <button id="groundFit">Fit ground k, c</button>
+          <button id="groundFitApply" title="Fit, then Apply k and c (Save stays separate)">Fit + Apply</button>
+          <span id="groundText" class="muted"></span>
         </div>
         <div id="tuneFields"></div>
       </div>
@@ -297,6 +320,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261027-anchor-ux"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261031-ground-range"></script>
 </body>
 </html>

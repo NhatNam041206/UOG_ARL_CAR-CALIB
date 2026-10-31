@@ -55,8 +55,12 @@ from runtime.route_logging import (
     export_routes_xlsx,
     update_route_distance,
 )
-from runtime.pi5_script_runner import Pi5ScriptRunner
-from runtime.calib_tuning import CalibTuneManager
+from runtime.pi5_script_runner import Pi5ScriptRunner, TurnSettings
+from runtime.latest_frame import LatestFrameCapture
+from vision.grid_heading import TurnYawTracker
+from vision.ground_range import GroundRange, fit_ground_range, seam_points
+from vision.lane_shift import LaneShiftDetector
+from runtime.calib_tuning import CalibTuneManager, turning_bindings
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from runtime.dashboard_stream import DashboardStreamBroker
@@ -268,6 +272,14 @@ def main() -> None:
     # Core algorithm
     # ------------------------------------------------------------------ #
     calibrator = UnifiedCalibrator(telemetry_enabled=True)
+    # Heading vs the tile grid: yaw for degree turns, heading for settle steps.
+    # GRID_HEADING_MODE: script (while a script runs), always, off.
+    turn_yaw = TurnYawTracker()
+    lane_shift = LaneShiftDetector()
+    grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
+    turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
+    # Latest cross lines for turn approach: (time, [y ratios], counter_y, vp_row_px, frame_h).
+    anchor_lines: list[tuple[float, list[float], float, float | None, int] | None] = [None]
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -445,6 +457,7 @@ def main() -> None:
         calibrator,
         tune_file,
         idle_getter=_tune_idle_state,
+        extras=turning_bindings(turn_settings, turn_yaw.estimator.config),
     )
     # Dashboard Map tab (tile count -> campus map cell) and Pre-calibrate tab.
     map_session = MapSession.from_env()
@@ -551,8 +564,13 @@ def main() -> None:
 
         _steps: list[dict[str, Any]] = []
         script_runner = Pi5ScriptRunner()
+        script_runner.turn = turn_settings
         script_runner.set_handlers(_base_handler, _servo_handler, _relay_handler)
         script_runner.set_tile_count_getter(lambda: calibrator.cross_counter.tile_count)
+        if grid_heading_mode != "off":
+            script_runner.set_heading_source(turn_yaw.request_reset, turn_yaw.sample)
+            script_runner.set_turn_done_callback(map_session.apply_turn)
+        script_runner.set_anchor_source(lambda: anchor_lines[0])
 
         def _submit_script(body: str) -> bool:
             nonlocal current_sasc_scene_type
@@ -651,6 +669,55 @@ def main() -> None:
             resetter=tune_manager.reset,
         )
 
+        def _apply_turn_suggestion(_body: dict[str, Any]) -> dict[str, Any]:
+            values = script_runner.turn_suggestion() if script_runner is not None else None
+            if not values:
+                raise ValueError("no turn with measured errors in the last script")
+            return tune_manager.apply(values)  # Apply only; Save stays a separate click
+
+        http.add_route("POST", "/api/turn/apply_suggestion", _apply_turn_suggestion)
+
+        def _ground_sample(_q: Any = None) -> dict[str, Any]:
+            got = anchor_lines[0]
+            if got is None or len(got) < 5 or got[3] is None:
+                raise ValueError("no frame with a VP row yet")
+            t, ys, _counter, vp, h = got
+            cfg = turn_settings
+            ground = GroundRange(cfg.ground_k_px_cm, cfg.ground_c_cm)
+            lines_px = sorted((float(y) * h for y in ys), reverse=True)  # nearest first
+            return {
+                "age_s": round(time.monotonic() - t, 2),
+                "frame_h": h,
+                "vp_row": round(float(vp), 1),
+                "lines_px": [round(y, 1) for y in lines_px],
+                "lines_cm": [
+                    None if (d := ground.distance_cm(y, vp)) is None else round(d, 1) for y in lines_px
+                ],
+                "k_px_cm": cfg.ground_k_px_cm,
+                "c_cm": cfg.ground_c_cm,
+            }
+
+        def _ground_fit(body: dict[str, Any]) -> dict[str, Any]:
+            """Car parked square to the seams: body nearest_cm = tape distance
+            from the front axle centre to the lowest seam on screen."""
+            sample = _ground_sample()
+            if sample["age_s"] > 1.0:
+                raise ValueError("camera frame is stale")
+            nearest = float(body.get("nearest_cm", 0) or 0)
+            if nearest <= 0:
+                raise ValueError("nearest_cm must be > 0")
+            tile = float(body.get("tile_cm") or turn_settings.tile_cm)
+            points = seam_points(sample["lines_px"], sample["vp_row"], nearest, tile)
+            fit = fit_ground_range(points)
+            out: dict[str, Any] = {"fit": fit.as_dict(), "sample": sample, "points": len(points)}
+            if body.get("apply"):
+                out["tune"] = tune_manager.apply(
+                    {"ground_k_px_cm": round(fit.k_px_cm, 1), "ground_c_cm": round(fit.c_cm, 2)}
+                )
+            return out
+
+        http.add_route("GET", "/api/ground/sample", _ground_sample)
+        http.add_route("POST", "/api/ground/fit", _ground_fit)
         http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
         http.add_route("GET", "/api/map/maps", lambda _q: {"maps": map_store.list_maps()})
         http.add_route("GET", "/api/map/load", lambda q: map_store.load((q.get("id") or [""])[0]))
@@ -683,6 +750,9 @@ def main() -> None:
         try:
             route_session.attach_meta("cross_tile_count", calibrator.cross_counter.tile_count)
             route_session.attach_meta("map_final", map_session.telemetry())
+            if script_runner is not None:
+                route_session.attach_meta("turn_log", script_runner.status()["turn_log"])
+                route_session.attach_meta("turn_suggest", script_runner.turn_suggestion())
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",
@@ -747,9 +817,16 @@ def main() -> None:
                     logger.info("Camera opened at index %d", idx)
                     test.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     test.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    # Fewer queued frames = less command-to-camera delay.
+                    buffer_size = _env_int(("CAMERA_BUFFER_SIZE",), 1)
+                    if buffer_size > 0:
+                        test.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
                     with camera_lock:
                         camera_state["current"] = idx
                         camera_state["requested"] = idx
+                    if _env_bool("CAMERA_LATEST_FRAME", False):
+                        logger.info("Camera reader: newest frame only")
+                        return LatestFrameCapture(test)
                     return test
                 test.release()
             logger.warning("No camera found across %s, retrying in 0.5s...", candidates)
@@ -834,7 +911,9 @@ def main() -> None:
                 _base_handler("STOP")
                 cap = acquire_camera(requested_idx)
 
+            t_read = time.monotonic()
             ret, frame = cap.read()
+            capture_ms = (time.monotonic() - t_read) * 1000.0
             if not ret or frame is None:
                 logger.warning("Frame %d capture failed, re-acquiring camera...", frame_num)
                 try:
@@ -850,6 +929,7 @@ def main() -> None:
                 frame = cv2.flip(frame, -1)
 
             # --- calibration ---
+            t_calib = time.monotonic()
             try:
                 calibration = calibrator.process_frame(frame, frame_num)
                 display_frame = calibrator.render_frame(frame, calibration)
@@ -859,6 +939,7 @@ def main() -> None:
                 _base_handler("STOP")
                 break
 
+            calib_ms = (time.monotonic() - t_calib) * 1000.0
             theta = calibration.observation_angle
             servo_angle = calibration.steering_angle
             fsm_state = calibration.control_state
@@ -872,15 +953,66 @@ def main() -> None:
             object_status = object_detector.process(frame, now=now)
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
 
+            # --- heading vs tile grid (degree turns, settle steps) ---
+            heading_ms = 0.0
+            if grid_heading_mode == "always" or (grid_heading_mode == "script" and script_running):
+                t_heading = time.monotonic()
+                # No horizon seed from the lane tune: its vp_horizon_y is a
+                # hand-tuned search row (-120 on 10-29) far from the real
+                # horizon (~-340), and it rejected every grid VP.
+                turn_yaw.update(
+                    frame,
+                    now=now,
+                    lane_offset_ratio=calibration.telemetry.get("lane_offset_ratio"),
+                    # Phase correlation only matters while a turn is measured.
+                    use_phase=script_runner is not None and script_runner.needs_heading(),
+                )
+                heading_ms = (time.monotonic() - t_heading) * 1000.0
+            else:
+                turn_yaw.last_heading = None  # no stale heading in the CSV
+
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
-            # Seams seen while turning in place or reversing do not move the
-            # car along the map.
+            # VP row: the lane tracker's (live), else the grid horizon; it
+            # turns a seam row into a floor distance (vision/ground_range.py).
+            vp_row = calibration.telemetry.get("vp_row")
+            if vp_row is None:
+                vp_row = turn_yaw.estimator.horizon_y
+            anchor_lines[0] = (
+                time.monotonic(),
+                [line.y for line in cross_result.lines],
+                calibrator.cross_counter.config.counter_y,
+                vp_row,
+                frame.shape[0],
+            )
+            # Seams seen while turning (in place or on an arc) or reversing do
+            # not move the car along the map; the turn rotates the map heading
+            # when it ends (map_session.apply_turn).
             map_session.update(
                 cross_result.tile_count,
                 frozen=script_runner is not None
-                and script_runner.current_action() in ("turn_left", "turn_right", "backward", "stop", "pause"),
+                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right", "backward", "stop", "pause"),
             )
+            # A lane shift right after a commanded turn is the tracker
+            # re-locking (active); any other one moves the car a row sideways.
+            shift = lane_shift.update(
+                now,
+                calibration.telemetry.get("lane_offset_ratio"),
+                psi_deg=turn_yaw.last_heading.psi_deg if turn_yaw.last_heading is not None else None,
+                active=script_runner is not None
+                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right"),
+            )
+            if shift is not None:
+                logger.info("Lane shift: %s", shift.as_dict())
+                recover_side = script_runner.recovering() if script_runner is not None else 0
+                if recover_side and shift.side == -recover_side:
+                    # Back in the old lane: the recovery is done.
+                    map_session.apply_lane_shift(shift.side)
+                    script_runner.lane_recovered()
+                elif not shift.active and last_base_cmd.upper() in ("FORWARD", "BACKWARD"):
+                    map_session.apply_lane_shift(shift.side)
+                    if script_runner is not None:
+                        script_runner.request_lane_recover(shift.side)
             precal.observe(
                 frame,
                 calibration.telemetry,
@@ -1041,8 +1173,13 @@ def main() -> None:
                 "theta_src": "live" if theta is not None else ("stale" if last_known_theta is not None else "none"),
                 "servo": f"{servo_angle:.2f}",
                 "loop_ms": f"{loop_ms:.1f}",
+                "capture_ms": f"{capture_ms:.1f}",
+                "calib_ms": f"{calib_ms:.1f}",
+                "heading_ms": f"{heading_ms:.1f}",
                 "base": last_base_cmd,
             })
+            tel.update(turn_yaw.telemetry())
+            tel.update(lane_shift.telemetry())
             tel.update(manual_decision.telemetry())
             tel.update(object_status.telemetry())
             tel.update(cross_result.telemetry())

@@ -90,14 +90,26 @@ refreshAvgSpeed();
 const scriptModeSel = document.getElementById("scriptMode");
 const durationUnit = document.getElementById("durationUnit");
 const TILE_ACTIONS = new Set(["forward", "straight"]);
+// Turns can run by degrees: the Pi stops them when the grid heading has seen the angle.
+const DEGREE_ACTIONS = new Set(["left", "right", "turn_left", "turn_right"]);
+const turnUnitSel = document.getElementById("turnUnit");
 function stepUsesTiles(action) {
   return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
 }
+function stepUsesDegrees(action) {
+  return !!turnUnitSel && DEGREE_ACTIONS.has(action) && turnUnitSel.value.startsWith("deg");
+}
 function stepAmount(s) {
-  return s.tiles != null ? `${s.tiles} ô` : `${Number(s.duration_s).toFixed(1)} s`;
+  if (s.tiles != null) return `${s.tiles} ô`;
+  if (s.degrees != null) return `${Number(s.degrees).toFixed(0)}°` + (s.anchor ? " @V+1" : "");
+  return `${Number(s.duration_s).toFixed(1)} s`;
 }
 function updateDurationUnit() {
-  if (durationUnit) durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : "seconds";
+  if (turnUnitSel) turnUnitSel.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "" : "none";
+  if (durationUnit) {
+    durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : (stepUsesDegrees(actionInput.value) ? "" : "seconds");
+    durationUnit.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "none" : "";
+  }
 }
 async function loadStepsFromMap() {
   const hint = document.getElementById("scriptModeHint");
@@ -130,6 +142,7 @@ function applyScriptMode() {
 if (scriptModeSel) {
   scriptModeSel.onchange = applyScriptMode;
   actionInput.addEventListener("change", updateDurationUnit);
+  if (turnUnitSel) turnUnitSel.addEventListener("change", updateDurationUnit);
   document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
 }
 
@@ -144,7 +157,8 @@ function loadEditorFromStep(idx) {
   if (!step) return;
   editingIndex = idx;
   actionInput.value = step.action;
-  durationInput.value = String(step.tiles != null ? step.tiles : step.duration_s);
+  durationInput.value = String(step.tiles != null ? step.tiles : (step.degrees != null ? step.degrees : step.duration_s));
+  if (turnUnitSel) turnUnitSel.value = step.degrees != null ? (step.anchor ? "deg_anchor" : "deg") : "s";
   updateDurationUnit();
   addBtn.textContent = "save edit";
   cancelEditBtn.style.display = "";
@@ -175,6 +189,10 @@ addBtn.onclick = () => {
   if (stepUsesTiles(action)) {
     if (!Number.isInteger(amount) || amount < 1) { runDetail.textContent = "số ô phải là số nguyên ≥ 1"; return; }
     step = {action, tiles: amount};
+  } else if (stepUsesDegrees(action)) {
+    if (!isFinite(amount) || amount < 5 || amount > 180) { runDetail.textContent = "góc phải từ 5 đến 180 độ"; return; }
+    step = {action, degrees: amount};
+    if (turnUnitSel.value === "deg_anchor") step.anchor = "next_line";
   } else {
     if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
     step = {action, duration_s: amount};
@@ -782,10 +800,13 @@ async function pollStatus() {
       if (st.running) {
         const total = st.total || 0;
         const stepTiles = st.step && st.step.tiles != null ? Number(st.step.tiles) : null;
-        const stepDur = stepTiles != null ? stepTiles : ((st.step && Number(st.step.duration_s)) || 0);
-        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
+        const stepDeg = st.step && st.step.degrees != null ? Number(st.step.degrees) : null;
+        const stepCount = stepTiles != null ? stepTiles : stepDeg;
+        const stepDur = stepCount != null ? stepCount : ((st.step && Number(st.step.duration_s)) || 0);
+        const stepElapsed = stepTiles != null ? Number(st.step_tiles_done || 0)
+          : (stepDeg != null ? Number(st.step_degrees_done || 0) : Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0));
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
-        const unit = stepTiles != null ? " ô" : "s";
+        const unit = stepTiles != null ? " ô" : (stepDeg != null ? "°" : "s");
         setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
         const pauseReason = st.pause_reason === "object_detected"
@@ -1150,7 +1171,7 @@ function renderSummaryScript(s) {
   const script = extra.script || {};
   const stepsRows = (script.steps || []).map((st, i) => {
     const d = Number(st.duration_s);
-    const dTxt = st.tiles != null ? `${st.tiles} ô` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-");
+    const dTxt = st.tiles != null ? `${st.tiles} ô` : (st.degrees != null ? `${Number(st.degrees).toFixed(0)}°` : (Number.isFinite(d) ? d.toFixed(1) + " s" : "-"));
     return `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${dTxt}</td></tr>`;
   }).join("");
   const stepsTable = stepsRows
@@ -1228,7 +1249,9 @@ document.getElementById("presetLoad").onclick = async () => {
   steps.length = 0;
   (p.steps || []).forEach(s => steps.push(s.tiles != null
     ? {action: s.action, tiles: Number(s.tiles)}
-    : {action: s.action, duration_s: Number(s.duration_s)}));
+    : (s.degrees != null
+      ? {action: s.action, degrees: Number(s.degrees)}
+      : {action: s.action, duration_s: Number(s.duration_s)})));
   presetName.value = p.name || name;
   resetEditor();
   render();
@@ -1267,6 +1290,18 @@ let tuneDraft = {};
 let tuneTouched = false;
 let tuneEditing = false;
 let tuneRenderedSchema = "";
+// Group filter: "" = ALL. Remembered per browser; hidden groups keep their staged values.
+const tuneGroupFilter = document.getElementById("tuneGroupFilter");
+let tuneGroup = "";
+try { tuneGroup = localStorage.getItem("tuneGroup") || ""; } catch (e) { tuneGroup = ""; }
+
+function renderTuneGroupOptions(groups) {
+  if (!tuneGroupFilter) return;
+  if (tuneGroup && !groups.includes(tuneGroup)) tuneGroup = "";
+  tuneGroupFilter.innerHTML = `<option value="">ALL</option>` + groups
+    .map(g => `<option value="${safeText(g)}">${safeText(g)}</option>`).join("");
+  tuneGroupFilter.value = tuneGroup;
+}
 
 function tuneSchemaSig(schema) {
   return (schema || []).map(s => s.key).join(",");
@@ -1311,8 +1346,9 @@ function renderTuneFields() {
     if (!byGroup[spec.group]) byGroup[spec.group] = [];
     byGroup[spec.group].push(spec);
   });
+  renderTuneGroupOptions(Object.keys(byGroup));
   let html = "";
-  Object.keys(byGroup).forEach(group => {
+  Object.keys(byGroup).filter(group => !tuneGroup || group === tuneGroup).forEach(group => {
     html += `<h3>${safeText(group)}</h3>`;
     byGroup[group].forEach(spec => {
       const key = spec.key;
@@ -1413,11 +1449,70 @@ if (tuneFields) {
     renderTuneStatus();
   });
 }
+if (tuneGroupFilter) {
+  tuneGroupFilter.onchange = () => {
+    tuneGroup = tuneGroupFilter.value;
+    try { localStorage.setItem("tuneGroup", tuneGroup); } catch (e) { /* private window */ }
+    renderTuneFields();
+  };
+}
 if (tuneApplyBtn) tuneApplyBtn.onclick = () => tunePost("/api/tune", {values: tuneDraft}, "PUT");
 if (tuneSaveBtn) tuneSaveBtn.onclick = () => tunePost("/api/tune/save");
 if (tuneResetSavedBtn) tuneResetSavedBtn.onclick = () => tunePost("/api/tune/reset", {target: "saved"});
 if (tuneResetDefaultsBtn) tuneResetDefaultsBtn.onclick = () => tunePost("/api/tune/reset", {target: "defaults"});
 refreshTune(true);
+
+// Turn suggestion: from the last script's turns (latency + V+1 rows), Apply only.
+const turnSuggestBox = document.getElementById("turnSuggestBox");
+const turnSuggestText = document.getElementById("turnSuggestText");
+const turnSuggestApply = document.getElementById("turnSuggestApply");
+async function refreshTurnSuggest() {
+  if (!turnSuggestBox) return;
+  try {
+    const r = await fetch("/route/script/status" + qp);
+    const j = await r.json();
+    const st = (j && j.status) || {};
+    const sug = st.turn_suggest;
+    const log = (st.turn_log || []).filter(t => t.e_psi != null);
+    turnSuggestBox.hidden = !sug;
+    if (!sug) return;
+    const last = log.length ? log[log.length - 1] : null;
+    turnSuggestText.textContent = `${log.length} rẽ đo được` +
+      (last ? ` (cuối: e_ψ ${last.e_psi}°, e_y ${last.e_y_cm} cm)` : "") +
+      ` → latency ${sug.turn_latency_s} s, y* trái ${sug.turn_anchor_y_left}, y* phải ${sug.turn_anchor_y_right}`;
+    turnSuggestApply.disabled = !!st.running;
+  } catch (e) { /* offline */ }
+}
+if (turnSuggestApply) turnSuggestApply.onclick = () => tunePost("/api/turn/apply_suggestion", {});
+setInterval(refreshTurnSuggest, 3000);
+refreshTurnSuggest();
+
+// Ground range: fit k, c (floor distance from seam row + VP row) at standstill.
+const groundNearest = document.getElementById("groundNearest");
+const groundText = document.getElementById("groundText");
+async function groundFit(apply) {
+  if (!groundText) return;
+  const nearest = Number(groundNearest && groundNearest.value);
+  if (!(nearest > 0)) { groundText.textContent = "nhập khoảng cách tới vạch thấp nhất"; return; }
+  groundText.textContent = "đang fit…";
+  try {
+    const r = await fetch("/api/ground/fit" + qp, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nearest_cm: nearest, apply: !!apply}),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { groundText.textContent = "lỗi: " + (j.detail || r.status); return; }
+    const f = j.fit;
+    groundText.textContent = `${j.points} vạch, VP ${j.sample.vp_row} px → k ${f.k_px_cm}, c ${f.c_cm} cm, sai số ${f.rms_cm} cm` +
+      ` (từng vạch: ${f.residuals_cm.join(", ")})` + (apply ? " · đã Apply" : "");
+    if (apply && j.tune) { tuneState = j.tune; tuneDraft = Object.assign({}, j.tune.values || {}); tuneTouched = false; renderTuneFields(); }
+  } catch (e) { groundText.textContent = "network error"; }
+}
+const groundFitBtn = document.getElementById("groundFit");
+const groundFitApplyBtn = document.getElementById("groundFitApply");
+if (groundFitBtn) groundFitBtn.onclick = () => groundFit(false);
+if (groundFitApplyBtn) groundFitApplyBtn.onclick = () => groundFit(true);
 setInterval(() => refreshTune(false), 1000);
 
 // §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──

@@ -110,6 +110,88 @@ _SERVO_ATTRS = {
 _PARAMS_BY_KEY = {param.key: param for param in PARAMS}
 
 
+@dataclass(frozen=True)
+class TuneBinding:
+    """A tune param that lives outside the calibrator (script runner, grid heading)."""
+
+    param: TuneParam
+    getter: Callable[[], float]
+    setter: Callable[[float], None]
+
+
+def attr_binding(param: TuneParam, owner: Any, attr: str) -> TuneBinding:
+    """Bind a param to owner.attr, keeping the attribute's type (bool/int/float)."""
+
+    def get() -> float:
+        return float(getattr(owner, attr))
+
+    def put(value: float) -> None:
+        current = getattr(owner, attr)
+        if isinstance(current, bool):
+            setattr(owner, attr, bool(value))
+        elif isinstance(current, int):
+            setattr(owner, attr, int(value))
+        else:
+            setattr(owner, attr, float(value))
+
+    return TuneBinding(param, get, put)
+
+
+# Degree turns + settle (runtime.pi5_script_runner.TurnSettings) and the grid
+# heading estimator (vision.grid_heading.GridHeadingConfig).
+TURN_PARAMS: tuple[tuple[TuneParam, str], ...] = (
+    (TuneParam("turn_left_steer_deg", "Turning", "Left step: servo offset from centre (deg)", "float", 0.0, 90.0, 0.5), "left_steer_deg"),
+    (TuneParam("turn_right_steer_deg", "Turning", "Right step: servo offset from centre (deg)", "float", 0.0, 90.0, 0.5), "right_steer_deg"),
+    (TuneParam("turn_latency_s", "Turning", "Command-to-camera latency (s)", "float", 0.0, 2.0, 0.01), "latency_s"),
+    (TuneParam("turn_nominal_omega_dps", "Turning", "Nominal yaw rate (deg/s)", "float", 5.0, 120.0, 1.0), "nominal_omega_dps"),
+    (TuneParam("turn_timeout_factor", "Turning", "Timeout (x nominal turn time)", "float", 1.0, 5.0, 0.1), "timeout_factor"),
+    (TuneParam("turn_heading_lost_s", "Turning", "Heading lost after (s)", "float", 0.1, 3.0, 0.05), "heading_lost_s"),
+    (TuneParam("turn_finish_on_time", "Turning", "Heading lost: finish on time (1) / stop (0)", "int", 0, 1, 1), "finish_on_time"),
+    (TuneParam("turn_anchor_y_left", "Turn approach", "Left: V+1 row y* at turn start (0 top, 1 bottom)", "float", 0.05, 0.95, 0.005), "anchor_y_left"),
+    (TuneParam("turn_anchor_y_right", "Turn approach", "Right: V+1 row y* at turn start (0 top, 1 bottom)", "float", 0.05, 0.95, 0.005), "anchor_y_right"),
+    (TuneParam("turn_anchor_tol", "Turn approach", "Row tolerance at y*", "float", 0.002, 0.1, 0.001), "anchor_tol"),
+    (TuneParam("turn_anchor_slow_margin", "Turn approach", "Stop this far before y* (rows)", "float", 0.0, 0.3, 0.005), "anchor_slow_margin"),
+    (TuneParam("turn_anchor_pulse_s", "Turn approach", "First nudge pulse (s)", "float", 0.05, 0.5, 0.01), "anchor_pulse_s"),
+    (TuneParam("turn_anchor_wait_s", "Turn approach", "Standstill before measuring (s)", "float", 0.1, 1.5, 0.05), "anchor_wait_s"),
+    (TuneParam("turn_anchor_max_pulses", "Turn approach", "Max nudges", "int", 1, 30, 1), "anchor_max_pulses"),
+    (TuneParam("turn_anchor_lost_s", "Turn approach", "Anchor line lost after (s)", "float", 0.1, 3.0, 0.05), "anchor_lost_s"),
+    (TuneParam("turn_tile_cm", "Turn approach", "Tile size L (cm)", "float", 10.0, 200.0, 0.5), "tile_cm"),
+    (TuneParam("turn_a_left_cm", "Turn approach", "Left: measured turn length a (cm, 0 = use y* by hand)", "float", 0.0, 300.0, 0.5), "a_left_cm"),
+    (TuneParam("turn_a_right_cm", "Turn approach", "Right: measured turn length a (cm, 0 = use y* by hand)", "float", 0.0, 300.0, 0.5), "a_right_cm"),
+    (TuneParam("ground_k_px_cm", "Turn approach", "Ground k = focal x camera height (px*cm, 0 = off)", "float", 0.0, 1000000.0, 10.0), "ground_k_px_cm"),
+    (TuneParam("ground_c_cm", "Turn approach", "Ground c: front axle to camera (cm)", "float", -100.0, 200.0, 0.5), "ground_c_cm"),
+    (TuneParam("turn_adapt_alpha", "Turn approach", "Suggestion gain alpha", "float", 0.0, 1.0, 0.05), "adapt_alpha"),
+    (TuneParam("settle_k_psi", "Settle", "Servo deg per heading deg", "float", 0.0, 5.0, 0.05), "settle_k_psi"),
+    (TuneParam("settle_k_offset", "Settle", "Servo deg per lane offset", "float", 0.0, 100.0, 1.0), "settle_k_offset"),
+    (TuneParam("settle_max_steer", "Settle", "Max steer from centre (deg)", "float", 0.0, 80.0, 0.5), "settle_max_steer"),
+    (TuneParam("settle_rate_dps", "Settle", "Servo slew limit (deg/s)", "float", 5.0, 300.0, 5.0), "settle_rate_dps"),
+    (TuneParam("settle_exit_psi_deg", "Settle", "Exit: heading within (deg)", "float", 0.0, 15.0, 0.5), "settle_exit_psi_deg"),
+    (TuneParam("settle_exit_offset", "Settle", "Exit: lane offset within", "float", 0.0, 0.5, 0.01), "settle_exit_offset"),
+    (TuneParam("lane_recover", "Lane shift", "Steer back after a passive shift (1) / no (0)", "int", 0, 1, 1), "lane_recover"),
+    (TuneParam("lane_recover_steer_deg", "Lane shift", "Recovery steer from centre (deg)", "float", 0.0, 60.0, 0.5), "lane_recover_steer_deg"),
+    (TuneParam("lane_recover_timeout_s", "Lane shift", "Recovery timeout (s)", "float", 0.5, 10.0, 0.1), "lane_recover_timeout_s"),
+    (TuneParam("settle_exit_hold_s", "Settle", "Exit: hold (s, 0 = no early exit)", "float", 0.0, 2.0, 0.05), "settle_exit_hold_s"),
+)
+GRID_PARAMS: tuple[tuple[TuneParam, str], ...] = (
+    (TuneParam("grid_g_px", "Grid heading", "g until learned (px)", "float", 100.0, 3000.0, 1.0), "g_px"),
+    (TuneParam("grid_scale", "Grid heading", "Frame scale for line search", "float", 0.25, 1.0, 0.05), "scale"),
+    (TuneParam("grid_dark_thresh", "Grid heading", "Dark-line threshold", "int", 1, 100, 1), "dark_thresh"),
+    (TuneParam("grid_hough_votes", "Grid heading", "Hough votes (full-frame px)", "int", 10, 300, 1), "hough_votes"),
+    (TuneParam("grid_min_line_px", "Grid heading", "Min line length (px)", "int", 10, 400, 1), "min_line_px"),
+    (TuneParam("grid_inlier_tol_deg", "Grid heading", "VP inlier tolerance (deg)", "float", 0.5, 10.0, 0.1), "inlier_tol_deg"),
+    (TuneParam("grid_horizon_tol_px", "Grid heading", "VP horizon tolerance (px)", "float", 10.0, 400.0, 1.0), "horizon_tol_px"),
+    (TuneParam("grid_max_vp_y", "Grid heading", "VP must be above row (px, <0 = above image)", "float", -1000.0, 0.0, 5.0), "max_vp_y"),
+    (TuneParam("grid_coast_max_s", "Grid heading", "Coast without heading (s)", "float", 0.0, 2.0, 0.05), "coast_max_s"),
+)
+
+
+def turning_bindings(turn_settings: Any, grid_config: Any) -> list[TuneBinding]:
+    """Tune bindings for the Turning, Settle and Grid heading groups."""
+    return [attr_binding(param, turn_settings, attr) for param, attr in TURN_PARAMS] + [
+        attr_binding(param, grid_config, attr) for param, attr in GRID_PARAMS
+    ]
+
+
 class CalibTuneManager:
     """Applies validated tune values to the live calibrator instance."""
 
@@ -119,8 +201,14 @@ class CalibTuneManager:
         tune_file: str | Path,
         *,
         idle_getter: IdleGetter | None = None,
+        extras: list[TuneBinding] | None = None,
     ) -> None:
         self._calibrator = calibrator
+        self._extras = list(extras or [])
+        self._params: tuple[TuneParam, ...] = PARAMS + tuple(b.param for b in self._extras)
+        self._params_by_key = {param.key: param for param in self._params}
+        if len(self._params_by_key) != len(self._params):
+            raise ValueError("duplicate tune param keys")
         self._tune_file = Path(tune_file)
         self._idle_getter = idle_getter or (lambda: (True, "idle"))
         self._defaults = self._read_current()
@@ -145,8 +233,8 @@ class CalibTuneManager:
                 "values": dict(self._saved_values or {}),
                 "path": str(self._tune_file),
             },
-            "dirty": not _same_values(values, baseline),
-            "schema": [param.as_dict() for param in PARAMS],
+            "dirty": not _same_values(values, baseline, self._params),
+            "schema": [param.as_dict() for param in self._params],
             "idle": {"ok": idle_ok, "reason": idle_reason},
         }
 
@@ -218,19 +306,19 @@ class CalibTuneManager:
         if not isinstance(values, dict):
             raise TuneValidationError("values must be an object")
         for key in values:
-            if key not in _PARAMS_BY_KEY:
+            if key not in self._params_by_key:
                 raise TuneValidationError(f"unknown tune param: {key}")
 
         merged: dict[str, int | float] = dict(base or {})
         if base is None:
-            missing = [param.key for param in PARAMS if param.key not in values]
+            missing = [param.key for param in self._params if param.key not in values]
             if missing:
                 raise TuneValidationError(f"missing tune params: {', '.join(missing)}")
 
         for key, raw_value in values.items():
-            merged[key] = _coerce_value(_PARAMS_BY_KEY[key], raw_value)
+            merged[key] = _coerce_value(self._params_by_key[key], raw_value)
 
-        for param in PARAMS:
+        for param in self._params:
             if param.key not in merged:
                 raise TuneValidationError(f"missing tune param: {param.key}")
 
@@ -277,6 +365,10 @@ class CalibTuneManager:
                 for key, (attr, default) in _SERVO_ATTRS.items()
             },
             **self._read_cross(),
+            **{
+                b.param.key: (int(b.getter()) if b.param.value_type == "int" else float(b.getter()))
+                for b in self._extras
+            },
         }
 
     def _cross_config(self) -> Any:
@@ -332,6 +424,8 @@ class CalibTuneManager:
                 current = getattr(config, attr)
                 value = values[key]
                 setattr(config, attr, bool(value) if isinstance(current, bool) else type(current)(value))
+        for binding in self._extras:
+            binding.setter(values[binding.param.key])
         steering._tracking_active = False
         steering._last_error = 0.0
         state.pid_last_error = 0.0
@@ -386,8 +480,12 @@ def _coerce_value(param: TuneParam, value: Any) -> int | float:
     return float(numeric)
 
 
-def _same_values(left: dict[str, int | float], right: dict[str, int | float]) -> bool:
-    for param in PARAMS:
+def _same_values(
+    left: dict[str, int | float],
+    right: dict[str, int | float],
+    params: tuple[TuneParam, ...] = PARAMS,
+) -> bool:
+    for param in params:
         if param.key not in left or param.key not in right:
             return False
         if abs(float(left[param.key]) - float(right[param.key])) > 1e-9:

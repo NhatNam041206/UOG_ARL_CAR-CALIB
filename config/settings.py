@@ -242,6 +242,53 @@ ROUTE_MAX_TOTAL_DURATION_S = _get_float("ROUTE_MAX_TOTAL_DURATION_S", 300.0)
 # Tile steps ("forward N tiles", counted by the cross-line counter).
 ROUTE_MAX_STEP_TILES = _get_int("ROUTE_MAX_STEP_TILES", 200)
 TILE_STEP_MAX_S_PER_TILE = _get_float("TILE_STEP_MAX_S_PER_TILE", 5.0)  # safety timeout per tile
+# Closed-loop turns ("left 90 degrees"): stop when the yaw seen by the grid
+# heading reaches degrees - yaw_rate * TURN_LATENCY_S (command-to-camera delay,
+# ~0.65 s measured on 2026-10-28).
+ROUTE_MAX_STEP_DEGREES = _get_float("ROUTE_MAX_STEP_DEGREES", 180.0)
+TURN_LATENCY_S = _get_float("TURN_LATENCY_S", 0.65)
+TURN_NOMINAL_OMEGA_DPS = _get_float("TURN_NOMINAL_OMEGA_DPS", 40.0)  # full lock, measured 38-40 deg/s
+TURN_TIMEOUT_FACTOR = _get_float("TURN_TIMEOUT_FACTOR", 2.0)  # x nominal turn time
+TURN_HEADING_LOST_S = _get_float("TURN_HEADING_LOST_S", 0.6)
+TURN_ON_HEADING_LOST = _get_str("TURN_ON_HEADING_LOST", "time").strip().lower()  # time | stop
+# Servo offset from centre for `left` / `right` steps, per side (servo deg).
+# Both fall back to MAX_STEERING_OFFSET (the old symmetric value, 60 in the runner).
+TURN_LEFT_STEER_DEG = _get_float("TURN_LEFT_STEER_DEG", _get_float("MAX_STEERING_OFFSET", 60.0))
+TURN_RIGHT_STEER_DEG = _get_float("TURN_RIGHT_STEER_DEG", _get_float("MAX_STEERING_OFFSET", 60.0))
+# Settle step: slow straight drive steered on grid heading + lane offset.
+SETTLE_K_PSI = _get_float("SETTLE_K_PSI", 1.0)  # servo deg per heading deg
+SETTLE_K_OFFSET = _get_float("SETTLE_K_OFFSET", 20.0)  # servo deg per lane_offset_ratio
+SETTLE_MAX_STEER = _get_float("SETTLE_MAX_STEER", 25.0)  # servo deg from centre
+SETTLE_RATE_DPS = _get_float("SETTLE_RATE_DPS", 60.0)  # servo slew limit
+SETTLE_EXIT_PSI_DEG = _get_float("SETTLE_EXIT_PSI_DEG", 3.0)
+SETTLE_EXIT_OFFSET = _get_float("SETTLE_EXIT_OFFSET", 0.1)
+SETTLE_EXIT_HOLD_S = _get_float("SETTLE_EXIT_HOLD_S", 0.3)  # 0 disables the early exit
+# Turn approach to the next cross line (step {"anchor": "next_line"}): the
+# turn starts from standstill once the seam above V sits at image row y*.
+TURN_ANCHOR_Y_LEFT = _get_float("TURN_ANCHOR_Y_LEFT", 0.65)  # row ratio, 0 = top; set by hand (docs/turning.md)
+TURN_ANCHOR_Y_RIGHT = _get_float("TURN_ANCHOR_Y_RIGHT", 0.65)
+TURN_ANCHOR_TOL = _get_float("TURN_ANCHOR_TOL", 0.015)
+TURN_ANCHOR_SLOW_MARGIN = _get_float("TURN_ANCHOR_SLOW_MARGIN", 0.08)  # stop this far before y*
+TURN_ANCHOR_PULSE_S = _get_float("TURN_ANCHOR_PULSE_S", 0.15)  # first nudge
+TURN_ANCHOR_WAIT_S = _get_float("TURN_ANCHOR_WAIT_S", 0.3)  # standstill before measuring
+TURN_ANCHOR_MAX_PULSES = int(_get_float("TURN_ANCHOR_MAX_PULSES", 8))
+TURN_ANCHOR_LOST_S = _get_float("TURN_ANCHOR_LOST_S", 0.5)
+TURN_ANCHOR_TIMEOUT_S = _get_float("TURN_ANCHOR_TIMEOUT_S", 8.0)  # whole approach
+TURN_TILE_CM = _get_float("TURN_TILE_CM", 60.0)  # tile size L for e_y and d_V
+# y* from the measured turn instead of by hand (vision/ground_range.py):
+# V+1 must sit d_V + L ahead of the front axle, d_V = a - L/2, at row
+# vp_row + k / (d_V + L - c). 0 for a or k keeps the hand-set y*.
+TURN_A_LEFT_CM = _get_float("TURN_A_LEFT_CM", 0.0)  # measured forward run a of a 90 deg turn
+TURN_A_RIGHT_CM = _get_float("TURN_A_RIGHT_CM", 0.0)
+GROUND_K_PX_CM = _get_float("GROUND_K_PX_CM", 0.0)  # f * camera height, fitted
+GROUND_C_CM = _get_float("GROUND_C_CM", 0.0)  # front axle centre to camera, fitted
+TURN_ADAPT_ALPHA = _get_float("TURN_ADAPT_ALPHA", 0.3)
+
+# Passive lane shift during a forward step: steer back toward the old lane
+# until the lane shift detector sees the car cross back (vision/lane_shift.py).
+LANE_RECOVER = _get_bool("LANE_RECOVER", True)
+LANE_RECOVER_STEER_DEG = _get_float("LANE_RECOVER_STEER_DEG", 15.0)  # servo deg from centre
+LANE_RECOVER_TIMEOUT_S = _get_float("LANE_RECOVER_TIMEOUT_S", 3.0)
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]
