@@ -116,9 +116,31 @@ standstill once the line is within `TURN_ANCHOR_TOL` (0.015) of y*, or past
 it. A line lost for `TURN_ANCHOR_LOST_S`, more than `TURN_ANCHOR_MAX_PULSES`
 (8) nudges or `TURN_ANCHOR_TIMEOUT_S` (8 s) stops the script.
 
-Set y* once per side: put the car by hand where the turn should start (the
-rear-axle point d_V = a − L/2 before V) and read the row of the next line on
-the HUD.
+y* comes from one of two places (`target_src` in the anchor log):
+
+- **vp**: when the measured turn length `TURN_A_LEFT_CM` / `_RIGHT_CM` (a)
+  and the ground fit `GROUND_K_PX_CM` (k) are set, y* is computed live. The
+  turn starts with V d_V = a − L/2 ahead of the front axle centre (the car
+  steers with the rear wheels, so the front axle is the reference point), so
+  V+1 must be d_V + L ahead, at image row `vp_row + k / (d_V + L − c)`.
+  `vp_row` is the lane tracker's VP row (else the grid horizon), re-read at
+  each standstill measurement, so pitch does not move the turn point.
+- **manual**: otherwise, or when that row falls outside the image, the
+  hand-set `TURN_ANCHOR_Y_LEFT` / `_RIGHT`: put the car where the turn
+  should start and read the row of the next line.
+
+### Ground range (`vision/ground_range.py`)
+
+On a flat floor a seam at image row y (px) lies `D = c + k / (y − vp_row)`
+ahead of the front axle centre, with k = focal length × camera height and c
+the front axle to camera offset. Both are fixed by the mount and fitted once:
+park the car square to the seams, tape the distance from the front axle
+centre to the lowest seam on screen, type it in the Tune tab box "front axle
+→ lowest seam (cm)" and press **Fit ground k, c** (or **Fit + Apply**). The
+fit uses every seam in the frame (nearest = typed distance, each next one L
+further) and shows the residual per seam; a residual of several cm means a
+seam was missed or the camera pitch is too strong for this model.
+`GET /api/ground/sample` shows the seam rows, the VP row and their distances.
 
 ### Turn errors and the suggestion
 
@@ -131,8 +153,9 @@ runner suggests
 
     latency  -= alpha × e_psi / omega          (max 0.1 s per turn)
     y*(side) -= alpha × e_y × tile_dy / L      (max 0.03 rows per turn)
+    a(side)  += alpha × e_y                    (max 10 cm per turn, vp turns only)
 
-with `tile_dy` the image rows between V+1 and the line above it at the stop
+The y* rule is for manual turns, the a rule for vp turns. With `tile_dy` the image rows between V+1 and the line above it at the stop
 and alpha `TURN_ADAPT_ALPHA` (0.3). Turns that finished on time are skipped.
 The Tune tab shows the suggestion and an **Apply turn suggestion** button
 (Apply only; Save is still a separate click). All approach parameters are in
@@ -203,6 +226,8 @@ car has stopped.
 
 ## Not done yet
 
-The turn does not start at a distance to the cross line yet. The plan is to
-turn at `d_V = R_eff − L/2` so the car ends half a tile from that line.
-`R_eff` and the tile size `L` still need to be measured with a tape.
+- Turn profiles over several runs (mean and spread of a, b, e_psi, e_y per
+  side) instead of one script's suggestion.
+- A* checks that a turn fits (b and the tail swing against the lane) and
+  uses the profile to pick the turn point.
+- The map position moves along the arc during a turn (it only rotates now).

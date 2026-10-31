@@ -21,6 +21,10 @@ from config.settings import (
     SETTLE_MAX_STEER,
     SETTLE_RATE_DPS,
     TILE_STEP_MAX_S_PER_TILE,
+    GROUND_C_CM,
+    GROUND_K_PX_CM,
+    TURN_A_LEFT_CM,
+    TURN_A_RIGHT_CM,
     TURN_ADAPT_ALPHA,
     TURN_ANCHOR_LOST_S,
     TURN_ANCHOR_MAX_PULSES,
@@ -41,6 +45,7 @@ from config.settings import (
     TURN_TIMEOUT_FACTOR,
 )
 from runtime.resource_limits import turn_timeout_s, validate_route_steps
+from vision.ground_range import GroundRange
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,10 @@ class TurnSettings:
     anchor_lost_s: float = TURN_ANCHOR_LOST_S
     anchor_timeout_s: float = TURN_ANCHOR_TIMEOUT_S
     tile_cm: float = TURN_TILE_CM
+    a_left_cm: float = TURN_A_LEFT_CM
+    a_right_cm: float = TURN_A_RIGHT_CM
+    ground_k_px_cm: float = GROUND_K_PX_CM
+    ground_c_cm: float = GROUND_C_CM
     adapt_alpha: float = TURN_ADAPT_ALPHA
     lane_recover: bool = LANE_RECOVER
     lane_recover_steer_deg: float = LANE_RECOVER_STEER_DEG
@@ -129,8 +138,9 @@ class Pi5ScriptRunner:
         self._recover_side = 0
         self._recovering = False
         self._recovered = threading.Event()
-        # Turn approach to the next cross line: () -> (t, [line y ratios], counter_y).
-        self._anchor_source: Callable[[], tuple[float, list[float], float] | None] | None = None
+        # Turn approach to the next cross line: () -> (t, [line y ratios],
+        # counter_y[, vp_row_px, frame_h]); the last two give y* from the VP.
+        self._anchor_source: Callable[[], tuple[Any, ...] | None] | None = None
         self._approaching = False
         # One entry per finished turn; e_psi / e_y are filled by the next settle.
         self._turn_log: list[dict[str, Any]] = []
@@ -171,7 +181,7 @@ class Pi5ScriptRunner:
         self._heading_reset = reset_fn
         self._heading_sample = sample_fn
 
-    def set_anchor_source(self, fn: Callable[[], tuple[float, list[float], float] | None]) -> None:
+    def set_anchor_source(self, fn: Callable[[], tuple[Any, ...] | None]) -> None:
         """Cross lines for {"anchor": "next_line"} turns: fn() returns the
         frame time, the y ratio (centre column) of every line seen, and the
         counter line's y ratio."""
@@ -515,13 +525,21 @@ class Pi5ScriptRunner:
     # ------------------------------------------------------------------ #
     # Turn approach and turn error
     # ------------------------------------------------------------------ #
-    def _anchor_lines(self, after_t: float) -> tuple[list[float], float] | None:
-        """Lines of a frame taken after after_t (waits up to 0.3 s)."""
+    def _anchor_lines(self, after_t: float) -> tuple[list[float], float, float | None, float | None] | None:
+        """(line ys, counter_y, vp_row_px, frame_h) of a frame taken after
+        after_t (waits up to 0.3 s); the last two are None when unknown."""
         deadline = time.monotonic() + 0.3
         while True:
             got = self._anchor_source() if self._anchor_source is not None else None
             if got is not None and got[0] > after_t:
-                return list(got[1]), float(got[2])
+                vp = got[3] if len(got) > 3 else None
+                h = got[4] if len(got) > 4 else None
+                return (
+                    list(got[1]),
+                    float(got[2]),
+                    None if vp is None else float(vp),
+                    None if not h else float(h),
+                )
             if time.monotonic() > deadline or not self.is_running():
                 return None
             time.sleep(0.02)
@@ -553,6 +571,25 @@ class Pi5ScriptRunner:
             last = now
         return True
 
+    def _anchor_target(self, sign: float, vp_px: float | None, frame_h: float | None) -> tuple[float, str]:
+        """Row y* for V+1 and where it came from ("vp" or "manual").
+
+        From the measured turn: the turn starts with V d_V = a - L/2 ahead of
+        the front axle, so V+1 is d_V + L ahead, at row vp + k / (d_V + L - c)
+        (vision/ground_range.py). Falls back to the hand-set y* when a or k
+        is 0, the VP row is unknown, or the row lands outside the image."""
+        cfg = self.turn
+        manual = float(cfg.anchor_y_left if sign > 0 else cfg.anchor_y_right)
+        a = float(cfg.a_left_cm if sign > 0 else cfg.a_right_cm)
+        ground = GroundRange(cfg.ground_k_px_cm, cfg.ground_c_cm)
+        if a <= 0 or not ground.enabled or vp_px is None or not frame_h:
+            return manual, "manual"
+        d_v = a - cfg.tile_cm / 2.0
+        row = ground.row_px(d_v + cfg.tile_cm, vp_px)
+        if row is None or not 0.05 <= row / frame_h <= 0.95:
+            return manual, "manual"
+        return row / frame_h, "vp"
+
     def _approach_anchor(self, sign: float) -> dict[str, Any] | None:
         """Drive to the turn point: the cross line above V (V+1) at row y*.
 
@@ -562,7 +599,7 @@ class Pi5ScriptRunner:
         rows per second learned from each pulse. Returns None after failing
         the step."""
         cfg = self.turn
-        target = float(cfg.anchor_y_left if sign > 0 else cfg.anchor_y_right)
+        target, target_src = self._anchor_target(sign, None, None)
         if self._anchor_source is None:
             self._fail_step("turn anchor: no cross-line source")
             return None
@@ -574,6 +611,7 @@ class Pi5ScriptRunner:
             # Lock: the nearest line above the counter line (V just crossed it).
             y = None
             if got is not None:
+                target, target_src = self._anchor_target(sign, got[2], got[3])
                 above = [v for v in got[0] if v < got[1] - 0.02]
                 y = max(above) if above else None
             self._set_base("FORWARD")
@@ -584,6 +622,7 @@ class Pi5ScriptRunner:
                 got = self._anchor_lines(time.monotonic() - 0.2)
                 now = time.monotonic()
                 if got is not None:
+                    target, target_src = self._anchor_target(sign, got[2], got[3])
                     if y is None:
                         above = [v for v in got[0] if v < got[1] - 0.02]
                         y = max(above) if above else None
@@ -609,6 +648,8 @@ class Pi5ScriptRunner:
                 if nxt is None:
                     self._fail_step("turn anchor: next cross line lost at standstill")
                     return None
+                # Standstill: the VP row is at its steadiest, re-read y*.
+                target, target_src = self._anchor_target(sign, got[2], got[3])
                 if pulses and nxt - y > 0.002:
                     rate = (nxt - y) / pulse_s
                     k = rate if k is None else 0.5 * k + 0.5 * rate
@@ -630,6 +671,8 @@ class Pi5ScriptRunner:
             info = {
                 "y": round(y, 4),
                 "target": round(target, 4),
+                "target_src": target_src,
+                "vp_row": None if got[2] is None else round(got[2], 1),
                 "pulses": pulses,
                 "rows_per_s": None if k is None else round(k, 4),
                 "tile_dy": None if tile_dy is None else round(tile_dy, 4),
@@ -678,10 +721,14 @@ class Pi5ScriptRunner:
 
         latency -= alpha * e_psi / omega (turned too little: stop later)
         y* -= alpha * e_y * tile_dy / tile_cm (turned late: turn with V+1 higher)
-        Steps are capped at 0.1 s and 0.03 rows per turn."""
+        a += alpha * e_y instead when y* came from the VP and a (turned late:
+        the turn runs longer than a says, so start it earlier)
+        Steps are capped at 0.1 s, 0.03 rows and 10 cm per turn."""
         cfg = self.turn
         latency = cfg.latency_s
         rows = {"left": cfg.anchor_y_left, "right": cfg.anchor_y_right}
+        lengths = {"left": cfg.a_left_cm, "right": cfg.a_right_cm}
+        a_used: set[str] = set()
         used = 0
         for t in self._turn_log:
             if t.get("e_psi") is None or t.get("fallback_time"):
@@ -689,16 +736,22 @@ class Pi5ScriptRunner:
             used += 1
             omega = max(5.0, float(t["omega"] or cfg.nominal_omega_dps))
             latency -= max(-0.1, min(0.1, cfg.adapt_alpha * float(t["e_psi"]) / omega))
-            if t.get("anchor_y") is not None and t.get("tile_dy") and t.get("e_y_cm") is not None:
+            if t.get("anchor_src") == "vp" and t.get("e_y_cm") is not None:
+                lengths[t["side"]] += max(-10.0, min(10.0, cfg.adapt_alpha * float(t["e_y_cm"])))
+                a_used.add(t["side"])
+            elif t.get("anchor_y") is not None and t.get("tile_dy") and t.get("e_y_cm") is not None:
                 d = cfg.adapt_alpha * float(t["e_y_cm"]) * float(t["tile_dy"]) / max(1.0, cfg.tile_cm)
                 rows[t["side"]] -= max(-0.03, min(0.03, d))
         if not used:
             return None
-        return {
+        out = {
             "turn_latency_s": round(max(0.0, latency), 3),
             "turn_anchor_y_left": round(rows["left"], 4),
             "turn_anchor_y_right": round(rows["right"], 4),
         }
+        for side in sorted(a_used):
+            out[f"turn_a_{side}_cm"] = round(max(0.0, lengths[side]), 1)
+        return out
 
     def turn_suggestion(self) -> dict[str, float] | None:
         with self._lock:
@@ -792,6 +845,7 @@ class Pi5ScriptRunner:
             "latency_used": self.turn.latency_s,
             "anchor_y": None if anchor is None else anchor.get("y"),
             "anchor_target": None if anchor is None else anchor.get("target"),
+            "anchor_src": None if anchor is None else anchor.get("target_src"),
             "tile_dy": None if anchor is None else anchor.get("tile_dy"),
             "e_psi": None,
             "e_y_cm": None,

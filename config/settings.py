@@ -274,7 +274,14 @@ TURN_ANCHOR_WAIT_S = _get_float("TURN_ANCHOR_WAIT_S", 0.3)  # standstill before 
 TURN_ANCHOR_MAX_PULSES = int(_get_float("TURN_ANCHOR_MAX_PULSES", 8))
 TURN_ANCHOR_LOST_S = _get_float("TURN_ANCHOR_LOST_S", 0.5)
 TURN_ANCHOR_TIMEOUT_S = _get_float("TURN_ANCHOR_TIMEOUT_S", 8.0)  # whole approach
-TURN_TILE_CM = _get_float("TURN_TILE_CM", 60.0)  # tile size L for e_y
+TURN_TILE_CM = _get_float("TURN_TILE_CM", 60.0)  # tile size L for e_y and d_V
+# y* from the measured turn instead of by hand (vision/ground_range.py):
+# V+1 must sit d_V + L ahead of the front axle, d_V = a - L/2, at row
+# vp_row + k / (d_V + L - c). 0 for a or k keeps the hand-set y*.
+TURN_A_LEFT_CM = _get_float("TURN_A_LEFT_CM", 0.0)  # measured forward run a of a 90 deg turn
+TURN_A_RIGHT_CM = _get_float("TURN_A_RIGHT_CM", 0.0)
+GROUND_K_PX_CM = _get_float("GROUND_K_PX_CM", 0.0)  # f * camera height, fitted
+GROUND_C_CM = _get_float("GROUND_C_CM", 0.0)  # front axle centre to camera, fitted
 TURN_ADAPT_ALPHA = _get_float("TURN_ADAPT_ALPHA", 0.3)
 
 # Passive lane shift during a forward step: steer back toward the old lane

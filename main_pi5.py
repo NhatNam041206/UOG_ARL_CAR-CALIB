@@ -58,6 +58,7 @@ from runtime.route_logging import (
 from runtime.pi5_script_runner import Pi5ScriptRunner, TurnSettings
 from runtime.latest_frame import LatestFrameCapture
 from vision.grid_heading import TurnYawTracker
+from vision.ground_range import GroundRange, fit_ground_range, seam_points
 from vision.lane_shift import LaneShiftDetector
 from runtime.calib_tuning import CalibTuneManager, turning_bindings
 from runtime.manual_override import ManualOverrideController
@@ -277,8 +278,8 @@ def main() -> None:
     lane_shift = LaneShiftDetector()
     grid_heading_mode = os.getenv("GRID_HEADING_MODE", "script").strip().lower()
     turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
-    # Latest cross lines for turn approach: (time, [y ratios], counter_y).
-    anchor_lines: list[tuple[float, list[float], float] | None] = [None]
+    # Latest cross lines for turn approach: (time, [y ratios], counter_y, vp_row_px, frame_h).
+    anchor_lines: list[tuple[float, list[float], float, float | None, int] | None] = [None]
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -675,6 +676,48 @@ def main() -> None:
             return tune_manager.apply(values)  # Apply only; Save stays a separate click
 
         http.add_route("POST", "/api/turn/apply_suggestion", _apply_turn_suggestion)
+
+        def _ground_sample(_q: Any = None) -> dict[str, Any]:
+            got = anchor_lines[0]
+            if got is None or len(got) < 5 or got[3] is None:
+                raise ValueError("no frame with a VP row yet")
+            t, ys, _counter, vp, h = got
+            cfg = turn_settings
+            ground = GroundRange(cfg.ground_k_px_cm, cfg.ground_c_cm)
+            lines_px = sorted((float(y) * h for y in ys), reverse=True)  # nearest first
+            return {
+                "age_s": round(time.monotonic() - t, 2),
+                "frame_h": h,
+                "vp_row": round(float(vp), 1),
+                "lines_px": [round(y, 1) for y in lines_px],
+                "lines_cm": [
+                    None if (d := ground.distance_cm(y, vp)) is None else round(d, 1) for y in lines_px
+                ],
+                "k_px_cm": cfg.ground_k_px_cm,
+                "c_cm": cfg.ground_c_cm,
+            }
+
+        def _ground_fit(body: dict[str, Any]) -> dict[str, Any]:
+            """Car parked square to the seams: body nearest_cm = tape distance
+            from the front axle centre to the lowest seam on screen."""
+            sample = _ground_sample()
+            if sample["age_s"] > 1.0:
+                raise ValueError("camera frame is stale")
+            nearest = float(body.get("nearest_cm", 0) or 0)
+            if nearest <= 0:
+                raise ValueError("nearest_cm must be > 0")
+            tile = float(body.get("tile_cm") or turn_settings.tile_cm)
+            points = seam_points(sample["lines_px"], sample["vp_row"], nearest, tile)
+            fit = fit_ground_range(points)
+            out: dict[str, Any] = {"fit": fit.as_dict(), "sample": sample, "points": len(points)}
+            if body.get("apply"):
+                out["tune"] = tune_manager.apply(
+                    {"ground_k_px_cm": round(fit.k_px_cm, 1), "ground_c_cm": round(fit.c_cm, 2)}
+                )
+            return out
+
+        http.add_route("GET", "/api/ground/sample", _ground_sample)
+        http.add_route("POST", "/api/ground/fit", _ground_fit)
         http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
         http.add_route("GET", "/api/map/maps", lambda _q: {"maps": map_store.list_maps()})
         http.add_route("GET", "/api/map/load", lambda q: map_store.load((q.get("id") or [""])[0]))
@@ -930,10 +973,17 @@ def main() -> None:
 
             # --- transverse seam (tile) counter: log + HUD only ---
             cross_result = calibrator.cross_counter.update(frame)
+            # VP row: the lane tracker's (live), else the grid horizon; it
+            # turns a seam row into a floor distance (vision/ground_range.py).
+            vp_row = calibration.telemetry.get("vp_row")
+            if vp_row is None:
+                vp_row = turn_yaw.estimator.horizon_y
             anchor_lines[0] = (
                 time.monotonic(),
                 [line.y for line in cross_result.lines],
                 calibrator.cross_counter.config.counter_y,
+                vp_row,
+                frame.shape[0],
             )
             # Seams seen while turning (in place or on an arc) or reversing do
             # not move the car along the map; the turn rotates the map heading

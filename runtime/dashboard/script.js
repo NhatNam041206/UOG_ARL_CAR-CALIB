@@ -1486,6 +1486,33 @@ async function refreshTurnSuggest() {
 if (turnSuggestApply) turnSuggestApply.onclick = () => tunePost("/api/turn/apply_suggestion", {});
 setInterval(refreshTurnSuggest, 3000);
 refreshTurnSuggest();
+
+// Ground range: fit k, c (floor distance from seam row + VP row) at standstill.
+const groundNearest = document.getElementById("groundNearest");
+const groundText = document.getElementById("groundText");
+async function groundFit(apply) {
+  if (!groundText) return;
+  const nearest = Number(groundNearest && groundNearest.value);
+  if (!(nearest > 0)) { groundText.textContent = "nhập khoảng cách tới vạch thấp nhất"; return; }
+  groundText.textContent = "đang fit…";
+  try {
+    const r = await fetch("/api/ground/fit" + qp, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nearest_cm: nearest, apply: !!apply}),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { groundText.textContent = "lỗi: " + (j.detail || r.status); return; }
+    const f = j.fit;
+    groundText.textContent = `${j.points} vạch, VP ${j.sample.vp_row} px → k ${f.k_px_cm}, c ${f.c_cm} cm, sai số ${f.rms_cm} cm` +
+      ` (từng vạch: ${f.residuals_cm.join(", ")})` + (apply ? " · đã Apply" : "");
+    if (apply && j.tune) { tuneState = j.tune; tuneDraft = Object.assign({}, j.tune.values || {}); tuneTouched = false; renderTuneFields(); }
+  } catch (e) { groundText.textContent = "network error"; }
+}
+const groundFitBtn = document.getElementById("groundFit");
+const groundFitApplyBtn = document.getElementById("groundFitApply");
+if (groundFitBtn) groundFitBtn.onclick = () => groundFit(false);
+if (groundFitApplyBtn) groundFitApplyBtn.onclick = () => groundFit(true);
 setInterval(() => refreshTune(false), 1000);
 
 // §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──

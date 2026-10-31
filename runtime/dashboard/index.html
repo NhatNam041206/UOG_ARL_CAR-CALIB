@@ -149,6 +149,13 @@
           <span id="turnSuggestText" class="muted"></span>
           <button id="turnSuggestApply" title="Apply the suggested latency and V+1 rows (Save stays separate)">Apply turn suggestion</button>
         </div>
+        <div id="groundBox" class="row" title="Car parked square to the seams. Tape from the front axle centre to the lowest seam on screen.">
+          <label class="muted" for="groundNearest">front axle → lowest seam (cm)</label>
+          <input id="groundNearest" type="number" min="1" step="0.5" style="width:6em">
+          <button id="groundFit">Fit ground k, c</button>
+          <button id="groundFitApply" title="Fit, then Apply k and c (Save stays separate)">Fit + Apply</button>
+          <span id="groundText" class="muted"></span>
+        </div>
         <div id="tuneFields"></div>
       </div>
       <div class="tab-pane" data-pane="map">
@@ -313,6 +320,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261030-turn-anchor"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261031-ground-range"></script>
 </body>
 </html>
