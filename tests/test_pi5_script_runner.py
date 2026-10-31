@@ -388,3 +388,61 @@ def test_anchor_turn_with_vp_target_stops_with_v_plus_1_at_the_turn_distance():
     sug = status["turn_suggest"]
     assert sug["turn_a_left_cm"] == pytest.approx(200.0 + 0.3 * 6.0)  # turned late: start earlier
     assert "turn_a_right_cm" not in sug
+
+
+def test_active_lane_change_steers_toward_the_side_until_the_crossing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    angles: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
+    runner.turn.lane_change_steer_deg = 12.0
+    assert runner.submit([{"action": "lane_left", "duration_s": 2.0}]) is True
+    _wait(lambda: runner.expected_crossing() == 1)
+    assert runner.vision_pid_active() is False
+    assert angles[-1] == pytest.approx(62.0 + 12.0)  # left is above centre
+    runner.lane_crossed()
+    _wait(lambda: not runner.is_running())
+    assert runner.expected_crossing() == 0
+    assert runner.status()["last_error"] in (None, "")
+
+
+def test_active_lane_change_fails_without_a_crossing():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    assert runner.submit([{"action": "lane_right", "duration_s": 0.2}]) is True
+    _wait(lambda: not runner.is_running())
+    assert "lane change right" in runner.status()["last_error"]
+
+
+def test_lane_change_straightens_with_the_settle_law_after_crossing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    angles: list[float] = []
+    heading = _FakeHeading(omega=0.0, psi=10.0, offset=0.0)  # still pointing left
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, angles.append, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.turn.lane_align_timeout_s = 0.4
+    runner.turn.settle_k_psi = 1.0
+    assert runner.submit([{"action": "lane_left", "duration_s": 2.0}]) is True
+    _wait(lambda: runner.expected_crossing() == 1)
+    assert runner.needs_heading() is True
+    runner.lane_crossed()
+    _wait(lambda: not runner.is_running())
+    assert min(angles) < 62.0  # steered right of centre to cancel the heading
+    assert runner.status()["last_error"] in (None, "")
+
+
+def test_passive_mode_off_ignores_drifts():
+    runner = Pi5ScriptRunner()
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.turn.lane_recover = False
+    assert runner.submit([{"action": "forward", "duration_s": 0.3}]) is True
+    _wait(lambda: runner.current_action() == "forward")
+    assert runner.request_lane_recover(1) is False
+
+
+def test_lane_steps_pass_validation():
+    from runtime.resource_limits import validate_route_steps
+
+    steps = validate_route_steps([{"action": "lane_left", "duration_s": 3}, {"action": "lane_right", "duration_s": 3}])
+    assert [s["action"] for s in steps] == ["lane_left", "lane_right"]

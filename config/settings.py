@@ -284,11 +284,19 @@ GROUND_K_PX_CM = _get_float("GROUND_K_PX_CM", 0.0)  # f * camera height, fitted
 GROUND_C_CM = _get_float("GROUND_C_CM", 0.0)  # front axle centre to camera, fitted
 TURN_ADAPT_ALPHA = _get_float("TURN_ADAPT_ALPHA", 0.3)
 
-# Passive lane shift during a forward step: steer back toward the old lane
-# until the lane shift detector sees the car cross back (vision/lane_shift.py).
+# Passive mode: after a passive lane shift during a forward step, steer back
+# toward the old lane until the lane shift detector sees the car cross back
+# (vision/lane_shift.py), then straighten with the settle law. Off = the map
+# still moves one row, the car keeps driving in the new lane.
 LANE_RECOVER = _get_bool("LANE_RECOVER", True)
 LANE_RECOVER_STEER_DEG = _get_float("LANE_RECOVER_STEER_DEG", 15.0)  # servo deg from centre
 LANE_RECOVER_TIMEOUT_S = _get_float("LANE_RECOVER_TIMEOUT_S", 3.0)
+# Active lane change (lane_left / lane_right script steps): steer this far
+# from centre until the detector sees the crossing; the step's duration_s is
+# the crossing timeout.
+LANE_CHANGE_STEER_DEG = _get_float("LANE_CHANGE_STEER_DEG", 15.0)
+# After a crossing (active or recovery): settle-law straightening, at most this long.
+LANE_ALIGN_TIMEOUT_S = _get_float("LANE_ALIGN_TIMEOUT_S", 1.5)
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]
