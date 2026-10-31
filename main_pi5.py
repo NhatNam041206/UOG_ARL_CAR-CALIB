@@ -1000,15 +1000,20 @@ def main() -> None:
                 calibration.telemetry.get("lane_offset_ratio"),
                 psi_deg=turn_yaw.last_heading.psi_deg if turn_yaw.last_heading is not None else None,
                 active=script_runner is not None
-                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right"),
+                and (
+                    script_runner.current_action()
+                    in ("left", "right", "turn_left", "turn_right", "lane_left", "lane_right")
+                    or script_runner.expected_crossing() != 0
+                ),
             )
             if shift is not None:
                 logger.info("Lane shift: %s", shift.as_dict())
-                recover_side = script_runner.recovering() if script_runner is not None else 0
-                if recover_side and shift.side == -recover_side:
-                    # Back in the old lane: the recovery is done.
+                expected = script_runner.expected_crossing() if script_runner is not None else 0
+                if expected and shift.side == expected:
+                    # The crossing the runner steered for (an active lane
+                    # change, or back into the old lane after a drift).
                     map_session.apply_lane_shift(shift.side)
-                    script_runner.lane_recovered()
+                    script_runner.lane_crossed()
                 elif not shift.active and last_base_cmd.upper() in ("FORWARD", "BACKWARD"):
                     map_session.apply_lane_shift(shift.side)
                     if script_runner is not None:

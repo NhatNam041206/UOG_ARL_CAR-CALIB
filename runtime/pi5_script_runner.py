@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from config.settings import (
+    LANE_ALIGN_TIMEOUT_S,
+    LANE_CHANGE_STEER_DEG,
     LANE_RECOVER,
     LANE_RECOVER_STEER_DEG,
     LANE_RECOVER_TIMEOUT_S,
@@ -86,6 +88,8 @@ class TurnSettings:
     lane_recover: bool = LANE_RECOVER
     lane_recover_steer_deg: float = LANE_RECOVER_STEER_DEG
     lane_recover_timeout_s: float = LANE_RECOVER_TIMEOUT_S
+    lane_change_steer_deg: float = LANE_CHANGE_STEER_DEG
+    lane_align_timeout_s: float = LANE_ALIGN_TIMEOUT_S
 
 BASE_MAP: dict[str, tuple[int, int, int]] = {
     "STOP": (0, 0, 0),
@@ -99,9 +103,12 @@ BASE_MAP: dict[str, tuple[int, int, int]] = {
 
 _VALID_ACTIONS = {
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
+    "lane_left", "lane_right",
 }
+# Active lane change into the next tile row: +1 left, -1 right.
+LANE_CHANGE_ACTIONS = {"lane_left": 1, "lane_right": -1}
 # Steps that pin the servo themselves, so the vision PID must not publish.
-_SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle")
+_SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle", "lane_left", "lane_right")
 
 
 class Pi5ScriptRunner:
@@ -137,7 +144,10 @@ class Pi5ScriptRunner:
         # Lane recovery: side the car drifted to (+1 left), 0 = none pending.
         self._recover_side = 0
         self._recovering = False
-        self._recovered = threading.Event()
+        # Lane crossing the runner is steering for (+1 into the left lane),
+        # 0 = none; set while a lane change or a recovery crosses a line.
+        self._cross_side = 0
+        self._crossed = threading.Event()
         # Turn approach to the next cross line: () -> (t, [line y ratios],
         # counter_y[, vp_row_px, frame_h]); the last two give y* from the VP.
         self._anchor_source: Callable[[], tuple[Any, ...] | None] | None = None
@@ -200,7 +210,12 @@ class Pi5ScriptRunner:
         """True while the current step reads the heading (main loop runs the estimator)."""
         with self._lock:
             step = self._current_step if self._running else None
-        return step is not None and (step.get("degrees") is not None or step.get("action") == "settle")
+        return step is not None and (
+            step.get("degrees") is not None
+            or step.get("action") == "settle"
+            or step.get("action") in LANE_CHANGE_ACTIONS
+            or self._recover_side != 0
+        )
 
     def current_action(self) -> str | None:
         with self._lock:
@@ -215,7 +230,8 @@ class Pi5ScriptRunner:
     def request_lane_recover(self, side: int) -> bool:
         """A passive lane shift to `side` (+1 left) happened: steer back.
 
-        Only during a forward step; returns False when not taken."""
+        Only when passive mode is on and during a forward step; returns False
+        when not taken."""
         with self._lock:
             step = self._current_step if self._running else None
             if (
@@ -226,7 +242,7 @@ class Pi5ScriptRunner:
             ):
                 return False
             self._recover_side = 1 if side > 0 else -1
-        self._recovered.clear()
+        self._crossed.clear()
         return True
 
     def recovering(self) -> int:
@@ -234,9 +250,18 @@ class Pi5ScriptRunner:
         with self._lock:
             return self._recover_side
 
-    def lane_recovered(self) -> None:
-        """The detector saw the car cross back into its lane."""
-        self._recovered.set()
+    def expected_crossing(self) -> int:
+        """Side of the lane line the runner is steering across (+1 into the
+        left lane, -1 right), 0 when it is not changing lanes."""
+        with self._lock:
+            return self._cross_side
+
+    def lane_crossed(self) -> None:
+        """The detector saw the car cross into the lane the runner steered for."""
+        self._crossed.set()
+
+    # Older name, kept for callers of the passive recovery.
+    lane_recovered = lane_crossed
 
     def vision_pid_active(self) -> bool:
         """True when current step should let vision PID control servo."""
@@ -266,6 +291,7 @@ class Pi5ScriptRunner:
                 "step_degrees_done": round(self._step_degrees_done, 1),
                 "last_turn": dict(self._last_turn) if self._last_turn is not None else None,
                 "lane_recovering": self._recover_side,
+                "lane_crossing": self._cross_side,
                 "turn_log": [dict(t) for t in self._turn_log[-20:]],
                 "turn_suggest": self._turn_suggestion_locked(),
                 "last_error": self._last_error,
@@ -379,6 +405,10 @@ class Pi5ScriptRunner:
         else:
             duration_s = max(0.0, float(step.get("duration_s", 1.0)))
 
+        if action in LANE_CHANGE_ACTIONS:
+            self._lane_change(LANE_CHANGE_ACTIONS[action], duration_s)
+            return
+
         if action in ("forward", "straight"):
             base_cmd = "FORWARD"
             angle: float | None = None
@@ -473,30 +503,11 @@ class Pi5ScriptRunner:
                 target = self._center_angle
                 sample = self._heading_sample() if self._heading_sample is not None else None
                 self._measure_turn_error(sample, elapsed)
+                aligned = False
                 if sample is not None and sample.valid and sample.psi_deg is not None:
-                    offset = float(sample.lane_offset_ratio) if sample.lane_offset_ratio is not None else 0.0
-                    # psi > 0: the car points left of the grid; offset > 0: lane
-                    # centre is to the right. Both need a right correction, and
-                    # right is below centre.
-                    u = cfg.settle_k_psi * float(sample.psi_deg) + cfg.settle_k_offset * offset
-                    target = self._center_angle - max(-cfg.settle_max_steer, min(cfg.settle_max_steer, u))
-                    aligned = (
-                        abs(float(sample.psi_deg)) <= cfg.settle_exit_psi_deg
-                        and sample.lane_offset_ratio is not None
-                        and abs(offset) <= cfg.settle_exit_offset
-                    )
-                    settle_ok_s = settle_ok_s + dt if aligned else 0.0
-                else:
-                    settle_ok_s = 0.0
-                step_max = cfg.settle_rate_dps * dt
-                current = angle if angle is not None else self._center_angle
-                new_angle = current + max(-step_max, min(step_max, target - current))
-                if abs(new_angle - current) >= 0.5:
-                    angle = new_angle
-                    with self._lock:
-                        self._current_angle = angle
-                    if self._servo_cb is not None:
-                        self._servo_cb(angle)
+                    target, aligned = self._settle_target(sample)
+                settle_ok_s = settle_ok_s + dt if aligned else 0.0
+                angle = self._slew_servo(angle, target, dt)
                 if cfg.settle_exit_hold_s > 0 and settle_ok_s >= cfg.settle_exit_hold_s:
                     break
                 if timed_out:
@@ -757,43 +768,142 @@ class Pi5ScriptRunner:
         with self._lock:
             return self._turn_suggestion_locked()
 
-    def _recover_lane(self, side: int, base_cmd: str) -> bool:
-        """Steer back toward the lane the car drifted out of (side +1 = it
-        drifted left, so steer right) until lane_recovered() or timeout."""
+    def _settle_target(self, sample: Any) -> tuple[float, bool]:
+        """Settle control law: (servo target, aligned) from a valid sample."""
         cfg = self.turn
-        angle = max(0.0, min(180.0, self._center_angle - side * abs(cfg.lane_recover_steer_deg)))
+        offset = float(sample.lane_offset_ratio) if sample.lane_offset_ratio is not None else 0.0
+        # psi > 0: the car points left of the grid; offset > 0: lane
+        # centre is to the right. Both need a right correction, and
+        # right is below centre.
+        u = cfg.settle_k_psi * float(sample.psi_deg) + cfg.settle_k_offset * offset
+        target = self._center_angle - max(-cfg.settle_max_steer, min(cfg.settle_max_steer, u))
+        aligned = (
+            abs(float(sample.psi_deg)) <= cfg.settle_exit_psi_deg
+            and sample.lane_offset_ratio is not None
+            and abs(offset) <= cfg.settle_exit_offset
+        )
+        return target, aligned
+
+    def _slew_servo(self, angle: float | None, target: float, dt: float) -> float | None:
+        """Move the servo toward target at most settle_rate_dps * dt."""
+        step_max = self.turn.settle_rate_dps * dt
+        current = angle if angle is not None else self._center_angle
+        new_angle = current + max(-step_max, min(step_max, target - current))
+        if abs(new_angle - current) < 0.5:
+            return angle
         with self._lock:
-            self._recovering = True
+            self._current_angle = new_angle
+        if self._servo_cb is not None:
+            self._servo_cb(new_angle)
+        return new_angle
+
+    def _cross_lane(self, side: int, steer_deg: float, timeout_s: float, base_cmd: str) -> float | None:
+        """Steer toward `side` (+1 left) until lane_crossed() or timeout.
+
+        Returns the time it took, None on timeout or stop. Paused time does
+        not count."""
+        angle = max(0.0, min(180.0, self._center_angle + side * abs(float(steer_deg))))
+        with self._lock:
+            self._cross_side = side
             self._current_angle = angle
-        logger.warning("Lane recovery: drifted %s, steering back", "left" if side > 0 else "right")
         self._publish_current_command(base_cmd, angle)
         waited, last = 0.0, time.monotonic()
         ok = False
-        while True:
-            if self._recovered.wait(0.05):
-                ok = True
-                break
+        try:
+            while True:
+                if self._crossed.wait(0.05):
+                    ok = True
+                    break
+                now = time.monotonic()
+                with self._lock:
+                    if not self._running:
+                        break
+                    if not self._paused:
+                        waited += now - last
+                last = now
+                if waited >= timeout_s:
+                    break
+        finally:
+            with self._lock:
+                self._cross_side = 0
+            self._crossed.clear()
+        return waited if ok else None
+
+    def _align_in_lane(self, timeout_s: float) -> None:
+        """After a crossing the car still points at the old lane: straighten
+        it on the new lane with the settle law until aligned (settle exit
+        hold) or timeout. Skipped without a heading source."""
+        cfg = self.turn
+        angle: float | None = self._center_angle
+        if self._heading_sample is None or timeout_s <= 0:
+            if self._servo_cb is not None:
+                self._servo_cb(self._center_angle)
+            return
+        elapsed, ok_s, last = 0.0, 0.0, time.monotonic()
+        while elapsed < timeout_s:
+            time.sleep(0.05)
             now = time.monotonic()
             with self._lock:
                 if not self._running:
-                    break
-                if not self._paused:
-                    waited += now - last
+                    return
+                paused = self._paused
+            dt = 0.0 if paused else now - last
             last = now
-            if waited >= cfg.lane_recover_timeout_s:
+            if paused:
+                continue
+            elapsed += dt
+            sample = self._heading_sample()
+            target, aligned = self._center_angle, False
+            if sample is not None and sample.valid and sample.psi_deg is not None:
+                target, aligned = self._settle_target(sample)
+            ok_s = ok_s + dt if aligned else 0.0
+            angle = self._slew_servo(angle, target, dt)
+            if cfg.settle_exit_hold_s > 0 and ok_s >= cfg.settle_exit_hold_s:
                 break
+        if self._servo_cb is not None:
+            self._servo_cb(self._center_angle)  # the vision PID takes over from centre
+
+    def _lane_change(self, side: int, timeout_s: float) -> None:
+        """Active lane change: steer into the next tile row on `side`, wait
+        for the lane shift detector to see the crossing, then straighten."""
+        cfg = self.turn
+        logger.info("Lane change %s", "left" if side > 0 else "right")
         with self._lock:
-            self._recovering = False
-            self._recover_side = 0
+            self._step_elapsed_s = 0.0
+            self._step_duration_s = timeout_s
+            self._current_base_cmd = "FORWARD"
+        took = self._cross_lane(side, cfg.lane_change_steer_deg, timeout_s, "FORWARD")
+        if took is None:
+            if self.is_running():
+                self._fail_step(f"lane change {'left' if side > 0 else 'right'}: no crossing in {timeout_s:.1f} s")
+            return
+        logger.info("Lane change crossed in %.1f s, aligning", took)
+        self._align_in_lane(cfg.lane_align_timeout_s)
+        with self._lock:
             self._current_angle = None
-        self._recovered.clear()
-        if ok:
-            logger.info("Lane recovery done in %.1f s", waited)
-            if self._servo_cb is not None:
-                self._servo_cb(self._center_angle)  # the vision PID takes over from centre
+
+    def _recover_lane(self, side: int, base_cmd: str) -> bool:
+        """Passive mode: steer back toward the lane the car drifted out of
+        (side +1 = it drifted left, so steer right) until it crosses back,
+        then straighten like an active lane change."""
+        cfg = self.turn
+        with self._lock:
+            self._recovering = True
+        logger.warning("Lane recovery: drifted %s, steering back", "left" if side > 0 else "right")
+        try:
+            took = self._cross_lane(-side, cfg.lane_recover_steer_deg, cfg.lane_recover_timeout_s, base_cmd)
+            if took is not None:
+                logger.info("Lane recovery crossed back in %.1f s", took)
+                self._align_in_lane(cfg.lane_align_timeout_s)
+        finally:
+            with self._lock:
+                self._recovering = False
+                self._recover_side = 0
+                self._current_angle = None
+        if took is not None:
             return True
         if self.is_running():
-            self._fail_step(f"lane recovery failed after {waited:.1f} s")
+            self._fail_step(f"lane recovery failed after {cfg.lane_recover_timeout_s:.1f} s")
         return False
 
     def _turn_done(self, rotation_deg: float) -> None:

@@ -107,7 +107,9 @@ function stepAmount(s) {
 function updateDurationUnit() {
   if (turnUnitSel) turnUnitSel.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "" : "none";
   if (durationUnit) {
-    durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)" : (stepUsesDegrees(actionInput.value) ? "" : "seconds");
+    durationUnit.textContent = stepUsesTiles(actionInput.value) ? "ô (tiles)"
+      : (stepUsesDegrees(actionInput.value) ? ""
+      : (actionInput.value.startsWith("lane_") ? "s (timeout: lâu nhất để qua vạch)" : "seconds"));
     durationUnit.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "none" : "";
   }
 }
@@ -712,6 +714,7 @@ function renderMetricGrid(tel, rpiPayload, actuator) {
     {label: "Relay", value: relay, cls: relayCls},
     {label: "Mode", value: mode, cls: modeCls},
     {label: "Frame", value: frame},
+    laneShiftCell(t),
     {label: "Route", value: route, full: true},
   ];
 
@@ -724,6 +727,20 @@ function renderMetricGrid(tel, rpiPayload, actuator) {
           <div class="metric-value ${c.cls || ''}">${c.value}</div>
         </div>`).join("")}
     </div>`;
+}
+
+// Last lane shift from vision/lane_shift.py: side + active/passive, and how
+// many passive ones (drifts) this run. A new shift also goes to the event log.
+let _lastLaneShiftT = null;
+function laneShiftCell(t) {
+  const n = t.lane_shift_passive_count != null ? t.lane_shift_passive_count : 0;
+  if (t.lane_shift_t != null && t.lane_shift_t !== _lastLaneShiftT) {
+    if (_lastLaneShiftT !== null) addEvent(t.lane_shift_kind === "passive" ? "warn" : "info", `lane shift ${t.lane_shift_side} (${t.lane_shift_kind})`);
+    _lastLaneShiftT = t.lane_shift_t;
+  }
+  if (!t.lane_shift_side) return {label: "Lane shift", value: `- · drift ${n}`};
+  const cls = t.lane_shift_kind === "passive" ? "text-warn" : "text-ok";
+  return {label: "Lane shift", value: `${safeText(t.lane_shift_side)} ${safeText(t.lane_shift_kind)} · drift ${n}`, cls};
 }
 
 const _eventLog = [];

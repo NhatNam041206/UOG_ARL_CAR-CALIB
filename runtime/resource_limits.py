@@ -35,6 +35,7 @@ DEGREE_ROUTE_ACTIONS = frozenset({"left", "right", "turn_left", "turn_right"})
 
 VALID_ROUTE_ACTIONS = frozenset({
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
+    "lane_left", "lane_right",
 })
 
 
