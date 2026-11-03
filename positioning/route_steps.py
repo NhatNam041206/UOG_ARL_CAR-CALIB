@@ -119,3 +119,61 @@ def turn_test_steps(side: str, before_tiles: int = 2, after_tiles: int = 1) -> l
         {"action": "settle", "duration_s": _settle_s() or 2.5},
         {"action": "forward", "tiles": int(after_tiles)},
     ]
+
+
+SEGMENT_KINDS = ("straight", "turn_left", "turn_right")
+
+
+def segment_kind(step: dict[str, Any]) -> str | None:
+    """Which map segment an A* step drives: straight, turn_left or turn_right."""
+    action = str(step.get("action", ""))
+    if step.get("tiles") is not None and action in ("forward", "straight"):
+        return "straight"
+    if action in ("turn_left", "left"):
+        return "turn_left"
+    if action in ("turn_right", "right"):
+        return "turn_right"
+    return None
+
+
+def check_straight_command(steps: list[dict[str, Any]]) -> None:
+    """A straight command must say where the segment's tile count goes."""
+    if sum(1 for s in steps if s.get("tiles") is not None) != 1:
+        raise ValueError("straight command needs exactly one forward step by tiles (it gets the segment's tile count)")
+
+
+def apply_segment_commands(
+    steps: list[dict[str, Any]], commands: dict[str, list[dict[str, Any]] | None]
+) -> tuple[list[dict[str, Any]], int]:
+    """Replace each A* segment with its configured command steps.
+
+    straight: the command's tiles step takes the segment's tile count.
+    turn_left / turn_right: the command replaces the turn and the settle the
+    planner put after it (the command brings its own settle if it needs one).
+    Segments without a command keep the planner's steps. Returns the new steps
+    and how many segments were replaced."""
+    out: list[dict[str, Any]] = []
+    replaced = 0
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        kind = segment_kind(step)
+        command = commands.get(kind) if kind else None
+        if not command:
+            out.append(dict(step))
+            i += 1
+            continue
+        replaced += 1
+        if kind == "straight":
+            for s in command:
+                s = dict(s)
+                if s.get("tiles") is not None:
+                    s["tiles"] = int(step["tiles"])
+                out.append(s)
+            i += 1
+            continue
+        out.extend(dict(s) for s in command)
+        i += 1
+        if i < len(steps) and steps[i].get("action") == "settle":
+            i += 1
+    return out, replaced

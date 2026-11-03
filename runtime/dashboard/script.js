@@ -113,12 +113,16 @@ function updateDurationUnit() {
     durationUnit.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "none" : "";
   }
 }
-// Turning presets for A*: each turn the planner emits (plus the settle that
-// follows it) is replaced by the steps of the route preset picked for that side.
-const TURN_PRESET_SIDES = {left: ["turn_left", "left"], right: ["turn_right", "right"]};
-const turnPresetSel = {left: document.getElementById("turnPresetLeft"), right: document.getElementById("turnPresetRight")};
-let turnPresetChoice = {left: "", right: ""};
-try { turnPresetChoice = Object.assign(turnPresetChoice, JSON.parse(localStorage.getItem("turnPresets") || "{}")); } catch (e) { /* private window */ }
+// Segment commands for A*: route presets picked per map segment (straight,
+// turn left, turn right) are stored on the Pi; /api/map/saved_steps already
+// returns the plan built from them.
+const segSel = {
+  straight: document.getElementById("segStraight"),
+  turn_left: document.getElementById("segLeft"),
+  turn_right: document.getElementById("segRight"),
+};
+let segCommands = {straight: "", turn_left: "", turn_right: ""};
+let presetNames = [];
 
 function presetStep(s) {
   if (s.tiles != null) return {action: s.action, tiles: Number(s.tiles)};
@@ -126,27 +130,24 @@ function presetStep(s) {
   return {action: s.action, duration_s: Number(s.duration_s)};
 }
 
-function expandTurns(planSteps, bySide) {
-  const out = [];
-  let replaced = 0;
-  for (let i = 0; i < planSteps.length; i++) {
-    const s = planSteps[i];
-    const side = Object.keys(TURN_PRESET_SIDES).find(k => TURN_PRESET_SIDES[k].includes(s.action));
-    const preset = side ? bySide[side] : null;
-    if (!preset) { out.push(s); continue; }
-    preset.forEach(p => out.push(presetStep(p)));
-    replaced++;
-    if (planSteps[i + 1] && planSteps[i + 1].action === "settle") i++;  // the preset brings its own settle
-  }
-  return {steps: out, replaced};
+function renderSegmentSelects() {
+  Object.entries(segSel).forEach(([kind, sel]) => {
+    if (!sel || document.activeElement === sel) return;
+    const names = presetNames.slice();
+    if (segCommands[kind] && !names.includes(segCommands[kind])) names.push(segCommands[kind]);
+    sel.innerHTML = `<option value="">mặc định</option>` + names
+      .map(n => `<option value="${safeText(n)}">${safeText(n)}</option>`).join("");
+    sel.value = segCommands[kind] || "";
+  });
 }
 
-async function fetchPresetSteps(name) {
-  if (!name) return null;
-  const r = await fetch(`/presets/${encodeURIComponent(name)}${qp}`);
-  if (!r.ok) throw new Error(`preset "${name}" not found`);
-  const j = await r.json();
-  return ((j.preset || {}).steps || []);
+async function refreshSegmentCommands() {
+  try {
+    const r = await fetch("/api/segment_commands" + qp);
+    if (!r.ok) return;
+    segCommands = Object.assign(segCommands, (await r.json()).commands || {});
+    renderSegmentSelects();
+  } catch (e) { /* older runtime */ }
 }
 
 async function loadStepsFromMap() {
@@ -155,20 +156,16 @@ async function loadStepsFromMap() {
     const r = await fetch("/api/map/saved_steps" + qp);
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || r.status);
-    const bySide = {
-      left: await fetchPresetSteps(turnPresetChoice.left),
-      right: await fetchPresetSteps(turnPresetChoice.right),
-    };
-    const turns = j.steps.filter(s => s.action.startsWith("turn") || s.degrees != null).length;
-    const expanded = expandTurns(j.steps, bySide);
     steps.length = 0;
-    expanded.steps.forEach(s => steps.push(s));
+    j.steps.forEach(s => steps.push(s));
     resetEditor();
     render();
-    const tiles = j.steps.reduce((n, s) => n + (s.tiles || 0), 0);
-    const used = ["left", "right"].filter(k => turnPresetChoice[k]).map(k => `${k === "left" ? "trái" : "phải"} = ${turnPresetChoice[k]}`);
+    const planner = j.planner_steps || j.steps;
+    const tiles = planner.reduce((n, s) => n + (s.tiles || 0), 0);
+    const turns = planner.filter(s => s.action.startsWith("turn") || s.degrees != null).length;
+    const used = Object.entries(j.segment_commands || {}).filter(([, v]) => v).map(([k, v]) => `${k} = ${v}`);
     hint.textContent = `A* từ map ${j.map_id}: ${j.path.length - 1} ô, ${turns} lần rẽ (${tiles} ô forward)` +
-      (used.length ? `, ${expanded.replaced} lần rẽ dùng preset (${used.join(", ")})` : "") + ". Sửa được từng action trước khi chạy.";
+      (used.length ? `, ${j.segments_replaced} đoạn dùng lệnh mặc định (${used.join(", ")})` : "") + ". Sửa được từng action trước khi chạy.";
   } catch (e) {
     hint.textContent = "lỗi: " + e.message;
   }
@@ -192,11 +189,20 @@ if (scriptModeSel) {
   actionInput.addEventListener("change", updateDurationUnit);
   if (turnUnitSel) turnUnitSel.addEventListener("change", updateDurationUnit);
   document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
-  Object.entries(turnPresetSel).forEach(([side, sel]) => {
+  Object.entries(segSel).forEach(([kind, sel]) => {
     if (!sel) return;
-    sel.onchange = () => {
-      turnPresetChoice[side] = sel.value;
-      try { localStorage.setItem("turnPresets", JSON.stringify(turnPresetChoice)); } catch (e) { /* private window */ }
+    sel.onchange = async () => {
+      const hint = document.getElementById("scriptModeHint");
+      try {
+        const r = await fetch("/api/segment_commands" + qp, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({[kind]: sel.value})});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || r.status);
+        segCommands = Object.assign(segCommands, j.commands || {});
+      } catch (e) {
+        hint.textContent = "lỗi lưu lệnh mặc định: " + e.message;
+        sel.value = segCommands[kind] || "";
+        return;
+      }
       if (scriptModeSel.value === "astar") loadStepsFromMap();
     };
   });
@@ -1309,14 +1315,8 @@ async function refreshPresets() {
       presetSelect.appendChild(o);
     });
     if (cur) presetSelect.value = cur;
-    Object.entries(turnPresetSel).forEach(([side, sel]) => {
-      if (!sel || document.activeElement === sel) return;
-      const names = list.map(p => p.name);
-      if (turnPresetChoice[side] && !names.includes(turnPresetChoice[side])) names.push(turnPresetChoice[side]);
-      sel.innerHTML = `<option value="">mặc định</option>` + names
-        .map(n => `<option value="${safeText(n)}">${safeText(n)}</option>`).join("");
-      sel.value = turnPresetChoice[side] || "";
-    });
+    presetNames = list.map(p => p.name);
+    renderSegmentSelects();
   } catch (e) {}
 }
 document.getElementById("presetLoad").onclick = async () => {
@@ -1352,6 +1352,7 @@ document.getElementById("presetDelete").onclick = async () => {
   refreshPresets();
 };
 refreshPresets();
+refreshSegmentCommands();
 setInterval(refreshPresets, 10000);
 
 // ---------- tune panel ----------
