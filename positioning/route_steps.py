@@ -107,12 +107,13 @@ def turn_test_steps(side: str, before_tiles: int = 2, after_tiles: int = 1) -> l
     """Calibration test run: straight, one 90 deg turn at the next cross line,
     settle (where the turn error is measured), straight again.
 
-    Uses the same turn action as path_to_steps (TILE_TURN_ACTION), but always
-    by degrees with the next-line anchor, since only those turns are measured."""
+    Always a steered turn (left/right: FORWARD + servo lock), by degrees with
+    the next-line anchor: turn_left/turn_right only switch the base GPIO state
+    and do not steer, so on this car they do not rotate it (run
+    route-20261103T111642Z: TURN_RIGHT for 3.4 s, heading stayed at -2 deg)."""
     if side not in ("left", "right"):
         raise ValueError("side must be left or right")
-    steer = os.getenv("TILE_TURN_ACTION", "turn").strip().lower() == "steer"
-    action = side if steer else f"turn_{side}"
+    action = side
     return [
         {"action": "forward", "tiles": int(before_tiles)},
         {"action": action, "degrees": 90.0, "anchor": "next_line"},
@@ -143,15 +144,18 @@ def check_straight_command(steps: list[dict[str, Any]]) -> None:
 
 
 def apply_segment_commands(
-    steps: list[dict[str, Any]], commands: dict[str, list[dict[str, Any]] | None]
+    steps: list[dict[str, Any]],
+    commands: dict[str, list[dict[str, Any]] | None],
+    labels: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Replace each A* segment with its configured command steps.
 
     straight: the command's tiles step takes the segment's tile count.
     turn_left / turn_right: the command replaces the turn and the settle the
     planner put after it (the command brings its own settle if it needs one).
-    Segments without a command keep the planner's steps. Returns the new steps
-    and how many segments were replaced."""
+    Segments without a command keep the planner's steps. With labels (preview
+    only), each inserted step carries "_cmd": labels[kind]. Returns the new
+    steps and how many segments were replaced."""
     out: list[dict[str, Any]] = []
     replaced = 0
     i = 0
@@ -164,15 +168,16 @@ def apply_segment_commands(
             i += 1
             continue
         replaced += 1
+        tag = {"_cmd": labels[kind]} if labels and kind in labels else {}
         if kind == "straight":
             for s in command:
-                s = dict(s)
+                s = dict(s, **tag)
                 if s.get("tiles") is not None:
                     s["tiles"] = int(step["tiles"])
                 out.append(s)
             i += 1
             continue
-        out.extend(dict(s) for s in command)
+        out.extend(dict(s, **tag) for s in command)
         i += 1
         if i < len(steps) and steps[i].get("action") == "settle":
             i += 1

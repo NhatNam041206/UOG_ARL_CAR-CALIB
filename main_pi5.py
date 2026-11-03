@@ -29,6 +29,7 @@ import sys
 import time
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import cv2
@@ -60,7 +61,7 @@ from runtime.latest_frame import LatestFrameCapture
 from vision.grid_heading import TurnYawTracker
 from vision.ground_range import GroundRange, fit_ground_range, seam_points
 from vision.lane_shift import LaneShiftDetector
-from runtime.calib_tuning import CalibTuneManager, turning_bindings
+from runtime.calib_tuning import FRAME_FLIP_PARAM, CalibTuneManager, attr_binding, flip_code, turning_bindings
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from runtime.dashboard_stream import DashboardStreamBroker
@@ -454,6 +455,11 @@ def main() -> None:
             return False, "blocked: base not STOP"
         return True, "idle"
 
+    # Frame orientation (Tune group Camera). Start value: --flip = rotate 180,
+    # MAIN_FLIP_FRAME=true = mirror; a saved tune profile overrides both.
+    camera_view = SimpleNamespace(
+        frame_flip=3 if args.flip else (1 if _env_bool("MAIN_FLIP_FRAME", False) else 0)
+    )
     tune_file = os.getenv("CALIB_TUNE_FILE") or str(
         Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")) / "calib_tune.json"
     )
@@ -461,7 +467,8 @@ def main() -> None:
         calibrator,
         tune_file,
         idle_getter=_tune_idle_state,
-        extras=turning_bindings(turn_settings, turn_yaw.estimator.config),
+        extras=turning_bindings(turn_settings, turn_yaw.estimator.config)
+        + [attr_binding(FRAME_FLIP_PARAM, camera_view, "frame_flip")],
     )
     # Dashboard Map tab (tile count -> campus map cell) and Pre-calibrate tab.
     map_session = MapSession.from_env()
@@ -611,6 +618,16 @@ def main() -> None:
             _segment_names.clear()
             _segment_names.update(names)
             return _segment_status()
+
+        def _preview_steps(body: dict[str, Any]) -> dict[str, Any]:
+            """Map tab Plan route: the script the map returns, segment commands applied."""
+            plan = plan_steps(body.get("map"), body.get("start"), body.get("goal"))
+            names = {k: n for k, n in _segment_names.items() if n in _presets}
+            plan["planner_steps"] = plan["steps"]
+            plan["steps"], plan["segments_replaced"] = apply_segment_commands(
+                plan["steps"], _segment_commands(), labels={k: f"{k}: {n}" for k, n in names.items()}
+            )
+            return plan
 
         def _planned_steps() -> dict[str, Any]:
             """A* steps from the saved map, with the segment commands applied."""
@@ -833,7 +850,7 @@ def main() -> None:
         http.add_route("POST", "/api/map/clear", map_session.clear)
         http.add_route(
             "POST", "/api/map/steps",
-            lambda body: plan_steps(body.get("map"), body.get("start"), body.get("goal")),
+            _preview_steps,
         )
         http.add_route("GET", "/api/map/saved_steps", lambda _q: _planned_steps())
         http.add_route("GET", "/api/segment_commands", _segment_status)
@@ -1029,8 +1046,9 @@ def main() -> None:
                 time.sleep(0.1)
                 continue
 
-            if args.flip:
-                frame = cv2.flip(frame, -1)
+            code = flip_code(camera_view.frame_flip)
+            if code is not None:
+                frame = cv2.flip(frame, code)
 
             # --- calibration ---
             t_calib = time.monotonic()

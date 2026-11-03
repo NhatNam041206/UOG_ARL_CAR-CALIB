@@ -108,6 +108,10 @@ _VALID_ACTIONS = {
 # Active lane change into the next tile row: +1 left, -1 right.
 LANE_CHANGE_ACTIONS = {"lane_left": 1, "lane_right": -1}
 # Steps that pin the servo themselves, so the vision PID must not publish.
+# A degree turn ignores a heading sample further than this (plus 2x nominal
+# yaw rate x time since the last accepted one) from the last accepted yaw.
+YAW_JUMP_MIN_DEG = 30.0
+
 _SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle", "lane_left", "lane_right")
 
 
@@ -402,6 +406,9 @@ class Pi5ScriptRunner:
                 self._heading_reset()
             last_valid_elapsed = 0.0
             fallback_end_s: float | None = None
+            # Last accepted yaw, to drop single-frame jumps of the grid heading
+            # (seen on floors with faint seams: -2 deg -> +44 deg in one frame).
+            accepted_seen, accepted_at = 0.0, 0.0
         elif tiles is not None:
             # Safety timeout: the step fails (and the script stops) if the
             # counter does not see the seams in time.
@@ -477,6 +484,13 @@ class Pi5ScriptRunner:
                 sample = self._heading_sample() if self._heading_sample is not None else None
                 valid = sample is not None and bool(sample.valid)
                 seen = turn_sign * float(sample.yaw_deg) if sample is not None else 0.0
+                if valid:
+                    allowed = YAW_JUMP_MIN_DEG + 2.0 * cfg.nominal_omega_dps * (elapsed - accepted_at)
+                    if abs(seen - accepted_seen) > allowed:
+                        valid = False  # implausible jump: treat as a missing sample
+                        seen = accepted_seen
+                    else:
+                        accepted_seen, accepted_at = seen, elapsed
                 if valid:
                     last_valid_elapsed = elapsed
                 omega = turn_sign * float(sample.omega_dps) if valid and sample.omega_dps is not None else 0.0
@@ -563,10 +577,24 @@ class Pi5ScriptRunner:
             time.sleep(0.02)
 
     @staticmethod
-    def _follow(ys: list[float], last_y: float) -> float | None:
+    def _follow(ys: list[float], last_y: float, max_down: float = 0.08) -> float | None:
         """The line that continues the anchor: same seam, it only moves down."""
-        near = [y for y in ys if -0.02 <= y - last_y <= 0.08]
+        near = [y for y in ys if -0.02 <= y - last_y <= max_down]
         return min(near, key=lambda y: abs(y - last_y)) if near else None
+
+    def _anchor_lost(self, reason: str, y: float | None, target: float, target_src: str) -> dict[str, Any]:
+        """Anchor gone: turn here anyway (logged) instead of dropping the turn,
+        so the turn itself still runs and its heading error is measured."""
+        logger.warning("Turn anchor lost (%s): turning at the current spot", reason)
+        return {
+            "lost": reason,
+            "y": None,
+            "last_y": None if y is None else round(y, 4),
+            "target": round(target, 4),
+            "target_src": None,
+            "pulses": 0,
+            "tile_dy": None,
+        }
 
     def _set_base(self, base_cmd: str) -> None:
         with self._lock:
@@ -651,21 +679,23 @@ class Pi5ScriptRunner:
                         if nxt is not None:
                             y, last_seen = nxt, now
                 if now - last_seen > cfg.anchor_lost_s:
-                    self._fail_step("turn anchor: next cross line lost")
-                    return None
+                    self._set_base("STOP")
+                    return self._anchor_lost("next cross line lost while approaching", y, target, target_src)
                 if now - t0 > cfg.anchor_timeout_s:
                     self._fail_step("turn anchor: timed out before the turn point")
                     return None
             pulses, k, pulse_s = 0, None, cfg.anchor_pulse_s
             while True:
                 self._set_base("STOP")
-                if not self._hold(cfg.anchor_wait_s):
+                # The car keeps rolling and the camera lags for about the
+                # command latency after STOP: wait that out before measuring,
+                # and let the seam re-lock further down after the fast approach.
+                if not self._hold(max(cfg.anchor_wait_s, cfg.latency_s + 0.15)):
                     return None
                 got = self._anchor_lines(time.monotonic() - 0.05)
-                nxt = self._follow(got[0], y) if got is not None else None
+                nxt = self._follow(got[0], y, 0.08 if pulses else 0.2) if got is not None else None
                 if nxt is None:
-                    self._fail_step("turn anchor: next cross line lost at standstill")
-                    return None
+                    return self._anchor_lost("next cross line lost at standstill", y, target, target_src)
                 # Standstill: the VP row is at its steadiest, re-read y*.
                 target, target_src = self._anchor_target(sign, got[2], got[3])
                 if pulses and nxt - y > 0.002:
@@ -676,8 +706,7 @@ class Pi5ScriptRunner:
                 if err <= cfg.anchor_tol:
                     break  # at y*, or past it (logged; the adaptation corrects y*)
                 if pulses >= cfg.anchor_max_pulses:
-                    self._fail_step(f"turn anchor: {pulses} pulses, line at {y:.3f} / {target:.3f}")
-                    return None
+                    return self._anchor_lost(f"{pulses} pulses, line at {y:.3f} / {target:.3f}", y, target, target_src)
                 pulse_s = max(0.05, min(0.3, err / k)) if k else cfg.anchor_pulse_s
                 self._set_base("FORWARD")
                 if not self._hold(pulse_s):
@@ -1012,6 +1041,7 @@ class Pi5ScriptRunner:
             "anchor_target": None if anchor is None else anchor.get("target"),
             "anchor_src": None if anchor is None else anchor.get("target_src"),
             "tile_dy": None if anchor is None else anchor.get("tile_dy"),
+            "anchor_lost": None if anchor is None else anchor.get("lost"),
             "e_psi": None,
             "e_y_cm": None,
         }

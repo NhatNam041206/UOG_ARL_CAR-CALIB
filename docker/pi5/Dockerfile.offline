@@ -1,0 +1,12 @@
+# Offline code-only build for the Pi5 (no internet on the Pi).
+#
+# The full Dockerfile needs Docker Hub for its base image. When that image
+# is gone from the Pi, deploy_pi5_remote.sh tags the last working app image
+# as car-calib-pi5:base and builds this file instead: same system packages
+# and Python deps as that image, only the app source is replaced.
+# A change to requirements_pi5.txt is NOT installed this way.
+FROM car-calib-pi5:base
+RUN rm -rf /app && mkdir -p /app
+WORKDIR /app
+COPY . /app
+RUN mkdir -p /data/logs /data/certs

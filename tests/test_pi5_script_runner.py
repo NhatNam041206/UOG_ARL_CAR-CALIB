@@ -315,7 +315,9 @@ def test_anchor_turn_nudges_to_the_target_row_then_logs_errors_and_suggests():
     assert sug["turn_anchor_y_left"] < 0.72
 
 
-def test_anchor_turn_fails_without_lines():
+def test_anchor_turn_turns_anyway_without_lines():
+    # No seam to anchor on (e.g. a floor without visible tiles): the turn still
+    # runs where the car is, and the log says the anchor was lost.
     runner = Pi5ScriptRunner()
     runner.turn.anchor_lost_s = 0.2
     runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
@@ -324,7 +326,11 @@ def test_anchor_turn_fails_without_lines():
     runner.set_anchor_source(lambda: (time.monotonic(), [], 0.8))
     assert runner.submit([{"action": "left", "degrees": 90, "anchor": "next_line"}]) is True
     _wait_done(runner)
-    assert "turn anchor" in runner.status()["last_error"]
+    st = runner.status()
+    assert st["last_error"] == ""
+    assert st["last_turn"] is not None
+    assert "lost" in st["turn_log"][-1]["anchor_lost"]
+    assert st["turn_log"][-1]["anchor_y"] is None
 
 
 class _VpFloor(_FakeFloor):
@@ -483,15 +489,42 @@ def test_calib_session_keeps_turns_across_scripts_and_deletes_bad_runs():
     assert runner.calib_status()["log"] == []
 
 
-def test_turn_test_steps_match_the_astar_turn(monkeypatch: pytest.MonkeyPatch):
+def test_turn_test_steps_always_steer(monkeypatch: pytest.MonkeyPatch):
     from positioning.route_steps import turn_test_steps
     from runtime.resource_limits import validate_route_steps
 
     steps = turn_test_steps("left")
-    assert [s["action"] for s in steps] == ["forward", "turn_left", "settle", "forward"]
-    assert steps[1] == {"action": "turn_left", "degrees": 90.0, "anchor": "next_line"}
+    assert [s["action"] for s in steps] == ["forward", "left", "settle", "forward"]
+    assert steps[1] == {"action": "left", "degrees": 90.0, "anchor": "next_line"}
     assert validate_route_steps(steps) == steps
-    monkeypatch.setenv("TILE_TURN_ACTION", "steer")
+    monkeypatch.setenv("TILE_TURN_ACTION", "turn")  # steered either way
     assert turn_test_steps("right")[1]["action"] == "right"
     with pytest.raises(ValueError):
         turn_test_steps("up")
+
+
+class _JumpyHeading(_FakeHeading):
+    """Real yaw at 40 deg/s, but one frame reads +60 deg early in the turn."""
+
+    def sample(self):
+        out = super().sample()
+        dt = time.monotonic() - self.t0
+        if 0.2 <= dt < 0.26:
+            from dataclasses import replace
+
+            return replace(out, yaw_deg=60.0)
+        return out
+
+
+def test_degree_turn_ignores_a_single_frame_heading_jump():
+    heading = _JumpyHeading(omega=40.0)
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.1
+    runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    t0 = time.monotonic()
+    assert runner.submit([{"action": "left", "degrees": 90}]) is True
+    _wait_done(runner, timeout=6.0)
+    # Without the gate the 60 deg frame would end the turn at ~0.2 s.
+    assert time.monotonic() - t0 > 1.5
+    assert runner.status()["last_turn"]["seen_at_stop_deg"] > 75

@@ -145,6 +145,22 @@ def attr_binding(param: TuneParam, owner: Any, attr: str) -> TuneBinding:
     return TuneBinding(param, get, put)
 
 
+# Camera frame orientation, applied to every frame before vision.
+# 0 = as captured, 1 = mirror left/right, 2 = upside down, 3 = rotate 180 deg.
+FRAME_FLIP_PARAM = TuneParam(
+    "frame_flip", "Camera", "Flip frame (0 off, 1 mirror, 2 upside down, 3 rotate 180)", "int", 0, 3, 1
+)
+_FLIP_CODES = {1: 1, 2: 0, 3: -1}  # cv2.flip codes
+
+
+def flip_code(mode: Any) -> int | None:
+    """cv2.flip code for a frame_flip mode, None for no flip."""
+    try:
+        return _FLIP_CODES.get(int(mode))
+    except (TypeError, ValueError):
+        return None
+
+
 # Degree turns + settle (runtime.pi5_script_runner.TurnSettings) and the grid
 # heading estimator (vision.grid_heading.GridHeadingConfig).
 TURN_PARAMS: tuple[tuple[TuneParam, str], ...] = (
