@@ -89,9 +89,9 @@ refreshAvgSpeed();
 // route), 3 A* (the Pi builds the steps from the saved start -> goal).
 const scriptModeSel = document.getElementById("scriptMode");
 const durationUnit = document.getElementById("durationUnit");
-const TILE_ACTIONS = new Set(["forward", "straight"]);
+const TILE_ACTIONS = new Set(["forward", "straight", "backward"]);
 // Turns can run by degrees: the Pi stops them when the grid heading has seen the angle.
-const DEGREE_ACTIONS = new Set(["left", "right", "turn_left", "turn_right"]);
+const DEGREE_ACTIONS = new Set(["left", "right", "turn_left", "turn_right", "back_left", "back_right"]);
 const turnUnitSel = document.getElementById("turnUnit");
 function stepUsesTiles(action) {
   return scriptModeSel && scriptModeSel.value !== "time" && TILE_ACTIONS.has(action);
@@ -255,7 +255,7 @@ addBtn.onclick = () => {
   } else if (stepUsesDegrees(action)) {
     if (!isFinite(amount) || amount < 5 || amount > 180) { runDetail.textContent = "góc phải từ 5 đến 180 độ"; return; }
     step = {action, degrees: amount};
-    if (turnUnitSel.value === "deg_anchor") step.anchor = "next_line";
+    if (turnUnitSel.value === "deg_anchor" && !String(step.action).startsWith("back_")) step.anchor = "next_line";
   } else {
     if (!isFinite(amount) || amount <= 0) { runDetail.textContent = "duration phải > 0"; return; }
     step = {action, duration_s: amount};

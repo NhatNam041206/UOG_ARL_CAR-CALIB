@@ -56,7 +56,9 @@
       <div class="row" id="stepEditorRow">
         <select id="action">
           <option value="forward">forward (FORWARD + center)</option>
-          <option value="backward">backward (BACKWARD + reversed steer)</option>
+          <option value="backward">backward (BACKWARD + center, đếm ô lùi)</option>
+          <option value="back_left">back left (lùi, lái trái → xe quay phải)</option>
+          <option value="back_right">back right (lùi, lái phải → xe quay trái)</option>
           <option value="left">left (FORWARD + left steer)</option>
           <option value="right">right (FORWARD + right steer)</option>
           <option value="turn_left">turn left (base 1 0 0)</option>
@@ -380,6 +382,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261103-anchor-lost"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-backward"></script>
 </body>
 </html>

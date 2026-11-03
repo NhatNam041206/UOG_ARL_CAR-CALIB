@@ -172,6 +172,8 @@ class TilePositionTracker:
         if self.path is not None:
             if index >= len(self.path):
                 return TilePosition(tile_count, index, self.path[-1], "PAST_END", self.heading)
+            if index < 0:  # reversed past the start cell
+                return TilePosition(tile_count, index, self.path[0], "BEFORE_START", self.heading)
             cell = self.path[index]
         else:
             dr, dc = HEADINGS[self.heading]  # type: ignore[index]

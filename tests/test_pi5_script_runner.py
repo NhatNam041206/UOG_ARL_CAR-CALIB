@@ -528,3 +528,51 @@ def test_degree_turn_ignores_a_single_frame_heading_jump():
     # Without the gate the 60 deg frame would end the turn at ~0.2 s.
     assert time.monotonic() - t0 > 1.5
     assert runner.status()["last_turn"]["seen_at_stop_deg"] > 75
+
+
+def test_back_turns_reverse_with_the_servo_side_and_report_the_opposite_yaw(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SERVO_CENTER_ANGLE", "-28")
+    from runtime.pi5_script_runner import yaw_sign
+
+    assert yaw_sign("back_left") == -1.0 and yaw_sign("back_right") == 1.0
+    heading = _FakeHeading(omega=-300.0)  # reversing with the servo left: the heading turns right
+    base_cmds: list[str] = []
+    angles: list[float] = []
+    turns: list[float] = []
+    runner = Pi5ScriptRunner()
+    runner.turn.latency_s = 0.0
+    runner.set_handlers(base_cmds.append, angles.append, lambda _s: None)
+    runner.set_heading_source(heading.reset, heading.sample)
+    runner.set_turn_done_callback(turns.append)
+    runner.calib_start()
+    assert runner.submit([{"action": "back_left", "degrees": 30.0}]) is True
+    _wait_done(runner)
+    assert "BACKWARD" in base_cmds
+    assert angles[0] == pytest.approx(runner._steer_angle(+1))
+    assert turns == [pytest.approx(-30.0)]
+    assert runner.status()["last_error"] in (None, "")
+    # Reverse turns are logged but not used to tune forward turns.
+    assert runner.calib_status()["log"] == []
+
+
+def test_backward_tile_step_waits_for_the_counter():
+    count = [0]
+    base_cmds: list[str] = []
+    runner = Pi5ScriptRunner()
+    runner._tile_count_lead = 0
+    runner.set_handlers(base_cmds.append, lambda _a: None, lambda _s: None)
+    runner.set_tile_count_getter(lambda: count[0])
+    assert runner.submit([{"action": "backward", "tiles": 2}]) is True
+    _wait(lambda: runner.current_action() == "backward")
+    assert base_cmds[0] == "BACKWARD"
+    count[0] = 2
+    _wait_done(runner)
+    assert runner.status()["last_error"] in (None, "")
+
+
+def test_back_turn_with_anchor_is_rejected():
+    from runtime.resource_limits import ScriptValidationError, validate_route_steps
+
+    validate_route_steps([{"action": "backward", "tiles": 2}, {"action": "back_right", "degrees": 90}])
+    with pytest.raises(ScriptValidationError):
+        validate_route_steps([{"action": "back_left", "degrees": 90, "anchor": "next_line"}])

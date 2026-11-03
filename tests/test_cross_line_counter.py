@@ -107,7 +107,7 @@ def test_draw_keeps_frame_shape():
     result = counter.update(frame)
     out = counter.draw(frame.copy(), result)
     assert out.shape == frame.shape
-    assert set(result.telemetry()) == {"cross_tile_count", "cross_counted", "cross_lines", "cross_tracks"}
+    assert set(result.telemetry()) == {"cross_tile_count", "cross_net_count", "cross_direction", "cross_counted", "cross_lines", "cross_tracks"}
 
 
 def test_tune_manager_reads_and_applies_cross_params(tmp_path):
@@ -129,3 +129,30 @@ def test_tune_manager_reads_and_applies_cross_params(tmp_path):
 
     with pytest.raises(TuneValidationError):
         manager.apply({"cross_roi_top": 0.5, "cross_roi_bottom": 0.4})
+
+
+def _reverse(counter: CrossLineCounter, start: float, speed: float, frames: int, spacing: float) -> None:
+    """Scroll the seam pattern up the image (car reversing)."""
+    for i in range(frames):
+        offset = (start - i * speed) % spacing
+        seams = [offset + k * spacing for k in range(int(1 / spacing) + 2)]
+        counter.update(_floor([y for y in seams if 0.0 <= y <= 1.0]))
+
+
+def test_reversing_counts_seams_moving_up_and_lowers_the_net_count():
+    counter = CrossLineCounter(CrossLineConfig())
+    _drive(counter, start=0.0, speed=0.025, frames=200, spacing=0.4)
+    forward = counter.tile_count
+    assert counter.net_count == forward
+    counter.set_direction(-1)
+    _reverse(counter, start=0.0, speed=0.025, frames=100, spacing=0.4)
+    back = counter.tile_count - forward
+    assert back in (5, 6, 7)
+    assert counter.net_count == forward - back
+    assert counter.direction == -1
+
+
+def test_forward_counter_ignores_seams_moving_up():
+    counter = CrossLineCounter(CrossLineConfig())
+    _reverse(counter, start=0.0, speed=0.025, frames=100, spacing=0.4)
+    assert counter.tile_count <= 1
