@@ -325,7 +325,28 @@ sudo docker rm -f car-calib-pi5 2>/dev/null || true
 # Build & start (may take 5-10 min first time on Raspberry Pi 5)
 BUILD_LOG="/tmp/car-calib-build-${VERSION}.log"
 echo "[remote] Build starting... (log: $BUILD_LOG)"
-if [[ "$SKIP_BUILD" == "true" ]]; then
+# Offline fallback: the Pi has no internet, so the full build fails once the
+# base image (arm64v8/ubuntu) is gone from the local store. Reuse the last app
+# image as the base and only replace the source (docker/pi5/Dockerfile.offline).
+OFFLINE_BUILD=false
+if [[ "$SKIP_BUILD" != "true" ]] && ! sudo docker image inspect arm64v8/ubuntu:22.04 >/dev/null 2>&1; then
+    if ! sudo docker image inspect car-calib-pi5:base >/dev/null 2>&1; then
+        if sudo docker image inspect car-calib-pi5:latest >/dev/null 2>&1; then
+            echo "[remote] Base image missing and no internet: tagging car-calib-pi5:latest as car-calib-pi5:base"
+            sudo docker tag car-calib-pi5:latest car-calib-pi5:base
+        fi
+    fi
+    if sudo docker image inspect car-calib-pi5:base >/dev/null 2>&1; then
+        OFFLINE_BUILD=true
+        echo "[remote] Offline build: code only on top of car-calib-pi5:base (requirements are not reinstalled)"
+    else
+        echo "[remote] WARNING: no arm64v8/ubuntu:22.04 and no car-calib-pi5 image; the full build needs internet"
+    fi
+fi
+if [[ "$OFFLINE_BUILD" == "true" ]]; then
+    ( sudo DOCKER_BUILDKIT=1 docker build -f docker/pi5/Dockerfile.offline -t car-calib-pi5:latest . \
+        && $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --no-build --remove-orphans ) > "$BUILD_LOG" 2>&1 &
+elif [[ "$SKIP_BUILD" == "true" ]]; then
     $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans > "$BUILD_LOG" 2>&1 &
 else
     $COMPOSE_CMD -f "$COMPOSE_FILE" up --build -d --remove-orphans > "$BUILD_LOG" 2>&1 &
