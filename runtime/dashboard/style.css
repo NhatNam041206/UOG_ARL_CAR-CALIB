@@ -372,6 +372,12 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 
 /* tune panel form */
 .tune-actions { align-items: center; }
+.tune-profile-row { align-items: center; }
+.tune-profile-row select { min-width: 180px; }
+.tune-profile-menu { position: relative; }
+.tune-profile-menu > summary { list-style: none; cursor: pointer; padding: 6px 12px; border: 1px solid #4a4c50; border-radius: 6px; user-select: none; }
+.tune-profile-menu > summary::-webkit-details-marker { display: none; }
+.tune-profile-menu-body { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px; background: #1d1f22; border: 1px solid #4a4c50; border-radius: 6px; white-space: nowrap; }
 #tuneStatus { flex: 1 1 240px; }
 .tune-field {
   display: grid; grid-template-columns: 140px 1fr 80px; gap: var(--sp-3);

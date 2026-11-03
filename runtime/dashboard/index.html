@@ -134,6 +134,18 @@
       </div>
       <div class="tab-pane" data-pane="tune">
         <h2>Calibration tune</h2>
+        <div class="row tune-profile-row">
+          <label class="muted" for="tuneProfileSelect">profile</label>
+          <select id="tuneProfileSelect" title="chọn profile để load vào runtime (xe phải idle)"></select>
+          <details class="tune-profile-menu">
+            <summary title="tạo / đổi tên / xoá profile">⋯</summary>
+            <div class="tune-profile-menu-body">
+              <button id="tuneProfileNew" title="lưu giá trị đang chạy thành profile mới">Lưu thành…</button>
+              <button id="tuneProfileRename">Đổi tên…</button>
+              <button id="tuneProfileDelete" class="rm">Xoá…</button>
+            </div>
+          </details>
+        </div>
         <div class="row tune-actions">
           <button id="tuneApply" class="primary" disabled>Apply</button>
           <button id="tuneSave" disabled>Save</button>
@@ -322,6 +334,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261031-lane-change"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-tune-profiles"></script>
 </body>
 </html>

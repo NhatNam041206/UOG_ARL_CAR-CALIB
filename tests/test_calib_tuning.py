@@ -183,3 +183,88 @@ def test_turning_groups_apply_to_runner_and_grid_config(tmp_path):
     turn2, grid2 = TurnSettings(), GridHeadingConfig()
     CalibTuneManager(_fake_calibrator(), tmp_path / "tune.json", extras=turning_bindings(turn2, grid2))
     assert turn2.latency_s == 0.4 and grid2.dark_thresh == 20
+
+
+def test_profiles_create_load_switch_and_persist_active(tmp_path):
+    tune_file = tmp_path / "calib_tune.json"
+    calibrator = _fake_calibrator()
+    manager = CalibTuneManager(calibrator, tune_file)
+    assert manager.active_profile == "default"
+
+    manager.apply({"pid_kp": 1.25})
+    manager.save()  # default profile = the original tune file
+    manager.apply({"pid_kp": 0.5})
+    status = manager.profile_create("hall-dark")
+    assert status["profile"]["active"] == "hall-dark"
+    assert (tmp_path / "tune_profiles" / "hall-dark.json").is_file()
+    assert json.loads(tune_file.read_text())["values"]["pid_kp"] == pytest.approx(1.25)
+
+    manager.profile_load("default")
+    assert calibrator.robot_state.pid.kp == pytest.approx(1.25)
+    manager.profile_load("hall-dark")
+    assert calibrator.robot_state.pid.kp == pytest.approx(0.5)
+
+    # The active profile survives a restart.
+    fresh = _fake_calibrator()
+    reloaded = CalibTuneManager(fresh, tune_file)
+    assert reloaded.active_profile == "hall-dark"
+    assert fresh.robot_state.pid.kp == pytest.approx(0.5)
+    names = [p["name"] for p in reloaded.profiles()]
+    assert names == ["default", "hall-dark"]
+    assert reloaded.profile_values("default")["values"]["pid_kp"] == pytest.approx(1.25)
+
+
+def test_profiles_save_updates_active_profile_only(tmp_path):
+    tune_file = tmp_path / "calib_tune.json"
+    manager = CalibTuneManager(_fake_calibrator(), tune_file)
+    manager.profile_create("turns")
+    manager.apply({"pid_kp": 2.0})
+    manager.save()
+    assert not tune_file.exists()
+    saved = json.loads((tmp_path / "tune_profiles" / "turns.json").read_text())
+    assert saved["values"]["pid_kp"] == pytest.approx(2.0)
+
+
+def test_profiles_rename_and_delete_rules(tmp_path):
+    tune_file = tmp_path / "calib_tune.json"
+    manager = CalibTuneManager(_fake_calibrator(), tune_file)
+    manager.profile_create("a")
+    manager.profile_rename("a", "b")
+    assert manager.active_profile == "b"
+    assert (tmp_path / "tune_profiles" / "b.json").is_file()
+
+    with pytest.raises(TuneValidationError, match="switch to another"):
+        manager.profile_delete("b")
+    with pytest.raises(TuneValidationError, match="default"):
+        manager.profile_delete("default")
+    with pytest.raises(TuneValidationError, match="default"):
+        manager.profile_rename("default", "x")
+    with pytest.raises(TuneValidationError, match="already exists"):
+        manager.profile_create("b")
+
+    manager.profile_load("default")  # never saved: code defaults
+    manager.profile_delete("b")
+    assert [p["name"] for p in manager.profiles()] == ["default"]
+
+
+@pytest.mark.parametrize("name", ["", "../x", "a.b", "has space", "x" * 41, "-lead"])
+def test_profile_names_are_single_safe_files(tmp_path, name):
+    manager = CalibTuneManager(_fake_calibrator(), tmp_path / "calib_tune.json")
+    with pytest.raises(TuneValidationError, match="profile name"):
+        manager.profile_create(name)
+
+
+def test_profile_load_blocked_when_not_idle(tmp_path):
+    manager = CalibTuneManager(_fake_calibrator(), tmp_path / "calib_tune.json")
+    manager.profile_create("a")
+    manager._idle_getter = lambda: (False, "blocked: script running")
+    with pytest.raises(TuneBlockedError):
+        manager.profile_load("default")
+
+
+def test_missing_active_profile_falls_back_to_default(tmp_path):
+    tune_file = tmp_path / "calib_tune.json"
+    manager = CalibTuneManager(_fake_calibrator(), tune_file)
+    manager.profile_create("gone")
+    (tmp_path / "tune_profiles" / "gone.json").unlink()
+    assert CalibTuneManager(_fake_calibrator(), tune_file).active_profile == "default"
