@@ -101,3 +101,21 @@ def path_to_steps(path: list[Cell], turn_s: float | None = None) -> list[dict[st
         steps.append({"action": "forward", "tiles": seg["tiles"]})
         prev = seg["direction"]
     return steps
+
+
+def turn_test_steps(side: str, before_tiles: int = 2, after_tiles: int = 1) -> list[dict[str, Any]]:
+    """Calibration test run: straight, one 90 deg turn at the next cross line,
+    settle (where the turn error is measured), straight again.
+
+    Uses the same turn action as path_to_steps (TILE_TURN_ACTION), but always
+    by degrees with the next-line anchor, since only those turns are measured."""
+    if side not in ("left", "right"):
+        raise ValueError("side must be left or right")
+    steer = os.getenv("TILE_TURN_ACTION", "turn").strip().lower() == "steer"
+    action = side if steer else f"turn_{side}"
+    return [
+        {"action": "forward", "tiles": int(before_tiles)},
+        {"action": action, "degrees": 90.0, "anchor": "next_line"},
+        {"action": "settle", "duration_s": _settle_s() or 2.5},
+        {"action": "forward", "tiles": int(after_tiles)},
+    ]

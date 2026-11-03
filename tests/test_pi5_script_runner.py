@@ -446,3 +446,52 @@ def test_lane_steps_pass_validation():
 
     steps = validate_route_steps([{"action": "lane_left", "duration_s": 3}, {"action": "lane_right", "duration_s": 3}])
     assert [s["action"] for s in steps] == ["lane_left", "lane_right"]
+
+
+def _calib_turn(runner: Pi5ScriptRunner, side: str, psi: float, offset: float) -> None:
+    from types import SimpleNamespace
+
+    runner._record_turn(side, 90.0, 80.0, 30.0, 10.0, 3.0, "grid", False)
+    sample = SimpleNamespace(valid=True, psi_deg=psi, lane_offset_ratio=offset)
+    for _ in range(3):
+        runner._measure_turn_error(sample, 0.1)
+
+
+def test_calib_session_keeps_turns_across_scripts_and_deletes_bad_runs():
+    runner = Pi5ScriptRunner()
+    _calib_turn(runner, "left", -5.0, 0.0)  # no session yet: not collected
+    assert runner.calib_status()["log"] == []
+
+    runner.calib_start()
+    _calib_turn(runner, "left", -5.0, 0.0)
+    runner._turn_log = []  # what a new script submit does
+    _calib_turn(runner, "right", 4.0, 0.0)
+    _calib_turn(runner, "left", -40.0, 0.0)  # a bad run
+    status = runner.calib_status()
+    assert [t["id"] for t in status["log"]] == [1, 2, 3]
+    assert status["counts"] == {"left": 2, "right": 1}
+    assert status["log"][0]["e_psi"] == pytest.approx(5.0)
+    with_bad = runner.calib_suggestion()
+
+    status = runner.calib_delete(3)
+    assert [t["id"] for t in status["log"]] == [1, 2]
+    assert runner.calib_suggestion() != with_bad
+    with pytest.raises(ValueError):
+        runner.calib_delete(3)
+
+    runner.calib_start()  # new session drops the old one
+    assert runner.calib_status()["log"] == []
+
+
+def test_turn_test_steps_match_the_astar_turn(monkeypatch: pytest.MonkeyPatch):
+    from positioning.route_steps import turn_test_steps
+    from runtime.resource_limits import validate_route_steps
+
+    steps = turn_test_steps("left")
+    assert [s["action"] for s in steps] == ["forward", "turn_left", "settle", "forward"]
+    assert steps[1] == {"action": "turn_left", "degrees": 90.0, "anchor": "next_line"}
+    assert validate_route_steps(steps) == steps
+    monkeypatch.setenv("TILE_TURN_ACTION", "steer")
+    assert turn_test_steps("right")[1]["action"] == "right"
+    with pytest.raises(ValueError):
+        turn_test_steps("up")

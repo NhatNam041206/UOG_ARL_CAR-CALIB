@@ -70,6 +70,7 @@ from runtime.sasc_experiment_log import SascExperimentLogger
 from runtime.precalibrate import PreCalibrator
 from positioning.map_session import MapSession
 from positioning.map_store import MapStore, plan_route, plan_steps
+from positioning.route_steps import turn_test_steps
 
 logger = logging.getLogger("pi5")
 
@@ -280,6 +281,7 @@ def main() -> None:
     turn_settings = TurnSettings()  # shared with the script runner; Tune tab edits it
     # Latest cross lines for turn approach: (time, [y ratios], counter_y, vp_row_px, frame_h).
     anchor_lines: list[tuple[float, list[float], float, float | None, int] | None] = [None]
+    ground_poll = [0.0]  # last /api/ground/sample poll (Calibration tab open)
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
     # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
@@ -692,6 +694,7 @@ def main() -> None:
         http.add_route("POST", "/api/tune/profile/delete", lambda b: tune_manager.profile_delete(b.get("name")))
 
         def _ground_sample(_q: Any = None) -> dict[str, Any]:
+            ground_poll[0] = time.monotonic()  # stream marks the lowest seam
             got = anchor_lines[0]
             if got is None or len(got) < 5 or got[3] is None:
                 raise ValueError("no frame with a VP row yet")
@@ -731,6 +734,29 @@ def main() -> None:
             return out
 
         http.add_route("GET", "/api/ground/sample", _ground_sample)
+
+        # Calibration tab, turn wizard: test runs collect turns into one
+        # session; bad runs can be deleted before the suggestion is applied.
+        def _calib_runner() -> Pi5ScriptRunner:
+            if script_runner is None:
+                raise ValueError("script runner unavailable")
+            return script_runner
+
+        def _calib_apply(_body: dict[str, Any]) -> dict[str, Any]:
+            values = _calib_runner().calib_suggestion()
+            if not values:
+                raise ValueError("no measured turn in this calibration session")
+            return {"tune": tune_manager.apply(values), "applied": values}  # Save stays separate
+
+        http.add_route("GET", "/api/calib/turn", lambda _q: _calib_runner().calib_status())
+        http.add_route("POST", "/api/calib/turn/start", lambda _b: _calib_runner().calib_start())
+        http.add_route("POST", "/api/calib/turn/stop", lambda _b: _calib_runner().calib_stop())
+        http.add_route("POST", "/api/calib/turn/delete", lambda b: _calib_runner().calib_delete(b.get("id")))
+        http.add_route("POST", "/api/calib/turn/apply", _calib_apply)
+        http.add_route(
+            "GET", "/api/calib/turn/test_steps",
+            lambda q: {"steps": turn_test_steps((q.get("side") or [""])[0])},
+        )
         http.add_route("POST", "/api/ground/fit", _ground_fit)
         http.add_route("GET", "/api/map", lambda _q: map_session.map_payload())
         http.add_route("GET", "/api/map/maps", lambda _q: {"maps": map_store.list_maps()})
@@ -767,6 +793,8 @@ def main() -> None:
             if script_runner is not None:
                 route_session.attach_meta("turn_log", script_runner.status()["turn_log"])
                 route_session.attach_meta("turn_suggest", script_runner.turn_suggestion())
+                # Why a script stopped early (e.g. "turn anchor: next cross line lost").
+                route_session.attach_meta("script_error", script_runner.status()["last_error"])
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",
@@ -1043,6 +1071,12 @@ def main() -> None:
                 display_frame = calibrator.cross_counter.draw(display_frame, cross_result)
                 if precal.overlay_active(now):
                     display_frame = precal.draw(display_frame)
+                if time.monotonic() - ground_poll[0] < 3.0 and cross_result.lines:
+                    # Ground fit wizard: the seam to tape-measure to.
+                    y = int(max(line.y for line in cross_result.lines) * display_frame.shape[0])
+                    cv2.line(display_frame, (0, y), (display_frame.shape[1] - 1, y), (255, 0, 255), 3)
+                    cv2.putText(display_frame, "measure to this seam", (8, max(16, y - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
             safety_pause_active = object_status.object_pause_active
 
             manual_decision = manual_override.evaluate(

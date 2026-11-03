@@ -1556,57 +1556,7 @@ if (tuneResetSavedBtn) tuneResetSavedBtn.onclick = () => tunePost("/api/tune/res
 if (tuneResetDefaultsBtn) tuneResetDefaultsBtn.onclick = () => tunePost("/api/tune/reset", {target: "defaults"});
 refreshTune(true);
 
-// Turn suggestion: from the last script's turns (latency + V+1 rows), Apply only.
-const turnSuggestBox = document.getElementById("turnSuggestBox");
-const turnSuggestText = document.getElementById("turnSuggestText");
-const turnSuggestApply = document.getElementById("turnSuggestApply");
-async function refreshTurnSuggest() {
-  if (!turnSuggestBox) return;
-  try {
-    const r = await fetch("/route/script/status" + qp);
-    const j = await r.json();
-    const st = (j && j.status) || {};
-    const sug = st.turn_suggest;
-    const log = (st.turn_log || []).filter(t => t.e_psi != null);
-    turnSuggestBox.hidden = !sug;
-    if (!sug) return;
-    const last = log.length ? log[log.length - 1] : null;
-    turnSuggestText.textContent = `${log.length} rẽ đo được` +
-      (last ? ` (cuối: e_ψ ${last.e_psi}°, e_y ${last.e_y_cm} cm)` : "") +
-      ` → latency ${sug.turn_latency_s} s, y* trái ${sug.turn_anchor_y_left}, y* phải ${sug.turn_anchor_y_right}`;
-    turnSuggestApply.disabled = !!st.running;
-  } catch (e) { /* offline */ }
-}
-if (turnSuggestApply) turnSuggestApply.onclick = () => tunePost("/api/turn/apply_suggestion", {});
-setInterval(refreshTurnSuggest, 3000);
-refreshTurnSuggest();
-
-// Ground range: fit k, c (floor distance from seam row + VP row) at standstill.
-const groundNearest = document.getElementById("groundNearest");
-const groundText = document.getElementById("groundText");
-async function groundFit(apply) {
-  if (!groundText) return;
-  const nearest = Number(groundNearest && groundNearest.value);
-  if (!(nearest > 0)) { groundText.textContent = "nhập khoảng cách tới vạch thấp nhất"; return; }
-  groundText.textContent = "đang fit…";
-  try {
-    const r = await fetch("/api/ground/fit" + qp, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({nearest_cm: nearest, apply: !!apply}),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { groundText.textContent = "lỗi: " + (j.detail || r.status); return; }
-    const f = j.fit;
-    groundText.textContent = `${j.points} vạch, VP ${j.sample.vp_row} px → k ${f.k_px_cm}, c ${f.c_cm} cm, sai số ${f.rms_cm} cm` +
-      ` (từng vạch: ${f.residuals_cm.join(", ")})` + (apply ? " · đã Apply" : "");
-    if (apply && j.tune) { tuneState = j.tune; tuneDraft = Object.assign({}, j.tune.values || {}); tuneTouched = false; renderTuneFields(); }
-  } catch (e) { groundText.textContent = "network error"; }
-}
-const groundFitBtn = document.getElementById("groundFit");
-const groundFitApplyBtn = document.getElementById("groundFitApply");
-if (groundFitBtn) groundFitBtn.onclick = () => groundFit(false);
-if (groundFitApplyBtn) groundFitApplyBtn.onclick = () => groundFit(true);
+// Calibration tab wizards (Fit ground k, c and Turn suggestion) live in §calib below.
 setInterval(() => refreshTune(false), 1000);
 
 // §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──
@@ -2222,6 +2172,228 @@ async function precalGateOk() {
   } catch (e) {
     return true;  // endpoint missing (older runtime): do not block
   }
+}
+
+
+// §calib ─ Calibration tab · Calib for tuning: two step-by-step wizards ──
+// Each step is ticked from the car's live state; the first unticked step is
+// the one to do now and shows how. Apply only stages values; Save in the Tune
+// tab writes them into the active profile.
+const calibTuning = document.getElementById("calibTuning");
+const groundStepsEl = document.getElementById("groundSteps");
+const turnStepsEl = document.getElementById("turnSteps");
+const CALIB_MIN_TURNS = 3;        // measured turns per side before Apply
+const GROUND_MAX_RMS_CM = 3.0;    // fit accepted below this error
+let calibPrecal = null, calibGround = null, calibGroundErr = "", calibTurn = null, calibScript = null;
+let groundFitResult = null, groundApplied = false, turnApplied = null;
+// The static checks (ground fit, pre-calibrate, start position) gate only the
+// first test run of a session: once the car moves they cannot stay green.
+let turnPreLatched = false;
+
+function renderWizard(el, steps) {
+  let current = steps.findIndex(st => !st.ok);
+  if (current < 0) current = steps.length;
+  el.innerHTML = steps.map((st, i) => {
+    const cls = i < current ? "done" : (i === current ? "current" : "todo");
+    const mark = i < current ? "✓" : (i === current ? "▶" : "○");
+    const value = st.value ? ` <span class="muted">· ${escapeHtml(st.value)}</span>` : "";
+    return `<li class="${cls}"><span class="mark">${mark}</span>${escapeHtml(st.label)}${value}` +
+      `<span class="how">${escapeHtml(st.how || "")}</span></li>`;
+  }).join("");
+  return current;
+}
+
+function precalCheck(key) {
+  return ((calibPrecal && calibPrecal.checks) || []).find(c => c.key === key) || null;
+}
+
+function tuneIdle() { return !!(tuneState && (tuneState.idle || {}).ok); }
+
+function renderGroundWizard() {
+  const vp = precalCheck("vp_x");
+  const g = calibGround;
+  const seams = g ? g.lines_px.length : 0;
+  const nearest = Number((document.getElementById("groundNearest") || {}).value);
+  const fit = groundFitResult && groundFitResult.fit;
+  const steps = [
+    {label: "Xe đứng yên", ok: tuneIdle(), value: tuneIdle() ? "" : ((tuneState || {}).idle || {}).reason,
+     how: "Dừng script, base về STOP."},
+    {label: "Xe thẳng theo vạch gạch", ok: !!(vp && vp.ok), value: vp ? vp.value : "chưa có frame",
+     how: vp && vp.hint ? vp.hint : "Xoay xe cho VP (vạch xanh trên stream) nằm giữa 2 vạch vàng."},
+    {label: "Camera thấy ≥ 3 vạch ngang và VP", ok: !!(g && seams >= 3 && g.vp_row != null && g.age_s <= 1.0),
+     value: g ? `${seams} vạch, VP ${g.vp_row ?? "-"} px` : (calibGroundErr || "chưa có frame"),
+     how: "Lùi xe hoặc dọn vật che để thấy ít nhất 3 vạch gạch ngang phía trước."},
+    {label: "Đo thước từ tâm trục trước tới vạch tím", ok: nearest > 0, value: nearest > 0 ? `${nearest} cm` : "",
+     how: "Vạch thấp nhất đang được tô tím trên stream. Nhập số cm vào ô bên dưới."},
+    {label: `Fit, sai số ≤ ${GROUND_MAX_RMS_CM} cm`, ok: !!(fit && fit.rms_cm <= GROUND_MAX_RMS_CM),
+     value: fit ? `k ${fit.k_px_cm}, c ${fit.c_cm} cm, rms ${fit.rms_cm} cm` : "",
+     how: fit ? "Sai số lớn: kiểm tra xe có thẳng không, số cm có đúng vạch tím không, rồi Fit lại." : "Bấm Fit."},
+    {label: "Apply k, c", ok: groundApplied, how: "Bấm Apply k, c."},
+  ];
+  const current = renderWizard(groundStepsEl, steps);
+  document.getElementById("groundFit").disabled = current < 4;
+  document.getElementById("groundApply").disabled = !(current === 5 && !groundApplied);
+}
+
+async function groundFitClick() {
+  const text = document.getElementById("groundText");
+  const nearest = Number(document.getElementById("groundNearest").value);
+  text.textContent = "đang fit…";
+  groundApplied = false;
+  try {
+    groundFitResult = await apiJson("/api/ground/fit", {nearest_cm: nearest, apply: false});
+    const f = groundFitResult.fit;
+    text.textContent = `${groundFitResult.points} vạch → từng vạch lệch ${f.residuals_cm.join(", ")} cm`;
+  } catch (e) { groundFitResult = null; text.textContent = "lỗi: " + e.message; }
+  renderGroundWizard();
+}
+
+async function groundApplyClick() {
+  const f = groundFitResult && groundFitResult.fit;
+  if (!f) return;
+  await tunePost("/api/tune", {values: {ground_k_px_cm: Number(f.k_px_cm.toFixed(1)), ground_c_cm: Number(f.c_cm.toFixed(2))}}, "PUT");
+  groundApplied = !!(tuneState && Math.abs(Number(tuneState.values.ground_k_px_cm) - Number(f.k_px_cm.toFixed(1))) < 1e-6);
+  document.getElementById("groundText").textContent = groundApplied ? "đã Apply k, c. Bấm Save ở tab Tune để lưu vào profile." : "Apply lỗi, xem trạng thái tab Tune.";
+  renderGroundWizard();
+}
+
+function turnStageText() {
+  const st = calibScript;
+  if (!st || !st.running) return "";
+  const step = st.step || {};
+  const n = `${st.current_step}/${st.total}`;
+  if (st.approaching) return `${n} · đang tiến tới vạch rẽ (V+1)`;
+  if (step.degrees != null) return `${n} · đang rẽ ${step.action === "turn_right" || step.action === "right" ? "phải" : "trái"}: ${st.step_degrees_done}° / ${step.degrees}°`;
+  if (step.action === "settle") return `${n} · settle, đang đo sai số rẽ`;
+  if (step.tiles != null) return `${n} · đi thẳng ${st.step_tiles_done}/${step.tiles} ô` + (st.current_step === 1 ? " tới chỗ rẽ" : " sau khi rẽ");
+  return `${n} · ${step.action || ""}`;
+}
+
+function renderTurnWizard() {
+  const t = calibTurn || {active: false, log: [], counts: {left: 0, right: 0}};
+  const running = !!(calibScript && calibScript.running);
+  const tv = (tuneState || {}).values || {}, td = (tuneState || {}).defaults || {};
+  const groundOk = groundApplied || (tv.ground_k_px_cm != null && tv.ground_k_px_cm !== td.ground_k_px_cm);
+  const center = precalCheck("center");
+  const counts = t.counts || {left: 0, right: 0};
+  const enough = counts.left >= CALIB_MIN_TURNS && counts.right >= CALIB_MIN_TURNS;
+  const latched = turnPreLatched && !!t.active;
+  const steps = [
+    {label: "Fit ground k, c xong (bước A)", ok: latched || groundOk, how: "Làm wizard A trước: lượt rẽ cần k, c để biết khoảng cách tới vạch."},
+    {label: "Pre-calibrate đạt (chỉ kiểm tra trước lần chạy đầu)", ok: latched || !!(calibPrecal && calibPrecal.ready),
+     how: "Mở mục Pre-calibrate phía trên và sửa các dòng ✗. Khi xe đã chạy, mục này không cần xanh nữa."},
+    {label: "Bắt đầu phiên đo", ok: !!t.active, how: "Bấm Bắt đầu phiên đo (xoá kết quả phiên cũ)."},
+    {label: "Đặt xe giữa làn, cách chỗ rẽ ≥ 2 ô", ok: latched || running || (tuneIdle() && !!(center && center.ok)),
+     value: latched ? "" : (center ? center.value : ""), how: center && center.hint ? center.hint : "Xe đứng yên, ở giữa 2 vạch dọc, phía trước còn ít nhất 2 ô thẳng rồi mới tới chỗ rẽ."},
+    {label: `Chạy thử đủ ${CALIB_MIN_TURNS} lần mỗi bên`, ok: enough,
+     value: `trái ${counts.left}/${CALIB_MIN_TURNS}, phải ${counts.right}/${CALIB_MIN_TURNS}`,
+     how: running ? "Đang chạy. Theo dõi xe, bấm Dừng nếu xe đi sai." :
+       "Bấm Chạy thử rẽ trái/phải: đi thẳng 2 ô → rẽ 90° ở vạch V+1 → settle → đi thẳng 1 ô. Sau mỗi lần, đưa xe về chỗ bắt đầu. Lần nào xe đi sai thì bấm Xoá ở dòng đó."},
+    {label: "Apply suggestion", ok: !!turnApplied, how: "Bấm Apply suggestion, rồi Save ở tab Tune để lưu vào profile."},
+  ];
+  const current = renderWizard(turnStepsEl, steps);
+  const canRun = !!t.active && !running && (latched || current >= 3);
+  document.getElementById("turnRunLeft").disabled = !canRun;
+  document.getElementById("turnRunRight").disabled = !canRun;
+  document.getElementById("turnRunStop").hidden = !running;
+  document.getElementById("turnCalibApply").disabled = running || !t.suggest || !enough;
+  const lastErr = !running && calibScript && calibScript.last_error ? `Lần chạy trước dừng giữa chừng: ${calibScript.last_error}` : "";
+  document.getElementById("turnStage").textContent = turnStageText() || (t.measuring ? "đang đo sai số…" : lastErr);
+
+  const table = document.getElementById("turnLogTable");
+  table.hidden = !(t.log || []).length;
+  document.getElementById("turnLog").innerHTML = (t.log || []).map(e => {
+    const good = e.e_psi != null && !e.fallback_time;
+    const result = good ? "✓ đo được" : (e.fallback_time ? "✗ rẽ theo thời gian (không có heading)" : (t.measuring ? "đang đo…" : "✗ không đo được"));
+    return `<tr class="${good ? "ok" : "bad"}"><td>${e.id}</td><td>${e.side === "left" ? "trái" : "phải"}</td>` +
+      `<td>${e.e_psi ?? "-"}</td><td>${e.e_y_cm ?? "-"}</td><td>${e.omega ?? "-"}</td><td>${result}</td>` +
+      `<td><button class="rm" data-calib-del="${e.id}" ${running ? "disabled" : ""}>Xoá</button></td></tr>`;
+  }).join("");
+  const sug = t.suggest;
+  document.getElementById("turnText").textContent = turnApplied
+    ? "đã Apply: " + Object.entries(turnApplied).map(([k, v]) => `${k}=${v}`).join(", ")
+    : (sug ? "đề xuất: " + Object.entries(sug).map(([k, v]) => `${k}=${v}`).join(", ") : "");
+}
+
+async function turnCall(path, body) {
+  try {
+    const j = await apiJson(path, body === undefined ? {} : body);
+    return j;
+  } catch (e) {
+    document.getElementById("turnText").textContent = "lỗi: " + e.message;
+    return null;
+  }
+}
+
+async function startTurnTest(side) {
+  if (turnPreLatched && calibPrecal && !calibPrecal.ready && calibPrecal.frames) {
+    const bad = (calibPrecal.checks || []).filter(c => !c.ok).map(c => "• " + c.label + ": " + c.value).join("\n");
+    if (!confirm("Pre-calibrate đang chưa đạt (bình thường sau khi xe đã chạy):\n" + bad + "\n\nĐã đưa xe về chỗ bắt đầu và vẫn chạy?")) return;
+  }
+  try {
+    const sep = qp ? "&" + qp.slice(1) : "";
+    const r = await fetch(`/api/calib/turn/test_steps?side=${side}${sep}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.status);
+    const body = {steps: j.steps, preset_name: `calib-turn-${side}`, description: "calibration turn test", mode: "tiles"};
+    const s = await fetch("/route/script" + qp, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const sj = await s.json().catch(() => ({}));
+    if (!s.ok) throw new Error(JSON.stringify(sj.detail || s.status));
+    turnApplied = null;
+    turnPreLatched = true;
+  } catch (e) { document.getElementById("turnText").textContent = "lỗi chạy thử: " + e.message; }
+  pollCalibTuning();
+}
+
+async function pollCalibTuning() {
+  if (activeTab() !== "precal" || !calibTuning || !calibTuning.open) return;
+  const [pre, ground, turn, script] = await Promise.allSettled([
+    apiJson("/api/precal"), apiJson("/api/ground/sample"), apiJson("/api/calib/turn"),
+    apiJson("/route/script/status"),
+  ]);
+  calibPrecal = pre.status === "fulfilled" ? pre.value : null;
+  calibGround = ground.status === "fulfilled" ? ground.value : null;
+  calibGroundErr = ground.status === "rejected" ? ground.reason.message : "";
+  calibTurn = turn.status === "fulfilled" ? turn.value : null;
+  calibScript = script.status === "fulfilled" ? (script.value.status || null) : null;
+  renderGroundWizard();
+  renderTurnWizard();
+}
+
+if (calibTuning) {
+  document.getElementById("groundFit").onclick = groundFitClick;
+  document.getElementById("groundApply").onclick = groundApplyClick;
+  document.getElementById("groundNearest").oninput = () => { groundFitResult = null; groundApplied = false; renderGroundWizard(); };
+  document.getElementById("turnCalibStart").onclick = async () => {
+    const t = calibTurn || {};
+    if ((t.log || []).length && !confirm("Bắt đầu phiên mới sẽ xoá các lượt rẽ đã đo. Tiếp tục?")) return;
+    turnApplied = null;
+    turnPreLatched = false;
+    calibTurn = await turnCall("/api/calib/turn/start") || calibTurn;
+    renderTurnWizard();
+  };
+  document.getElementById("turnRunLeft").onclick = () => startTurnTest("left");
+  document.getElementById("turnRunRight").onclick = () => startTurnTest("right");
+  document.getElementById("turnRunStop").onclick = async () => {
+    await fetch("/route/script/stop" + qp, {method: "POST"}).catch(() => null);
+    pollCalibTuning();
+  };
+  document.getElementById("turnCalibApply").onclick = async () => {
+    const j = await turnCall("/api/calib/turn/apply");
+    if (!j) return;
+    turnApplied = j.applied;
+    tuneState = j.tune; tuneDraft = Object.assign({}, j.tune.values || {}); tuneTouched = false; renderTuneFields();
+    renderTurnWizard();
+  };
+  document.getElementById("turnLog").addEventListener("click", async e => {
+    const id = e.target && e.target.dataset ? e.target.dataset.calibDel : null;
+    if (!id || !confirm(`Xoá lượt rẽ #${id} khỏi phiên đo?`)) return;
+    turnApplied = null;
+    calibTurn = await turnCall("/api/calib/turn/delete", {id: Number(id)}) || calibTurn;
+    renderTurnWizard();
+  });
+  calibTuning.addEventListener("toggle", pollCalibTuning);
+  setInterval(pollCalibTuning, 1000);
 }
 
 })();
