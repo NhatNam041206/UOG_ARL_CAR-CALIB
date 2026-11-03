@@ -39,7 +39,7 @@
         <button class="tab active" data-tab="script" role="tab">Script</button>
         <button class="tab" data-tab="tune" role="tab">Tune</button>
         <button class="tab" data-tab="map" role="tab">Map</button>
-        <button class="tab" data-tab="precal" role="tab">Pre-calibrate</button>
+        <button class="tab" data-tab="precal" role="tab">Calibration</button>
       </div>
       <div class="tab-pane active" data-pane="script">
       <h2>Route script builder</h2>
@@ -159,17 +159,6 @@
             <option value="">ALL</option>
           </select>
         </div>
-        <div id="turnSuggestBox" class="row" hidden>
-          <span id="turnSuggestText" class="muted"></span>
-          <button id="turnSuggestApply" title="Apply the suggested latency and V+1 rows (Save stays separate)">Apply turn suggestion</button>
-        </div>
-        <div id="groundBox" class="row" title="Car parked square to the seams. Tape from the front axle centre to the lowest seam on screen.">
-          <label class="muted" for="groundNearest">front axle → lowest seam (cm)</label>
-          <input id="groundNearest" type="number" min="1" step="0.5" style="width:6em">
-          <button id="groundFit">Fit ground k, c</button>
-          <button id="groundFitApply" title="Fit, then Apply k and c (Save stays separate)">Fit + Apply</button>
-          <span id="groundText" class="muted"></span>
-        </div>
         <div id="tuneFields"></div>
       </div>
       <div class="tab-pane" data-pane="map">
@@ -250,7 +239,9 @@
         <p class="muted">Ô chưa vẽ là blocked. Map lưu từ dashboard nằm trên Pi (TILE_MAP_DIR), dạng JSON (cũng là YAML hợp lệ, dùng được trong ARL_AUTOCAR).</p>
       </div>
       <div class="tab-pane" data-pane="precal">
-        <h2>Pre-calibrate</h2>
+        <h2>Calibration</h2>
+        <details class="calib-section" open>
+        <summary>Pre-calibrate</summary>
         <p class="muted">Xe đứng yên, đặt thẳng theo vạch gạch, ở giữa 2 vạch dọc. Stream hiện đường giữa (vàng) và vị trí VP khi tab này mở.</p>
         <div class="row">
           <span id="precalPill" class="pill pill-idle">đang đo…</span>
@@ -266,6 +257,39 @@
           <span id="precalCaptureStatus" class="muted"></span>
         </div>
         <p class="muted">Các nút Lưu chỉ Apply vào Tune; bấm Save trong tab Tune để giữ sau khi khởi động lại.</p>
+        </details>
+        <details class="calib-section" id="calibTuning">
+        <summary>Calib for tuning · dữ liệu rẽ</summary>
+        <div class="wizard">
+          <h3>A · Fit ground k, c <span class="muted">(xe đứng yên)</span></h3>
+          <ol class="wiz-steps" id="groundSteps"></ol>
+          <div class="row">
+            <label class="muted" for="groundNearest">tâm trục trước → vạch tím (cm)</label>
+            <input id="groundNearest" type="number" min="1" step="0.5" style="width:6em">
+            <button id="groundFit" disabled>Fit</button>
+            <button id="groundApply" class="primary" disabled>Apply k, c</button>
+          </div>
+          <div id="groundText" class="muted"></div>
+        </div>
+        <div class="wizard">
+          <h3>B · Turn suggestion <span class="muted">(xe chạy bài thử)</span></h3>
+          <ol class="wiz-steps" id="turnSteps"></ol>
+          <div class="row">
+            <button id="turnCalibStart">Bắt đầu phiên đo</button>
+            <button id="turnRunLeft" disabled>Chạy thử rẽ trái</button>
+            <button id="turnRunRight" disabled>Chạy thử rẽ phải</button>
+            <button id="turnRunStop" class="danger" hidden>Dừng</button>
+            <button id="turnCalibApply" class="primary" disabled>Apply suggestion</button>
+          </div>
+          <div id="turnStage" class="muted"></div>
+          <table class="precal-table" id="turnLogTable" hidden>
+            <thead><tr><th>#</th><th>Bên</th><th>e_ψ (°)</th><th>e_y (cm)</th><th>ω (°/s)</th><th>Kết quả</th><th></th></tr></thead>
+            <tbody id="turnLog"></tbody>
+          </table>
+          <div id="turnText" class="muted"></div>
+        </div>
+        <p class="muted">Apply chỉ đổi giá trị đang chạy. Bấm Save ở tab Tune để lưu vào profile đang chọn.</p>
+        </details>
       </div>
     </div>
   </div>
@@ -334,6 +358,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261103-tune-profiles"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-calibration"></script>
 </body>
 </html>

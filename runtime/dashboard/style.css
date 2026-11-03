@@ -439,3 +439,16 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 .precal-table tr.ok .mark { color: var(--ok); }
 .precal-table tr.bad .mark { color: var(--bad); }
 .precal-table tr.bad td.hint { color: var(--warn); }
+
+/* Calibration tab: collapsible sections + step-by-step wizards */
+.calib-section { border: 1px solid var(--bg-3); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
+.calib-section > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.wizard { margin: 6px 0 14px; }
+.wizard h3 { margin-top: 12px; }
+.wiz-steps { list-style: none; padding: 0; margin: 6px 0 10px; }
+.wiz-steps li { padding: 5px 8px; border-left: 3px solid var(--bg-3); margin: 3px 0; color: #777; }
+.wiz-steps li .mark { display: inline-block; width: 1.4em; font-weight: 700; }
+.wiz-steps li.done { color: #9a9; border-left-color: #2a8c5a; }
+.wiz-steps li.current { color: #eee; border-left-color: var(--warn); background: rgba(255, 255, 255, 0.04); }
+.wiz-steps li .how { display: block; margin-left: 1.4em; font-size: 0.9em; color: #bbb; }
+.wiz-steps li.done .how, .wiz-steps li.todo .how { display: none; }

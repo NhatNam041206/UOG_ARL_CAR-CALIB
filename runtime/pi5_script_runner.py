@@ -156,6 +156,12 @@ class Pi5ScriptRunner:
         self._turn_log: list[dict[str, Any]] = []
         self._pending_turn: dict[str, Any] | None = None
         self._last_turn: dict[str, Any] | None = None
+        # Calibration session (dashboard Calibration tab): turns from several
+        # test scripts are kept here, unlike _turn_log which each script
+        # clears, and a bad run can be deleted before the suggestion is applied.
+        self._calib_active = False
+        self._calib_log: list[dict[str, Any]] = []
+        self._calib_seq = 0
         self.turn = TurnSettings()
         self._last_error = ""
 
@@ -289,6 +295,7 @@ class Pi5ScriptRunner:
                 "step_remaining_s": remaining,
                 "step_tiles_done": self._step_tiles_done,
                 "step_degrees_done": round(self._step_degrees_done, 1),
+                "approaching": self._approaching,
                 "last_turn": dict(self._last_turn) if self._last_turn is not None else None,
                 "lane_recovering": self._recover_side,
                 "lane_crossing": self._cross_side,
@@ -727,7 +734,7 @@ class Pi5ScriptRunner:
                 entry.pop("_off", None)
                 self._pending_turn = None
 
-    def _turn_suggestion_locked(self) -> dict[str, float] | None:
+    def _turn_suggestion_locked(self, log: list[dict[str, Any]] | None = None) -> dict[str, float] | None:
         """New latency and anchor rows from this run's turns (call under the lock).
 
         latency -= alpha * e_psi / omega (turned too little: stop later)
@@ -741,7 +748,7 @@ class Pi5ScriptRunner:
         lengths = {"left": cfg.a_left_cm, "right": cfg.a_right_cm}
         a_used: set[str] = set()
         used = 0
-        for t in self._turn_log:
+        for t in self._turn_log if log is None else log:
             if t.get("e_psi") is None or t.get("fallback_time"):
                 continue
             used += 1
@@ -767,6 +774,54 @@ class Pi5ScriptRunner:
     def turn_suggestion(self) -> dict[str, float] | None:
         with self._lock:
             return self._turn_suggestion_locked()
+
+    # -- calibration session (turn data collection) -----------------------
+
+    def calib_start(self) -> dict[str, Any]:
+        """Start a new turn calibration session (drops the previous one)."""
+        with self._lock:
+            self._calib_active = True
+            self._calib_log = []
+        return self.calib_status()
+
+    def calib_stop(self) -> dict[str, Any]:
+        with self._lock:
+            self._calib_active = False
+        return self.calib_status()
+
+    def calib_delete(self, turn_id: Any) -> dict[str, Any]:
+        """Drop one collected turn (a bad run) from the session."""
+        try:
+            turn_id = int(turn_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("id must be a number") from exc
+        with self._lock:
+            before = len(self._calib_log)
+            self._calib_log = [t for t in self._calib_log if t.get("id") != turn_id]
+            if len(self._calib_log) == before:
+                raise ValueError(f"no collected turn with id {turn_id}")
+        return self.calib_status()
+
+    def calib_suggestion(self) -> dict[str, float] | None:
+        with self._lock:
+            return self._turn_suggestion_locked(self._calib_log)
+
+    def calib_status(self) -> dict[str, Any]:
+        with self._lock:
+            log = [
+                {k: v for k, v in t.items() if not k.startswith("_")} for t in self._calib_log
+            ]
+            counts = {"left": 0, "right": 0}
+            for t in log:
+                if t.get("e_psi") is not None and not t.get("fallback_time"):
+                    counts[t["side"]] += 1
+            return {
+                "active": self._calib_active,
+                "log": log,
+                "counts": counts,
+                "suggest": self._turn_suggestion_locked(self._calib_log),
+                "measuring": self._pending_turn is not None,
+            }
 
     def _settle_target(self, sample: Any) -> tuple[float, bool]:
         """Settle control law: (servo target, aligned) from a valid sample."""
@@ -964,6 +1019,11 @@ class Pi5ScriptRunner:
             self._last_turn = turn
             self._turn_log.append(entry)
             self._pending_turn = entry
+            if self._calib_active:
+                # Same dict: the settle fills e_psi / e_y in both logs.
+                self._calib_seq += 1
+                entry["id"] = self._calib_seq
+                self._calib_log.append(entry)
         self._turn_done((1.0 if action in ("left", "turn_left") else -1.0) * float(degrees))
 
     def _publish_current_command(self, base_cmd: str, angle: float | None) -> None:
