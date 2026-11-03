@@ -268,3 +268,18 @@ def test_missing_active_profile_falls_back_to_default(tmp_path):
     manager.profile_create("gone")
     (tmp_path / "tune_profiles" / "gone.json").unlink()
     assert CalibTuneManager(_fake_calibrator(), tune_file).active_profile == "default"
+
+
+def test_frame_flip_is_a_switchable_tune_param(tmp_path):
+    from runtime.calib_tuning import FRAME_FLIP_PARAM, attr_binding, flip_code
+
+    view = SimpleNamespace(frame_flip=0)
+    manager = CalibTuneManager(
+        _fake_calibrator(), tmp_path / "calib_tune.json",
+        extras=[attr_binding(FRAME_FLIP_PARAM, view, "frame_flip")],
+    )
+    manager.apply({"frame_flip": 3})
+    assert view.frame_flip == 3 and isinstance(view.frame_flip, int)
+    with pytest.raises(TuneValidationError):
+        manager.apply({"frame_flip": 4})
+    assert [flip_code(m) for m in (0, 1, 2, 3)] == [None, 1, 0, -1]
