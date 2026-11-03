@@ -51,14 +51,6 @@
           <option value="astar">3 · theo đường A* (map)</option>
         </select>
         <button id="stepsFromMap" style="display:none" title="tạo step từ start → goal đã lưu ở tab Map">tạo từ map</button>
-        <span id="turnPresetBox" class="turn-preset-box" style="display:none" title="lệnh mặc định cho từng loại đoạn của map (route preset), lưu trên Pi; A* dùng các preset này để tạo script">
-          <label class="muted" for="segStraight">thẳng</label>
-          <select id="segStraight" data-seg="straight"><option value="">mặc định</option></select>
-          <label class="muted" for="segLeft">rẽ trái</label>
-          <select id="segLeft" data-seg="turn_left"><option value="">mặc định</option></select>
-          <label class="muted" for="segRight">rẽ phải</label>
-          <select id="segRight" data-seg="turn_right"><option value="">mặc định</option></select>
-        </span>
         <span class="muted" id="scriptModeHint"></span>
       </div>
       <div class="row" id="stepEditorRow">
@@ -191,7 +183,16 @@
         <canvas id="mapCanvas" width="1000" height="760" aria-label="Map grid with row and column rulers"></canvas>
         <p id="mapStatus" class="map-status"></p>
 
-        <h3>Xe trên map</h3>
+        <div class="row map-section-pick">
+          <label class="muted" for="mapSectionSelect">mục</label>
+          <select id="mapSectionSelect">
+            <option value="car">Xe trên map (start / goal)</option>
+            <option value="commands">Lệnh cho route (thẳng / rẽ)</option>
+            <option value="file">Map (lưu / load)</option>
+            <option value="anchors">Visual anchors</option>
+          </select>
+        </div>
+        <div class="map-section" data-map-section="car">
         <p class="muted">Chọn start (Set start, hoặc anchor → start) và goal hoặc hướng, rồi bấm Lưu. Mỗi lần bấm "bắt đầu route", bộ đếm ô về 0 và xe được đặt lại ở start đã lưu. Muốn đổi thì sửa trên map rồi Lưu lại.</p>
         <div class="row">
           <select id="mapMode">
@@ -212,7 +213,18 @@
           <span id="mapDetail" class="muted"></span>
         </div>
 
-        <h3>Map</h3>
+        </div>
+        <div class="map-section" data-map-section="commands" hidden>
+          <p class="muted">Lệnh mặc định cho từng loại đoạn khi map tạo script từ đường A*. Mỗi lệnh là một route preset (lưu ở tab Script). Lệnh "thẳng" cần đúng 1 bước forward theo số ô: bước đó nhận số ô của từng đoạn. Lệnh rẽ thay bước rẽ và bước settle đi kèm. Lưu trên Pi, dùng cho mọi route A*.</p>
+          <div class="map-form">
+            <label>Đi thẳng<select id="segStraight" data-seg="straight"><option value="">mặc định</option></select></label>
+            <label>Rẽ trái<select id="segLeft" data-seg="turn_left"><option value="">mặc định</option></select></label>
+            <label>Rẽ phải<select id="segRight" data-seg="turn_right"><option value="">mặc định</option></select></label>
+          </div>
+          <p id="segStatus" class="map-status"></p>
+          <div id="segPreview" class="seg-preview muted">Bấm Plan route để xem script map trả về.</div>
+        </div>
+        <div class="map-section" data-map-section="file" hidden>
         <div class="map-form">
           <label>Map name<input id="mapId" value="campus-path" pattern="[a-z0-9_-]+"></label>
           <label>Tile side (metres)<input id="mapTileSize" type="number" min="0.01" step="0.001" placeholder="e.g. 0.60"></label>
@@ -228,7 +240,8 @@
           <button id="mapDelete" class="danger">Delete map</button>
         </div>
 
-        <h3>Visual anchors</h3>
+        </div>
+        <div class="map-section" data-map-section="anchors" hidden>
         <div class="map-form">
           <label>Anchor<select id="mapAnchorSelect"><option value="">New anchor</option></select></label>
           <label>Anchor ID<input id="mapAnchorId" placeholder="e.g. room-a101"></label>
@@ -244,6 +257,7 @@
           <button id="mapAnchorHere" title="xe đang đứng ở mốc này: sửa vị trí">Xe đang ở mốc này</button>
         </div>
         <p id="mapAnchorStatus" class="map-status"></p>
+        </div>
         <p class="muted">Ô chưa vẽ là blocked. Map lưu từ dashboard nằm trên Pi (TILE_MAP_DIR), dạng JSON (cũng là YAML hợp lệ, dùng được trong ARL_AUTOCAR).</p>
       </div>
       <div class="tab-pane" data-pane="precal">
@@ -366,6 +380,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261103-segment-commands-2"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-map-sections"></script>
 </body>
 </html>

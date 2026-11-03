@@ -143,15 +143,18 @@ def check_straight_command(steps: list[dict[str, Any]]) -> None:
 
 
 def apply_segment_commands(
-    steps: list[dict[str, Any]], commands: dict[str, list[dict[str, Any]] | None]
+    steps: list[dict[str, Any]],
+    commands: dict[str, list[dict[str, Any]] | None],
+    labels: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Replace each A* segment with its configured command steps.
 
     straight: the command's tiles step takes the segment's tile count.
     turn_left / turn_right: the command replaces the turn and the settle the
     planner put after it (the command brings its own settle if it needs one).
-    Segments without a command keep the planner's steps. Returns the new steps
-    and how many segments were replaced."""
+    Segments without a command keep the planner's steps. With labels (preview
+    only), each inserted step carries "_cmd": labels[kind]. Returns the new
+    steps and how many segments were replaced."""
     out: list[dict[str, Any]] = []
     replaced = 0
     i = 0
@@ -164,15 +167,16 @@ def apply_segment_commands(
             i += 1
             continue
         replaced += 1
+        tag = {"_cmd": labels[kind]} if labels and kind in labels else {}
         if kind == "straight":
             for s in command:
-                s = dict(s)
+                s = dict(s, **tag)
                 if s.get("tiles") is not None:
                     s["tiles"] = int(step["tiles"])
                 out.append(s)
             i += 1
             continue
-        out.extend(dict(s) for s in command)
+        out.extend(dict(s, **tag) for s in command)
         i += 1
         if i < len(steps) and steps[i].get("action") == "settle":
             i += 1

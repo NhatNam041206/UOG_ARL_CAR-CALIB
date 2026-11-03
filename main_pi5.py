@@ -619,6 +619,16 @@ def main() -> None:
             _segment_names.update(names)
             return _segment_status()
 
+        def _preview_steps(body: dict[str, Any]) -> dict[str, Any]:
+            """Map tab Plan route: the script the map returns, segment commands applied."""
+            plan = plan_steps(body.get("map"), body.get("start"), body.get("goal"))
+            names = {k: n for k, n in _segment_names.items() if n in _presets}
+            plan["planner_steps"] = plan["steps"]
+            plan["steps"], plan["segments_replaced"] = apply_segment_commands(
+                plan["steps"], _segment_commands(), labels={k: f"{k}: {n}" for k, n in names.items()}
+            )
+            return plan
+
         def _planned_steps() -> dict[str, Any]:
             """A* steps from the saved map, with the segment commands applied."""
             plan = dict(map_session.saved_route_steps())
@@ -840,7 +850,7 @@ def main() -> None:
         http.add_route("POST", "/api/map/clear", map_session.clear)
         http.add_route(
             "POST", "/api/map/steps",
-            lambda body: plan_steps(body.get("map"), body.get("start"), body.get("goal")),
+            _preview_steps,
         )
         http.add_route("GET", "/api/map/saved_steps", lambda _q: _planned_steps())
         http.add_route("GET", "/api/segment_commands", _segment_status)

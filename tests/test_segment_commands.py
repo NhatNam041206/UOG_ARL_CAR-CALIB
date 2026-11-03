@@ -48,3 +48,10 @@ def test_straight_command_needs_one_tiles_step():
     check_straight_command([{"action": "forward", "tiles": 1}])
     with pytest.raises(ValueError):
         check_straight_command([{"action": "forward", "duration_s": 1.0}])
+
+
+def test_preview_labels_mark_inserted_steps():
+    left = [{"action": "left", "degrees": 90.0}]
+    steps, _ = apply_segment_commands(PLAN, {"turn_left": left}, labels={"turn_left": "turn_left: soft"})
+    assert steps[1] == {"action": "left", "degrees": 90.0, "_cmd": "turn_left: soft"}
+    assert "_cmd" not in steps[0]

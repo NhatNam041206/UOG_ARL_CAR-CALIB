@@ -176,8 +176,6 @@ function applyScriptMode() {
   const fromMap = document.getElementById("stepsFromMap");
   fromMap.style.display = mode === "time" ? "none" : "";
   fromMap.textContent = mode === "astar" ? "tính lại A*" : "tạo từ map";
-  const turnPresetBox = document.getElementById("turnPresetBox");
-  if (turnPresetBox) turnPresetBox.style.display = mode === "astar" ? "" : "none";
   hint.textContent = mode === "time" ? "" : (mode === "tiles"
     ? "forward/straight đi theo số ô (bộ đếm vạch ngang), rẽ vẫn theo giây"
     : "");
@@ -192,18 +190,21 @@ if (scriptModeSel) {
   Object.entries(segSel).forEach(([kind, sel]) => {
     if (!sel) return;
     sel.onchange = async () => {
-      const hint = document.getElementById("scriptModeHint");
+      const hint = document.getElementById("segStatus");
       try {
         const r = await fetch("/api/segment_commands" + qp, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({[kind]: sel.value})});
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.detail || r.status);
         segCommands = Object.assign(segCommands, j.commands || {});
+        hint.textContent = sel.value ? `đã lưu: ${kind} = ${sel.value}` : `đã lưu: ${kind} = mặc định`;
+        hint.classList.remove("error");
+        if (window.refreshSegPreview) window.refreshSegPreview();
       } catch (e) {
         hint.textContent = "lỗi lưu lệnh mặc định: " + e.message;
         sel.value = segCommands[kind] || "";
         return;
       }
-      if (scriptModeSel.value === "astar") loadStepsFromMap();
+      if (scriptModeSel && scriptModeSel.value === "astar") loadStepsFromMap();
     };
   });
 }
@@ -2061,12 +2062,46 @@ if (mapCanvas) {
     catch (e) { status("lỗi: " + e.message, true); }
   };
 
+  // Sections under the map, one at a time (remembered per browser).
+  const sectionSel = q("mapSectionSelect");
+  function showMapSection(name) {
+    document.querySelectorAll("[data-map-section]").forEach(el => { el.hidden = el.dataset.mapSection !== name; });
+  }
+  if (sectionSel) {
+    try { sectionSel.value = localStorage.getItem("mapSection") || "car"; } catch (e) { /* private window */ }
+    if (!sectionSel.value) sectionSel.value = "car";
+    showMapSection(sectionSel.value);
+    sectionSel.onchange = () => {
+      showMapSection(sectionSel.value);
+      try { localStorage.setItem("mapSection", sectionSel.value); } catch (e) { /* private window */ }
+    };
+  }
+
+  // What the map returns after Plan route: the script built with the segment commands.
+  function stepText(st) {
+    const amount = st.tiles != null ? `${st.tiles} ô` : (st.degrees != null ? `${st.degrees}°${st.anchor ? " @V+1" : ""}` : `${st.duration_s} s`);
+    return `${st.action} ${amount}`;
+  }
+  async function refreshSegPreview() {
+    const box = q("segPreview");
+    if (!box) return;
+    if (!start || !goal || !route.length) { box.textContent = "Bấm Plan route để xem script map trả về."; return; }
+    try {
+      const body = await apiJson("/api/map/steps", {map: payload(), start, goal});
+      const used = body.segments_replaced ? ` · ${body.segments_replaced} đoạn dùng lệnh mặc định` : "";
+      box.innerHTML = `<div>Script map trả về: ${body.steps.length} bước${used}</div><ol>` +
+        body.steps.map(st => `<li class="${st._cmd ? "cmd" : ""}">${escapeHtml(stepText(st))}${st._cmd ? ` <span class="muted">(${escapeHtml(st._cmd)})</span>` : ""}</li>`).join("") + "</ol>";
+    } catch (e) { box.textContent = "lỗi: " + e.message; }
+  }
+  window.refreshSegPreview = refreshSegPreview;
+
   q("mapPlan").onclick = async () => {
     if (!start || !goal) { status("Set a runnable start and goal first.", true); return; }
     try {
       const body = await apiJson("/api/map/plan", {map: payload(), start, goal});
       route = body.cells; draw();
       status(`Route: ${body.distance_m.toFixed(2)} m, ${body.cells.length - 1} tiles, ${body.turn_count} turns.`);
+      refreshSegPreview();
     } catch (e) { route = []; draw(); status(e.message, true); }
   };
   q("mapSave").onclick = async () => {
