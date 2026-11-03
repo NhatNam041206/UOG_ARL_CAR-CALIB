@@ -563,10 +563,24 @@ class Pi5ScriptRunner:
             time.sleep(0.02)
 
     @staticmethod
-    def _follow(ys: list[float], last_y: float) -> float | None:
+    def _follow(ys: list[float], last_y: float, max_down: float = 0.08) -> float | None:
         """The line that continues the anchor: same seam, it only moves down."""
-        near = [y for y in ys if -0.02 <= y - last_y <= 0.08]
+        near = [y for y in ys if -0.02 <= y - last_y <= max_down]
         return min(near, key=lambda y: abs(y - last_y)) if near else None
+
+    def _anchor_lost(self, reason: str, y: float | None, target: float, target_src: str) -> dict[str, Any]:
+        """Anchor gone: turn here anyway (logged) instead of dropping the turn,
+        so the turn itself still runs and its heading error is measured."""
+        logger.warning("Turn anchor lost (%s): turning at the current spot", reason)
+        return {
+            "lost": reason,
+            "y": None,
+            "last_y": None if y is None else round(y, 4),
+            "target": round(target, 4),
+            "target_src": None,
+            "pulses": 0,
+            "tile_dy": None,
+        }
 
     def _set_base(self, base_cmd: str) -> None:
         with self._lock:
@@ -651,21 +665,23 @@ class Pi5ScriptRunner:
                         if nxt is not None:
                             y, last_seen = nxt, now
                 if now - last_seen > cfg.anchor_lost_s:
-                    self._fail_step("turn anchor: next cross line lost")
-                    return None
+                    self._set_base("STOP")
+                    return self._anchor_lost("next cross line lost while approaching", y, target, target_src)
                 if now - t0 > cfg.anchor_timeout_s:
                     self._fail_step("turn anchor: timed out before the turn point")
                     return None
             pulses, k, pulse_s = 0, None, cfg.anchor_pulse_s
             while True:
                 self._set_base("STOP")
-                if not self._hold(cfg.anchor_wait_s):
+                # The car keeps rolling and the camera lags for about the
+                # command latency after STOP: wait that out before measuring,
+                # and let the seam re-lock further down after the fast approach.
+                if not self._hold(max(cfg.anchor_wait_s, cfg.latency_s + 0.15)):
                     return None
                 got = self._anchor_lines(time.monotonic() - 0.05)
-                nxt = self._follow(got[0], y) if got is not None else None
+                nxt = self._follow(got[0], y, 0.08 if pulses else 0.2) if got is not None else None
                 if nxt is None:
-                    self._fail_step("turn anchor: next cross line lost at standstill")
-                    return None
+                    return self._anchor_lost("next cross line lost at standstill", y, target, target_src)
                 # Standstill: the VP row is at its steadiest, re-read y*.
                 target, target_src = self._anchor_target(sign, got[2], got[3])
                 if pulses and nxt - y > 0.002:
@@ -676,8 +692,7 @@ class Pi5ScriptRunner:
                 if err <= cfg.anchor_tol:
                     break  # at y*, or past it (logged; the adaptation corrects y*)
                 if pulses >= cfg.anchor_max_pulses:
-                    self._fail_step(f"turn anchor: {pulses} pulses, line at {y:.3f} / {target:.3f}")
-                    return None
+                    return self._anchor_lost(f"{pulses} pulses, line at {y:.3f} / {target:.3f}", y, target, target_src)
                 pulse_s = max(0.05, min(0.3, err / k)) if k else cfg.anchor_pulse_s
                 self._set_base("FORWARD")
                 if not self._hold(pulse_s):
@@ -1012,6 +1027,7 @@ class Pi5ScriptRunner:
             "anchor_target": None if anchor is None else anchor.get("target"),
             "anchor_src": None if anchor is None else anchor.get("target_src"),
             "tile_dy": None if anchor is None else anchor.get("tile_dy"),
+            "anchor_lost": None if anchor is None else anchor.get("lost"),
             "e_psi": None,
             "e_y_cm": None,
         }

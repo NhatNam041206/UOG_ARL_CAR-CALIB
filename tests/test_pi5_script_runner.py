@@ -315,7 +315,9 @@ def test_anchor_turn_nudges_to_the_target_row_then_logs_errors_and_suggests():
     assert sug["turn_anchor_y_left"] < 0.72
 
 
-def test_anchor_turn_fails_without_lines():
+def test_anchor_turn_turns_anyway_without_lines():
+    # No seam to anchor on (e.g. a floor without visible tiles): the turn still
+    # runs where the car is, and the log says the anchor was lost.
     runner = Pi5ScriptRunner()
     runner.turn.anchor_lost_s = 0.2
     runner.set_handlers(lambda _c: None, lambda _a: None, lambda _s: None)
@@ -324,7 +326,11 @@ def test_anchor_turn_fails_without_lines():
     runner.set_anchor_source(lambda: (time.monotonic(), [], 0.8))
     assert runner.submit([{"action": "left", "degrees": 90, "anchor": "next_line"}]) is True
     _wait_done(runner)
-    assert "turn anchor" in runner.status()["last_error"]
+    st = runner.status()
+    assert st["last_error"] == ""
+    assert st["last_turn"] is not None
+    assert "lost" in st["turn_log"][-1]["anchor_lost"]
+    assert st["turn_log"][-1]["anchor_y"] is None
 
 
 class _VpFloor(_FakeFloor):

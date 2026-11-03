@@ -2314,9 +2314,9 @@ function renderGroundWizard() {
      how: "Dừng script, base về STOP."},
     {label: "Xe thẳng theo vạch gạch", ok: !!(vp && vp.ok), value: vp ? vp.value : "chưa có frame",
      how: vp && vp.hint ? vp.hint : "Xoay xe cho VP (vạch xanh trên stream) nằm giữa 2 vạch vàng."},
-    {label: "Camera thấy ≥ 3 vạch ngang và VP", ok: !!(g && seams >= 3 && g.vp_row != null && g.age_s <= 1.0),
+    {label: "Camera thấy ≥ 2 vạch ngang và VP", ok: !!(g && seams >= 2 && g.vp_row != null && g.age_s <= 1.0),
      value: g ? `${seams} vạch, VP ${g.vp_row ?? "-"} px` : (calibGroundErr || "chưa có frame"),
-     how: "Lùi xe hoặc dọn vật che để thấy ít nhất 3 vạch gạch ngang phía trước."},
+     how: "Lùi xe hoặc dọn vật che để thấy ít nhất 2 vạch gạch ngang phía trước. Nếu đếm cả cạnh kệ/tường: tăng Look-ahead ROI top (Tune · Cross lines)."},
     {label: "Đo thước từ tâm trục trước tới vạch tím", ok: nearest > 0, value: nearest > 0 ? `${nearest} cm` : "",
      how: "Vạch thấp nhất đang được tô tím trên stream. Nhập số cm vào ô bên dưới."},
     {label: `Fit, sai số ≤ ${GROUND_MAX_RMS_CM} cm`, ok: !!(fit && fit.rms_cm <= GROUND_MAX_RMS_CM),
@@ -2337,7 +2337,8 @@ async function groundFitClick() {
   try {
     groundFitResult = await apiJson("/api/ground/fit", {nearest_cm: nearest, apply: false});
     const f = groundFitResult.fit;
-    text.textContent = `${groundFitResult.points} vạch → từng vạch lệch ${f.residuals_cm.join(", ")} cm`;
+    text.textContent = `${groundFitResult.points} vạch → từng vạch lệch ${f.residuals_cm.join(", ")} cm` +
+      (groundFitResult.points < 3 ? " · chỉ 2 vạch: fit luôn khớp, không kiểm tra được sai số (nên đo lại ở chỗ thấy ≥ 3 vạch nếu được)" : "");
   } catch (e) { groundFitResult = null; text.textContent = "lỗi: " + e.message; }
   renderGroundWizard();
 }
@@ -2398,7 +2399,7 @@ function renderTurnWizard() {
   table.hidden = !(t.log || []).length;
   document.getElementById("turnLog").innerHTML = (t.log || []).map(e => {
     const good = e.e_psi != null && !e.fallback_time;
-    const result = good ? "✓ đo được" : (e.fallback_time ? "✗ rẽ theo thời gian (không có heading)" : (t.measuring ? "đang đo…" : "✗ không đo được"));
+    const result = (good ? "✓ đo được" + (e.anchor_lost ? " (mất mốc V+1, rẽ tại chỗ)" : "") : "") || ( (e.fallback_time ? "✗ rẽ theo thời gian (không có heading)" : (t.measuring ? "đang đo…" : "✗ không đo được")));
     return `<tr class="${good ? "ok" : "bad"}"><td>${e.id}</td><td>${e.side === "left" ? "trái" : "phải"}</td>` +
       `<td>${e.e_psi ?? "-"}</td><td>${e.e_y_cm ?? "-"}</td><td>${e.omega ?? "-"}</td><td>${result}</td>` +
       `<td><button class="rm" data-calib-del="${e.id}" ${running ? "disabled" : ""}>Xoá</button></td></tr>`;
