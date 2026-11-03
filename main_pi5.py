@@ -855,6 +855,8 @@ def main() -> None:
             if script_runner is not None:
                 route_session.attach_meta("turn_log", script_runner.status()["turn_log"])
                 route_session.attach_meta("turn_suggest", script_runner.turn_suggestion())
+                # Why a script stopped early (e.g. "turn anchor: next cross line lost").
+                route_session.attach_meta("script_error", script_runner.status()["last_error"])
             result = route_session.finalize(mono_now=time.monotonic(), status=status)
             logger.info(
                 "Route recording finalized: %s accepted=%s reason=%s",

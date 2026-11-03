@@ -2245,6 +2245,9 @@ const CALIB_MIN_TURNS = 3;        // measured turns per side before Apply
 const GROUND_MAX_RMS_CM = 3.0;    // fit accepted below this error
 let calibPrecal = null, calibGround = null, calibGroundErr = "", calibTurn = null, calibScript = null;
 let groundFitResult = null, groundApplied = false, turnApplied = null;
+// The static checks (ground fit, pre-calibrate, start position) gate only the
+// first test run of a session: once the car moves they cannot stay green.
+let turnPreLatched = false;
 
 function renderWizard(el, steps) {
   let current = steps.findIndex(st => !st.ok);
@@ -2333,13 +2336,14 @@ function renderTurnWizard() {
   const center = precalCheck("center");
   const counts = t.counts || {left: 0, right: 0};
   const enough = counts.left >= CALIB_MIN_TURNS && counts.right >= CALIB_MIN_TURNS;
+  const latched = turnPreLatched && !!t.active;
   const steps = [
-    {label: "Fit ground k, c xong (bước A)", ok: groundOk, how: "Làm wizard A trước: lượt rẽ cần k, c để biết khoảng cách tới vạch."},
-    {label: "Pre-calibrate đạt", ok: !!(calibPrecal && calibPrecal.ready),
-     how: "Mở mục Pre-calibrate phía trên và sửa các dòng ✗."},
+    {label: "Fit ground k, c xong (bước A)", ok: latched || groundOk, how: "Làm wizard A trước: lượt rẽ cần k, c để biết khoảng cách tới vạch."},
+    {label: "Pre-calibrate đạt (chỉ kiểm tra trước lần chạy đầu)", ok: latched || !!(calibPrecal && calibPrecal.ready),
+     how: "Mở mục Pre-calibrate phía trên và sửa các dòng ✗. Khi xe đã chạy, mục này không cần xanh nữa."},
     {label: "Bắt đầu phiên đo", ok: !!t.active, how: "Bấm Bắt đầu phiên đo (xoá kết quả phiên cũ)."},
-    {label: "Đặt xe giữa làn, cách chỗ rẽ ≥ 2 ô", ok: running || (tuneIdle() && !!(center && center.ok)),
-     value: center ? center.value : "", how: center && center.hint ? center.hint : "Xe đứng yên, ở giữa 2 vạch dọc, phía trước còn ít nhất 2 ô thẳng rồi mới tới chỗ rẽ."},
+    {label: "Đặt xe giữa làn, cách chỗ rẽ ≥ 2 ô", ok: latched || running || (tuneIdle() && !!(center && center.ok)),
+     value: latched ? "" : (center ? center.value : ""), how: center && center.hint ? center.hint : "Xe đứng yên, ở giữa 2 vạch dọc, phía trước còn ít nhất 2 ô thẳng rồi mới tới chỗ rẽ."},
     {label: `Chạy thử đủ ${CALIB_MIN_TURNS} lần mỗi bên`, ok: enough,
      value: `trái ${counts.left}/${CALIB_MIN_TURNS}, phải ${counts.right}/${CALIB_MIN_TURNS}`,
      how: running ? "Đang chạy. Theo dõi xe, bấm Dừng nếu xe đi sai." :
@@ -2347,12 +2351,13 @@ function renderTurnWizard() {
     {label: "Apply suggestion", ok: !!turnApplied, how: "Bấm Apply suggestion, rồi Save ở tab Tune để lưu vào profile."},
   ];
   const current = renderWizard(turnStepsEl, steps);
-  const canRun = t.active && !running && current >= 3;
+  const canRun = !!t.active && !running && (latched || current >= 3);
   document.getElementById("turnRunLeft").disabled = !canRun;
   document.getElementById("turnRunRight").disabled = !canRun;
   document.getElementById("turnRunStop").hidden = !running;
-  document.getElementById("turnCalibApply").disabled = running || !t.suggest || current < 5;
-  document.getElementById("turnStage").textContent = turnStageText() || (t.measuring ? "đang đo sai số…" : "");
+  document.getElementById("turnCalibApply").disabled = running || !t.suggest || !enough;
+  const lastErr = !running && calibScript && calibScript.last_error ? `Lần chạy trước dừng giữa chừng: ${calibScript.last_error}` : "";
+  document.getElementById("turnStage").textContent = turnStageText() || (t.measuring ? "đang đo sai số…" : lastErr);
 
   const table = document.getElementById("turnLogTable");
   table.hidden = !(t.log || []).length;
@@ -2380,6 +2385,10 @@ async function turnCall(path, body) {
 }
 
 async function startTurnTest(side) {
+  if (turnPreLatched && calibPrecal && !calibPrecal.ready && calibPrecal.frames) {
+    const bad = (calibPrecal.checks || []).filter(c => !c.ok).map(c => "• " + c.label + ": " + c.value).join("\n");
+    if (!confirm("Pre-calibrate đang chưa đạt (bình thường sau khi xe đã chạy):\n" + bad + "\n\nĐã đưa xe về chỗ bắt đầu và vẫn chạy?")) return;
+  }
   try {
     const sep = qp ? "&" + qp.slice(1) : "";
     const r = await fetch(`/api/calib/turn/test_steps?side=${side}${sep}`);
@@ -2390,6 +2399,7 @@ async function startTurnTest(side) {
     const sj = await s.json().catch(() => ({}));
     if (!s.ok) throw new Error(JSON.stringify(sj.detail || s.status));
     turnApplied = null;
+    turnPreLatched = true;
   } catch (e) { document.getElementById("turnText").textContent = "lỗi chạy thử: " + e.message; }
   pollCalibTuning();
 }
@@ -2417,6 +2427,7 @@ if (calibTuning) {
     const t = calibTurn || {};
     if ((t.log || []).length && !confirm("Bắt đầu phiên mới sẽ xoá các lượt rẽ đã đo. Tiếp tục?")) return;
     turnApplied = null;
+    turnPreLatched = false;
     calibTurn = await turnCall("/api/calib/turn/start") || calibTurn;
     renderTurnWizard();
   };
