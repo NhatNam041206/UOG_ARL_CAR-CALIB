@@ -1,10 +1,13 @@
-# syntax=docker/dockerfile:1.7
 # Raspberry Pi 5 / ARM64 — vision-only, publishes steering over MQTT
 #
 # No GPIO here anymore: Pi5 runs the vision loop and publishes to the Pi4
 # DataProcessingCenter over MQTT (car/raspi5/control). Uses arm64v8/ubuntu
 # (no registry auth, works everywhere). OpenCV via pip, not apt → no GPU
 # but works.
+#
+# No "# syntax=" line on purpose: it makes BuildKit download the
+# docker/dockerfile frontend from Docker Hub on every build, and the Pi has
+# no internet. The built-in frontend already supports RUN --mount=type=cache.
 #
 # Build:
 #   DOCKER_BUILDKIT=1 docker build -f docker/pi5/Dockerfile -t car-calib-pi5 .
