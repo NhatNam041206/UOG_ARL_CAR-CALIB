@@ -16,8 +16,13 @@ Pipeline per frame, all positions as ratios of the frame size:
    drops out (motion blur smears seams low in the frame) is carried by its
    velocity for up to max_miss_frames, so it still counts.
 
-The output is the number of tiles crossed since reset(); it has no motion
-authority and is meant for logging and the HUD.
+Reversing (set_direction(-1)): seams move up the image. New tracks start
+just below the counter band (down to reverse_roi_extra under it) and a
+track counts when it crosses counter_y going up.
+
+tile_count is the number of seams crossed since reset() in either
+direction (what a tile step waits for); net_count adds forward crossings
+and subtracts reverse ones (the car's displacement, used for the map).
 """
 
 from __future__ import annotations
@@ -55,6 +60,9 @@ class CrossLineConfig:
     # A count also needs this fraction of the median recent interval between
     # counts (0 = off); rejects shadow edges and ghost lines next to a seam.
     count_min_gap_ratio: float = 0.5
+    # Reversing: how far below the counter band seams are detected (new
+    # tracks start there and move up).
+    reverse_roi_extra: float = 0.2
 
     @classmethod
     def from_env(cls) -> "CrossLineConfig":
@@ -117,10 +125,14 @@ class CrossLineResult:
     counted_this_frame: bool
     lines: list[CrossLine]
     tracks: list[dict[str, Any]]
+    net_count: int = 0
+    direction: int = 1
 
     def telemetry(self) -> dict[str, Any]:
         return {
             "cross_tile_count": self.tile_count,
+            "cross_net_count": self.net_count,
+            "cross_direction": self.direction,
             "cross_counted": self.counted_this_frame,
             "cross_lines": len(self.lines),
             "cross_tracks": sum(1 for t in self.tracks if t["confirmed"]),
@@ -138,6 +150,8 @@ class CrossLineCounter:
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._tile_count = 0
+        self._net_count = 0
+        self._direction = 1
         self._frames_since_count = 10**6
         self._intervals: list[int] = []
         self._last_dark: np.ndarray | None = None
@@ -146,6 +160,32 @@ class CrossLineCounter:
     @property
     def tile_count(self) -> int:
         return self._tile_count
+
+    @property
+    def net_count(self) -> int:
+        return self._net_count
+
+    @property
+    def direction(self) -> int:
+        return self._direction
+
+    def set_direction(self, direction: int) -> None:
+        """+1 driving forward, -1 reversing. A change drops the tracks (they
+        move the other way now) but keeps the counts."""
+        direction = -1 if direction < 0 else 1
+        if direction == self._direction:
+            return
+        self._direction = direction
+        self._tracks = []
+        self._intervals = []
+        self._frames_since_count = 10**6
+
+    def _detect_bottom(self) -> float:
+        cfg = self.config
+        bottom = cfg.counter_y + cfg.counter_h / 2.0
+        if self._direction < 0:
+            bottom += max(0.0, cfg.reverse_roi_extra)
+        return max(0.0, min(1.0, bottom))
 
     # ------------------------------------------------------------------ #
     # Detection
@@ -156,7 +196,7 @@ class CrossLineCounter:
         h, w = frame.shape[:2]
         gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         y0 = int(h * max(0.0, min(1.0, cfg.roi_top)))
-        y1 = int(h * max(0.0, min(1.0, cfg.counter_y + cfg.counter_h / 2.0)))
+        y1 = int(h * self._detect_bottom())
         if y1 - y0 < 4:
             self._last_dark = None
             return []
@@ -210,7 +250,7 @@ class CrossLineCounter:
         """Process one frame and return the running tile count."""
         cfg = self.config
         if not cfg.enabled or frame is None or frame.size == 0:
-            return CrossLineResult(self._tile_count, False, [], self._track_dicts())
+            return CrossLineResult(self._tile_count, False, [], self._track_dicts(), self._net_count, self._direction)
         lines = self.detect(frame)
         self._last_lines = lines
         self._frames_since_count += 1
@@ -226,9 +266,11 @@ class CrossLineCounter:
                 dy = line.y - track.predicted_y
                 if abs(dy) > cfg.track_max_dy or abs(line.tilt_deg - track.tilt_deg) > cfg.slope_tol_deg:
                     continue
-                # Seams only move down the image while the car drives forward;
-                # allow a small backward jitter.
-                if line.y < track.y - cfg.merge_dy:
+                # Seams only move down the image while the car drives forward
+                # (up while reversing); allow a small jitter the other way.
+                if self._direction > 0 and line.y < track.y - cfg.merge_dy:
+                    continue
+                if self._direction < 0 and line.y > track.y + cfg.merge_dy:
                     continue
                 cost = abs(dy)
                 if best_cost is None or cost < best_cost:
@@ -251,6 +293,7 @@ class CrossLineCounter:
                 if self._frames_since_count >= self._min_gap():
                     self._remember_interval(self._frames_since_count)
                     self._tile_count += 1
+                    self._net_count += self._direction
                     self._frames_since_count = 0
                     counted = True
 
@@ -260,21 +303,31 @@ class CrossLineCounter:
         for t in sorted(self._tracks, key=lambda t: -t.hits):
             if t.misses > cfg.max_miss_frames or t.y > 1.0 + cfg.track_max_dy:
                 continue
+            if self._direction < 0 and t.y < cfg.roi_top - cfg.track_max_dy:
+                continue
             twin = next((k for k in kept if abs(k.y - t.y) <= cfg.merge_dy), None)
             if twin is not None:
                 twin.counted = twin.counted or t.counted
                 continue
             kept.append(t)
         self._tracks = kept
-        new_track_bottom = min(cfg.roi_bottom, cfg.counter_y - cfg.counter_h / 2.0)
+        if self._direction > 0:
+            new_top = cfg.roi_top
+            new_bottom = min(cfg.roi_bottom, cfg.counter_y - cfg.counter_h / 2.0)
+        else:
+            # Reversing: seams come up from below the counter band.
+            new_top = cfg.counter_y + cfg.counter_h / 2.0
+            new_bottom = self._detect_bottom()
         for idx in unmatched:
             line = lines[idx]
             # New seams may only appear in the look-ahead ROI; a line first
             # seen inside the counter band has no history to confirm it.
-            if cfg.roi_top <= line.y <= new_track_bottom:
+            if new_top <= line.y <= new_bottom:
                 self._tracks.append(_Track(self._next_id, line.y, line.tilt_deg))
                 self._next_id += 1
-        return CrossLineResult(self._tile_count, counted, lines, self._track_dicts())
+        return CrossLineResult(
+            self._tile_count, counted, lines, self._track_dicts(), self._net_count, self._direction
+        )
 
     def _remember_interval(self, frames: int) -> None:
         if frames >= 10**5:
@@ -298,7 +351,12 @@ class CrossLineCounter:
         if track.misses > cfg.max_miss_frames:
             return False
         # A coasting track may only count while it is inside the band.
-        if track.misses > 0 and track.y > cfg.counter_y + cfg.counter_h / 2.0 + abs(track.vy):
+        half = cfg.counter_h / 2.0 + abs(track.vy)
+        if self._direction < 0:
+            if track.misses > 0 and track.y < cfg.counter_y - half:
+                return False
+            return prev_y > cfg.counter_y >= track.y
+        if track.misses > 0 and track.y > cfg.counter_y + half:
             return False
         return prev_y < cfg.counter_y <= track.y
 

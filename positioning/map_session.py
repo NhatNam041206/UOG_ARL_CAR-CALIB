@@ -280,8 +280,9 @@ class MapSession:
             }
 
     def update(self, tile_count: int, frozen: bool = False) -> None:
-        """New tile count. frozen: the car is not driving forward (turning in
-        place, reversing), so seams counted now do not move it on the map."""
+        """New net tile count (forward seams minus reversed ones). frozen: the
+        car is turning (forward or in reverse), so seams counted now do not
+        move it on the map."""
         with self._lock:
             if frozen:
                 self._base_count += int(tile_count) - self._last_count

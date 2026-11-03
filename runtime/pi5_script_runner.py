@@ -103,8 +103,22 @@ BASE_MAP: dict[str, tuple[int, int, int]] = {
 
 _VALID_ACTIONS = {
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
-    "lane_left", "lane_right",
+    "lane_left", "lane_right", "back_left", "back_right",
 }
+# Reversing turns: BACKWARD with the servo on that side. Yaw rate is
+# v * tan(steer) / L, so with v < 0 the heading turns the other way:
+# back_left (servo left) yaws right, back_right yaws left.
+REVERSE_TURN_ACTIONS = ("back_left", "back_right")
+
+
+def yaw_sign(action: str | None) -> float:
+    """+1 if the action turns the car's heading left, -1 if right, 0 if none."""
+    if action in ("left", "turn_left", "back_right"):
+        return 1.0
+    if action in ("right", "turn_right", "back_left"):
+        return -1.0
+    return 0.0
+
 # Active lane change into the next tile row: +1 left, -1 right.
 LANE_CHANGE_ACTIONS = {"lane_left": 1, "lane_right": -1}
 # Steps that pin the servo themselves, so the vision PID must not publish.
@@ -112,7 +126,7 @@ LANE_CHANGE_ACTIONS = {"lane_left": 1, "lane_right": -1}
 # yaw rate x time since the last accepted one) from the last accepted yaw.
 YAW_JUMP_MIN_DEG = 30.0
 
-_SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle", "lane_left", "lane_right")
+_SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle", "lane_left", "lane_right", "back_left", "back_right")
 
 
 class Pi5ScriptRunner:
@@ -395,10 +409,10 @@ class Pi5ScriptRunner:
         cfg = self.turn
         if degrees is not None:
             duration_s = turn_timeout_s(float(degrees), cfg.latency_s, cfg.nominal_omega_dps, cfg.timeout_factor)
-            # Left turns give positive yaw.
-            turn_sign = 1.0 if action in ("left", "turn_left") else -1.0
+            # Left turns give positive yaw (back_right too: it reverses).
+            turn_sign = yaw_sign(action) or -1.0
             anchor_info: dict[str, Any] | None = None
-            if step.get("anchor"):
+            if step.get("anchor") and action not in REVERSE_TURN_ACTIONS:
                 anchor_info = self._approach_anchor(turn_sign)
                 if anchor_info is None:
                     return
@@ -434,6 +448,12 @@ class Pi5ScriptRunner:
             angle = self._steer_angle(+1)
         elif action == "right":
             base_cmd = "FORWARD"
+            angle = self._steer_angle(-1)
+        elif action == "back_left":
+            base_cmd = "BACKWARD"
+            angle = self._steer_angle(+1)
+        elif action == "back_right":
+            base_cmd = "BACKWARD"
             angle = self._steer_angle(-1)
         elif action == "turn_left":
             base_cmd = "TURN_LEFT"
@@ -549,9 +569,8 @@ class Pi5ScriptRunner:
                     self._fail_step(f"tile step timed out: {done_tiles}/{target} tiles in {duration_s:.0f} s")
                     break
             elif timed_out:
-                if action in ("left", "right", "turn_left", "turn_right"):
-                    sign = 1.0 if action in ("left", "turn_left") else -1.0
-                    self._turn_done(sign * duration_s * cfg.nominal_omega_dps)
+                if yaw_sign(action):
+                    self._turn_done(yaw_sign(action) * duration_s * cfg.nominal_omega_dps)
                 break
 
     # ------------------------------------------------------------------ #
@@ -778,7 +797,7 @@ class Pi5ScriptRunner:
         a_used: set[str] = set()
         used = 0
         for t in self._turn_log if log is None else log:
-            if t.get("e_psi") is None or t.get("fallback_time"):
+            if t.get("e_psi") is None or t.get("fallback_time") or t.get("reverse"):
                 continue
             used += 1
             omega = max(5.0, float(t["omega"] or cfg.nominal_omega_dps))
@@ -1030,8 +1049,12 @@ class Pi5ScriptRunner:
         if anchor is not None:
             turn["anchor"] = anchor
         logger.info("Turn done: %s", turn)
+        reverse = action in REVERSE_TURN_ACTIONS
         entry = {
-            "side": "left" if action in ("left", "turn_left") else "right",
+            # side = which way the heading turned; reverse turns are logged
+            # but not used for the (forward) turn suggestion.
+            "side": "left" if yaw_sign(action) > 0 else "right",
+            "reverse": reverse,
             "degrees": float(degrees),
             "seen_at_stop": turn["seen_at_stop_deg"],
             "omega": turn["omega_dps"],
@@ -1048,13 +1071,14 @@ class Pi5ScriptRunner:
         with self._lock:
             self._last_turn = turn
             self._turn_log.append(entry)
-            self._pending_turn = entry
-            if self._calib_active:
+            # The settle after a forward turn measures its error.
+            self._pending_turn = None if reverse else entry
+            if self._calib_active and not reverse:
                 # Same dict: the settle fills e_psi / e_y in both logs.
                 self._calib_seq += 1
                 entry["id"] = self._calib_seq
                 self._calib_log.append(entry)
-        self._turn_done((1.0 if action in ("left", "turn_left") else -1.0) * float(degrees))
+        self._turn_done(yaw_sign(action) * float(degrees))
 
     def _publish_current_command(self, base_cmd: str, angle: float | None) -> None:
         if self._base_cb is not None:

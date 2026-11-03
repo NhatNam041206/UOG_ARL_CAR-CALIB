@@ -364,6 +364,8 @@ def main() -> None:
                 "manual_steer": tel.get("manual_steer"),
                 "manual_blocked_reason": tel.get("manual_blocked_reason"),
                 "cross_tile_count": tel.get("cross_tile_count"),
+                "cross_net_count": tel.get("cross_net_count"),
+                "cross_direction": tel.get("cross_direction"),
                 "map_row": tel.get("map_row"),
                 "map_column": tel.get("map_column"),
                 "map_status": tel.get("map_status"),
@@ -1094,6 +1096,13 @@ def main() -> None:
                 turn_yaw.last_heading = None  # no stale heading in the CSV
 
             # --- transverse seam (tile) counter: log + HUD only ---
+            # Reversing: seams move up the image, so the counter tracks them
+            # the other way and its net count goes down (STOP keeps the last
+            # direction while the car coasts).
+            if last_base_cmd.upper() == "BACKWARD":
+                calibrator.cross_counter.set_direction(-1)
+            elif last_base_cmd.upper() in ("FORWARD", "TURN_LEFT", "TURN_RIGHT"):
+                calibrator.cross_counter.set_direction(1)
             cross_result = calibrator.cross_counter.update(frame)
             # VP row: the lane tracker's (live), else the grid horizon; it
             # turns a seam row into a floor distance (vision/ground_range.py).
@@ -1107,13 +1116,15 @@ def main() -> None:
                 vp_row,
                 frame.shape[0],
             )
-            # Seams seen while turning (in place or on an arc) or reversing do
-            # not move the car along the map; the turn rotates the map heading
-            # when it ends (map_session.apply_turn).
+            # Seams seen while turning (in place or on an arc, forward or in
+            # reverse) do not move the car along the map; the turn rotates the
+            # map heading when it ends (map_session.apply_turn). Reversing
+            # straight moves it back: the net count goes down.
             map_session.update(
-                cross_result.tile_count,
+                cross_result.net_count,
                 frozen=script_runner is not None
-                and script_runner.current_action() in ("left", "right", "turn_left", "turn_right", "backward", "stop", "pause"),
+                and script_runner.current_action()
+                in ("left", "right", "turn_left", "turn_right", "back_left", "back_right", "stop", "pause"),
             )
             # A lane shift right after a commanded turn is the tracker
             # re-locking (active); any other one moves the car a row sideways.
@@ -1124,7 +1135,7 @@ def main() -> None:
                 active=script_runner is not None
                 and (
                     script_runner.current_action()
-                    in ("left", "right", "turn_left", "turn_right", "lane_left", "lane_right")
+                    in ("left", "right", "turn_left", "turn_right", "back_left", "back_right", "lane_left", "lane_right")
                     or script_runner.expected_crossing() != 0
                 ),
             )

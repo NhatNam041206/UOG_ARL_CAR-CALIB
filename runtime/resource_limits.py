@@ -26,16 +26,19 @@ from config.settings import (
 )
 
 # Actions that may run by tile count: the car drives forward under vision
-# steering, so the cross-line counter sees the seams pass.
-TILE_ROUTE_ACTIONS = frozenset({"forward", "straight"})
+# steering (or reverses straight), so the cross-line counter sees the seams pass.
+TILE_ROUTE_ACTIONS = frozenset({"forward", "straight", "backward"})
 
 # Actions that may run by degrees: the grid heading watches the yaw and the
 # runner stops the turn when it is reached.
-DEGREE_ROUTE_ACTIONS = frozenset({"left", "right", "turn_left", "turn_right"})
+# back_left / back_right reverse with the servo on that side, so the car's
+# heading turns the other way (back_left yaws right).
+REVERSE_TURN_ACTIONS = frozenset({"back_left", "back_right"})
+DEGREE_ROUTE_ACTIONS = frozenset({"left", "right", "turn_left", "turn_right"}) | REVERSE_TURN_ACTIONS
 
 VALID_ROUTE_ACTIONS = frozenset({
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause", "settle",
-    "lane_left", "lane_right",
+    "lane_left", "lane_right", "back_left", "back_right",
 })
 
 
@@ -107,6 +110,8 @@ def validate_route_steps(raw_steps: Any) -> list[dict[str, Any]]:
             anchor = raw_step.get("anchor") or None
             if anchor is not None and anchor != "next_line":
                 raise ScriptValidationError(f"step {index} anchor must be \"next_line\"")
+            if anchor is not None and action in REVERSE_TURN_ACTIONS:
+                raise ScriptValidationError(f"step {index}: {action} cannot use an anchor (it reverses)")
             total_duration += turn_timeout_s(float(degrees)) + (TURN_ANCHOR_TIMEOUT_S if anchor else 0.0)
             if total_duration > ROUTE_MAX_TOTAL_DURATION_S:
                 raise ScriptValidationError(

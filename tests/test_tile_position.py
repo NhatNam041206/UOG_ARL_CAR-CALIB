@@ -118,3 +118,22 @@ def test_map_session_applies_script_turns_and_freezes_counts_during_them():
     assert (position["row"], position["column"], position["heading"]) == (2, 4, "south")
     session.apply_turn(20.0)  # less than half a quarter: no change
     assert session.state()["position"]["heading"] == "south"
+
+
+def test_path_mode_reversing_past_the_start_stays_at_the_start():
+    tile_map = _l_map()
+    tracker = TilePositionTracker(tile_map, (0, 0), path=tile_map.shortest_path((0, 0), (3, 4)))
+    before = tracker.update(-1)
+    assert before.cell == (0, 0)
+    assert before.status == "BEFORE_START"
+
+
+def test_map_session_moves_back_on_a_lower_net_count():
+    from positioning.map_session import MapSession
+
+    session = MapSession(_l_map())
+    session.configure({"start": [0, 0], "heading": "east"}, persist=False)
+    session.update(4)
+    session.update(2)  # reversed two tiles
+    position = session.state()["position"]
+    assert (position["row"], position["column"]) == (0, 2)
