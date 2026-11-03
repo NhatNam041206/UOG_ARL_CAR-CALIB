@@ -514,6 +514,7 @@ def main() -> None:
             session.attach_meta("csv_file", "route_frames.csv")
             session.attach_meta("sasc_file", "sasc_baseline_log.csv")
             session.attach_meta("calib_tune", tune_manager.status())
+            session.attach_meta("tune_profile", tune_manager.active_profile)
             session.start(time.monotonic())
             calibrator.cross_counter.reset()
             map_session.route_start()
@@ -676,6 +677,19 @@ def main() -> None:
             return tune_manager.apply(values)  # Apply only; Save stays a separate click
 
         http.add_route("POST", "/api/turn/apply_suggestion", _apply_turn_suggestion)
+        # Tune profiles: named calib_tune sets (create / read / load / rename / delete).
+        http.add_route("GET", "/api/tune/profiles", lambda _q: {"profiles": tune_manager.profiles()})
+        http.add_route(
+            "GET", "/api/tune/profile",
+            lambda q: tune_manager.profile_values((q.get("name") or [""])[0]),
+        )
+        http.add_route("POST", "/api/tune/profile/create", lambda b: tune_manager.profile_create(b.get("name")))
+        http.add_route("POST", "/api/tune/profile/load", lambda b: tune_manager.profile_load(b.get("name")))
+        http.add_route(
+            "POST", "/api/tune/profile/rename",
+            lambda b: tune_manager.profile_rename(b.get("name"), b.get("new_name")),
+        )
+        http.add_route("POST", "/api/tune/profile/delete", lambda b: tune_manager.profile_delete(b.get("name")))
 
         def _ground_sample(_q: Any = None) -> dict[str, Any]:
             got = anchor_lines[0]

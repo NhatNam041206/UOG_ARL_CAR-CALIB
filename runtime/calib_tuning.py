@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,13 @@ from vision.cross_line_counter import CrossLineConfig
 logger = logging.getLogger(__name__)
 
 IdleGetter = Callable[[], tuple[bool, str]]
+
+DEFAULT_PROFILE = "default"
+PROFILE_DIR_NAME = "tune_profiles"
+_ACTIVE_FILE = "_active.json"
+# Letters (any script), digits, "-" and "_"; no dots or slashes, so a name is
+# always one file inside the profile folder.
+_PROFILE_NAME_RE = re.compile(r"^[^\W][\w\-]{0,39}$", re.UNICODE)
 
 
 class TuneValidationError(ValueError):
@@ -211,16 +219,158 @@ class CalibTuneManager:
         self._params_by_key = {param.key: param for param in self._params}
         if len(self._params_by_key) != len(self._params):
             raise ValueError("duplicate tune param keys")
-        self._tune_file = Path(tune_file)
+        # The original tune file is the "default" profile, so existing setups
+        # keep working; named profiles live next to it in tune_profiles/.
+        self._default_file = Path(tune_file)
+        self._profile_dir = self._default_file.parent / PROFILE_DIR_NAME
         self._idle_getter = idle_getter or (lambda: (True, "idle"))
         self._defaults = self._read_current()
         self._saved_values: dict[str, int | float] | None = None
         self._saved_updated_utc: str | None = None
+        self._active = self._read_active_pointer()
+        self._tune_file = self._profile_path(self._active)
         self.load_saved()
 
     @property
     def tune_file(self) -> Path:
         return self._tune_file
+
+    @property
+    def active_profile(self) -> str:
+        return self._active
+
+    # -- profiles ---------------------------------------------------------
+
+    def profiles(self) -> list[dict[str, Any]]:
+        """Every profile with its last save time; "default" is always listed."""
+        names = {DEFAULT_PROFILE}
+        if self._profile_dir.is_dir():
+            for path in self._profile_dir.glob("*.json"):
+                if path.name != _ACTIVE_FILE and _PROFILE_NAME_RE.match(path.stem):
+                    names.add(path.stem)
+        out = []
+        for name in sorted(names, key=lambda n: (n != DEFAULT_PROFILE, n.lower())):
+            path = self._profile_path(name)
+            updated = None
+            if path.is_file():
+                try:
+                    updated = json.loads(path.read_text(encoding="utf-8")).get("updated_utc")
+                except Exception:  # noqa: BLE001
+                    updated = None
+            out.append({
+                "name": name,
+                "active": name == self._active,
+                "saved": path.is_file(),
+                "updated_utc": updated,
+            })
+        return out
+
+    def profile_values(self, name: str) -> dict[str, Any]:
+        """Read one profile without applying it."""
+        name = self._check_name(name)
+        values, updated = self._read_profile_file(self._profile_path(name))
+        return {"name": name, "updated_utc": updated, "values": values}
+
+    def profile_create(self, name: str) -> dict[str, Any]:
+        """Save the live values as a new profile and make it active."""
+        name = self._check_name(name)
+        path = self._profile_path(name)
+        if name == DEFAULT_PROFILE or path.is_file():
+            raise TuneValidationError(f"profile already exists: {name}")
+        self._set_active(name)
+        return self.save()
+
+    def profile_load(self, name: str) -> dict[str, Any]:
+        """Apply a saved profile to the live calibrator and make it active."""
+        name = self._check_name(name)
+        idle_ok, reason = self._idle_state()
+        if not idle_ok:
+            raise TuneBlockedError(reason)
+        path = self._profile_path(name)
+        if path.is_file():
+            values, updated = self._read_profile_file(path)
+        elif name == DEFAULT_PROFILE:
+            values, updated = dict(self._defaults), None  # never saved: code defaults
+        else:
+            raise TuneValidationError(f"profile not found: {name}")
+        self._apply_values(values)
+        self._set_active(name)
+        self._saved_values = dict(values) if path.is_file() else None
+        self._saved_updated_utc = updated
+        return self.status()
+
+    def profile_rename(self, name: str, new_name: str) -> dict[str, Any]:
+        name = self._check_name(name)
+        new_name = self._check_name(new_name)
+        if DEFAULT_PROFILE in (name, new_name):
+            raise TuneValidationError("the default profile cannot be renamed")
+        src, dst = self._profile_path(name), self._profile_path(new_name)
+        if not src.is_file():
+            raise TuneValidationError(f"profile not found: {name}")
+        if dst.exists():
+            raise TuneValidationError(f"profile already exists: {new_name}")
+        src.rename(dst)
+        if self._active == name:
+            self._set_active(new_name)
+        return self.status()
+
+    def profile_delete(self, name: str) -> dict[str, Any]:
+        name = self._check_name(name)
+        if name == DEFAULT_PROFILE:
+            raise TuneValidationError("the default profile cannot be deleted")
+        if name == self._active:
+            raise TuneValidationError("switch to another profile before deleting this one")
+        path = self._profile_path(name)
+        if not path.is_file():
+            raise TuneValidationError(f"profile not found: {name}")
+        path.unlink()
+        return self.status()
+
+    def _check_name(self, name: Any) -> str:
+        name = str(name or "").strip()
+        if not _PROFILE_NAME_RE.match(name):
+            raise TuneValidationError(
+                "profile name: 1-40 letters, digits, '-' or '_' (no spaces or dots)"
+            )
+        return name
+
+    def _profile_path(self, name: str) -> Path:
+        if name == DEFAULT_PROFILE:
+            return self._default_file
+        return self._profile_dir / f"{name}.json"
+
+    def _read_active_pointer(self) -> str:
+        pointer = self._profile_dir / _ACTIVE_FILE
+        try:
+            name = str(json.loads(pointer.read_text(encoding="utf-8")).get("active") or "")
+        except Exception:  # noqa: BLE001
+            return DEFAULT_PROFILE
+        if name != DEFAULT_PROFILE and (
+            not _PROFILE_NAME_RE.match(name) or not self._profile_path(name).is_file()
+        ):
+            logger.warning("Active tune profile %r missing; using default", name)
+            return DEFAULT_PROFILE
+        return name
+
+    def _set_active(self, name: str) -> None:
+        self._active = name
+        self._tune_file = self._profile_path(name)
+        self._profile_dir.mkdir(parents=True, exist_ok=True)
+        (self._profile_dir / _ACTIVE_FILE).write_text(
+            json.dumps({"active": name}), encoding="utf-8"
+        )
+
+    def _read_profile_file(self, path: Path) -> tuple[dict[str, int | float], str | None]:
+        if not path.is_file():
+            raise TuneValidationError(f"profile not saved yet: {path.stem}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != 1:
+            raise TuneValidationError("unsupported tune file version")
+        values = payload.get("values")
+        if not isinstance(values, dict):
+            raise TuneValidationError("tune file values must be an object")
+        # Params added after the file was saved keep their current value.
+        return self._validate(values, base=self._read_current()), payload.get("updated_utc")
 
     def status(self) -> dict[str, Any]:
         values = self._read_current()
@@ -235,6 +385,7 @@ class CalibTuneManager:
                 "values": dict(self._saved_values or {}),
                 "path": str(self._tune_file),
             },
+            "profile": {"active": self._active, "list": self.profiles()},
             "dirty": not _same_values(values, baseline, self._params),
             "schema": [param.as_dict() for param in self._params],
             "idle": {"ok": idle_ok, "reason": idle_reason},
@@ -276,19 +427,12 @@ class CalibTuneManager:
         if not self._tune_file.is_file():
             return False
         try:
-            payload = json.loads(self._tune_file.read_text(encoding="utf-8"))
-            if payload.get("version") != 1:
-                raise TuneValidationError("unsupported tune file version")
-            values = payload.get("values")
-            if not isinstance(values, dict):
-                raise TuneValidationError("tune file values must be an object")
-            # Params added after the file was saved keep their current value.
-            validated = self._validate(values, base=self._read_current())
+            validated, updated = self._read_profile_file(self._tune_file)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Ignoring invalid calib tune file %s: %s", self._tune_file, exc)
             return False
         self._saved_values = dict(validated)
-        self._saved_updated_utc = str(payload.get("updated_utc") or "")
+        self._saved_updated_utc = str(updated or "")
         self._apply_values(validated)
         return True
 

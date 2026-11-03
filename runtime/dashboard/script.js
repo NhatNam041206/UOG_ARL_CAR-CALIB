@@ -1170,6 +1170,7 @@ function renderSummaryOverview(s) {
     <div class="kv">
       <div class="k">Route ID</div><div class="v">${safeText(s.route_id)}</div>
       <div class="k">Mode</div><div class="v">${safeText(s.route_mode)}</div>
+      <div class="k">Tune profile</div><div class="v">${safeText((s.extra_meta || {}).tune_profile)}</div>
       <div class="k">Status</div><div class="v">${safeText(s.status)} ${accepted}</div>
       <div class="k">Rejection reason</div><div class="v">${safeText(s.rejection_reason)}</div>
       <div class="k">Started (UTC)</div><div class="v">${safeText(s.start_timestamp_utc)}</div>
@@ -1349,7 +1350,10 @@ function renderTuneStatus() {
     localDirty ? "staged changes" : (tuneState.dirty ? "unsaved active values" : "active saved/default"),
     saved.exists ? `saved ${safeText(saved.updated_utc || "")}` : "not saved",
   ];
+  const profile = (tuneState.profile || {}).active;
+  if (profile) parts.unshift(`profile ${safeText(profile)}`);
   tuneStatus.textContent = parts.filter(Boolean).join(" · ");
+  renderTuneProfiles();
   if (tuneApplyBtn) tuneApplyBtn.disabled = !idle.ok || !localDirty;
   if (tuneSaveBtn) tuneSaveBtn.disabled = localDirty;
   if (tuneResetSavedBtn) tuneResetSavedBtn.disabled = !idle.ok || !saved.exists;
@@ -1473,6 +1477,79 @@ if (tuneGroupFilter) {
     renderTuneFields();
   };
 }
+// ---------- tune profiles (named calib_tune sets) ----------
+const tuneProfileSelect = document.getElementById("tuneProfileSelect");
+const tuneProfileMenu = document.querySelector(".tune-profile-menu");
+let tuneProfileSig = "";
+
+function renderTuneProfiles() {
+  if (!tuneProfileSelect || !tuneState || !tuneState.profile) return;
+  const prof = tuneState.profile;
+  const list = prof.list || [];
+  const sig = list.map(p => `${p.name}:${p.updated_utc || ""}`).join("|") + "@" + prof.active;
+  const idle = !!(tuneState.idle || {}).ok;
+  tuneProfileSelect.disabled = !idle;
+  if (sig === tuneProfileSig || document.activeElement === tuneProfileSelect) return;
+  tuneProfileSig = sig;
+  tuneProfileSelect.innerHTML = list.map(p => {
+    const note = p.saved ? "" : " (chưa lưu)";
+    return `<option value="${safeText(p.name)}">${safeText(p.name)}${note}</option>`;
+  }).join("");
+  tuneProfileSelect.value = prof.active;
+}
+
+function closeTuneProfileMenu() { if (tuneProfileMenu) tuneProfileMenu.open = false; }
+
+if (tuneProfileSelect) {
+  tuneProfileSelect.onchange = async () => {
+    const name = tuneProfileSelect.value;
+    const active = ((tuneState || {}).profile || {}).active;
+    if (!name || name === active) return;
+    const unsaved = tuneLocalDirty() || (tuneState && tuneState.dirty);
+    if (unsaved && !confirm(`Giá trị hiện tại chưa Save vào "${active}" sẽ bị thay bằng "${name}". Tiếp tục?`)) {
+      tuneProfileSelect.value = active;
+      return;
+    }
+    tuneProfileSig = "";
+    await tunePost("/api/tune/profile/load", {name});
+  };
+}
+const tuneProfileNewBtn = document.getElementById("tuneProfileNew");
+if (tuneProfileNewBtn) tuneProfileNewBtn.onclick = async () => {
+  closeTuneProfileMenu();
+  if (tuneLocalDirty()) { tuneStatus.textContent = "Apply hoặc bỏ thay đổi đang sửa trước"; return; }
+  const name = (prompt("Tên profile mới (chữ, số, - hoặc _):") || "").trim();
+  if (!name) return;
+  tuneProfileSig = "";
+  await tunePost("/api/tune/profile/create", {name});
+};
+const tuneProfileRenameBtn = document.getElementById("tuneProfileRename");
+if (tuneProfileRenameBtn) tuneProfileRenameBtn.onclick = async () => {
+  closeTuneProfileMenu();
+  const active = ((tuneState || {}).profile || {}).active;
+  if (!active || active === "default") { tuneStatus.textContent = "không đổi tên được profile default"; return; }
+  const name = (prompt(`Đổi tên "${active}" thành:`, active) || "").trim();
+  if (!name || name === active) return;
+  tuneProfileSig = "";
+  await tunePost("/api/tune/profile/rename", {name: active, new_name: name});
+};
+const tuneProfileDeleteBtn = document.getElementById("tuneProfileDelete");
+if (tuneProfileDeleteBtn) tuneProfileDeleteBtn.onclick = async () => {
+  closeTuneProfileMenu();
+  const prof = (tuneState || {}).profile || {};
+  const others = (prof.list || []).filter(p => p.name !== "default" && p.name !== prof.active).map(p => p.name);
+  if (!others.length) { tuneStatus.textContent = "không có profile nào xoá được (không xoá default hoặc profile đang dùng)"; return; }
+  const name = (prompt(`Xoá profile nào? (${others.join(", ")})\nKhông xoá được default hoặc profile đang dùng.`) || "").trim();
+  if (!name) return;
+  if (!others.includes(name)) { tuneStatus.textContent = `không xoá được "${name}"`; return; }
+  if (!confirm(`Xoá hẳn profile "${name}"? Không hoàn tác được.`)) return;
+  tuneProfileSig = "";
+  await tunePost("/api/tune/profile/delete", {name});
+};
+document.addEventListener("click", e => {
+  if (tuneProfileMenu && tuneProfileMenu.open && !tuneProfileMenu.contains(e.target)) closeTuneProfileMenu();
+});
+
 if (tuneApplyBtn) tuneApplyBtn.onclick = () => tunePost("/api/tune", {values: tuneDraft}, "PUT");
 if (tuneSaveBtn) tuneSaveBtn.onclick = () => tunePost("/api/tune/save");
 if (tuneResetSavedBtn) tuneResetSavedBtn.onclick = () => tunePost("/api/tune/reset", {target: "saved"});
