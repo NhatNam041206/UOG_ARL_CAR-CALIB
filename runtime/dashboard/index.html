@@ -334,7 +334,7 @@
       <button id="refreshRoutes">↻</button>
       <button id="compareSelected" style="padding:9px 14px;font-size:13px" disabled>⊟ compare</button>
       <button id="exportSelected" style="padding:9px 14px;font-size:13px">⬇ export csv (xlsx)</button>
-      <button id="downloadAllSelected" style="padding:9px 14px;font-size:13px">⬇ download all (zip)</button>
+      <button id="downloadAllSelected" style="padding:9px 14px;font-size:13px">⬇ download (zip)</button>
       <button id="deleteSelected" class="danger" style="padding:9px 14px;font-size:13px" disabled>🗑 selected</button>
       <button id="deleteAllRoutes" class="danger" style="padding:9px 14px;font-size:13px">🗑 all</button>
     </div>
@@ -355,6 +355,31 @@
       <div class="modal-actions" style="margin-top:14px">
         <button id="distanceSkip">bỏ qua</button>
         <button id="distanceSave" class="primary">lưu</button>
+      </div>
+    </div>
+  </div>
+  <div id="rangeModal" class="modal-bg">
+    <div class="modal" style="max-width:440px">
+      <h2>⬇ Download runs</h2>
+      <p class="muted">Pick a time range (your local time) by when each run started. Leave a field empty for no limit.</p>
+      <div class="row">
+        <label class="muted" for="rangeFrom" style="width:42px">From</label>
+        <input id="rangeFrom" type="datetime-local" step="60" style="flex:1">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="muted" for="rangeTo" style="width:42px">To</label>
+        <input id="rangeTo" type="datetime-local" step="60" style="flex:1">
+      </div>
+      <div class="filter-chips" id="rangeQuick" style="margin-top:10px">
+        <button class="chip" data-hours="1">Last 1 h</button>
+        <button class="chip" data-hours="today">Today</button>
+        <button class="chip" data-hours="24">Last 24 h</button>
+        <button class="chip" data-hours="all">All</button>
+      </div>
+      <p class="muted" id="rangeCount" style="margin-top:10px">&nbsp;</p>
+      <div class="modal-actions" style="margin-top:14px">
+        <button id="rangeCancel">cancel</button>
+        <button id="rangeDownload" class="primary">download zip</button>
       </div>
     </div>
   </div>
@@ -382,6 +407,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261103-backward"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-backward-range"></script>
 </body>
 </html>

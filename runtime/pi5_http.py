@@ -15,7 +15,9 @@ Serves:
   /routes/<id>/distance → POST {"distance_m": N} save manually-entered distance
   /routes/export.xlsx   → GET  ?ids=a,b,c (or all routes) as one .xlsx, 1 sheet per route
   /routes/avg_speed     → GET  {"avg_speed_mps": float|null, "n_samples": int}
-  /routes/download_all  → GET  ?ids=a,b,c (or all routes) as one .zip bundling each route's .zip
+  /routes/download_all  → GET  ?ids=a,b,c (or all routes) as one .zip bundling each route's .zip;
+                           ?from=ISO&to=ISO keeps only routes started in that UTC range;
+                           &count=1 returns {"count", "route_ids"} instead of the zip
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ import numpy as np
 
 from runtime.calib_tuning import TuneBlockedError, TuneValidationError
 from runtime.manual_override import ManualOverrideError
+from runtime.route_logging import parse_utc_bound, route_ids_in_range
 
 logger = logging.getLogger(__name__)
 
@@ -338,8 +341,32 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._json({"summary": json.loads(summary_path.read_text(encoding="utf-8"))})
             return
         if path == "/routes/download_all":
-            ids_param = (self._query().get("ids") or [""])[0]
+            query = self._query()
+            ids_param = (query.get("ids") or [""])[0]
             route_ids = [r for r in ids_param.split(",") if r] or None
+            try:
+                start = parse_utc_bound((query.get("from") or [""])[0])
+                end = parse_utc_bound((query.get("to") or [""])[0])
+            except ValueError:
+                self._json({"detail": "bad from/to time (use ISO-8601)"}, 400)
+                return
+            if start is not None and end is not None and start > end:
+                self._json({"detail": "from is after to"}, 400)
+                return
+            ranged = start is not None or end is not None
+            count_only = (query.get("count") or [""])[0] == "1"
+            if ranged or count_only:
+                in_range = route_ids_in_range(start, end, require_zip=True)
+                if route_ids is not None:
+                    wanted = set(route_ids)
+                    in_range = [r for r in in_range if r in wanted]
+                route_ids = in_range
+                if count_only:
+                    self._json({"count": len(route_ids), "route_ids": route_ids})
+                    return
+                if not route_ids:
+                    self._json({"detail": "no finished routes in that time range"}, 404)
+                    return
             bundler = getattr(self.server, "routes_zip_bundler", None)
             if not callable(bundler):
                 self._json({"detail": "route bundle unavailable"}, 404)

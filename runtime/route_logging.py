@@ -406,6 +406,67 @@ def compute_average_speed_mps() -> dict:
     return {"avg_speed_mps": slope, "intercept_m": intercept, "n_samples": n}
 
 
+_ROUTE_ID_TS_RE = re.compile(r"^route-(\d{8}T\d{6}Z)")
+
+
+def route_start_utc(route_id: str) -> Optional[datetime]:
+    """Start time encoded in a route id (``route-YYYYMMDDTHHMMSSZ-xxxx``), or None."""
+    m = _ROUTE_ID_TS_RE.match(route_id)
+    if not m:
+        return None
+    return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+
+
+def parse_utc_bound(value: str) -> Optional[datetime]:
+    """Parse an ISO-8601 time from a query param; naive times are taken as UTC.
+
+    Returns None for a blank value. Raises ValueError on a malformed one.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def route_ids_in_range(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    *,
+    require_zip: bool = False,
+) -> list[str]:
+    """Route ids (newest first) whose start time falls in [start, end].
+
+    Either bound may be None (open-ended). Routes whose id carries no
+    timestamp are excluded once any bound is given. With ``require_zip``
+    only routes that already have a finalized sibling .zip are returned.
+    """
+    root = RouteSession._resolve_root_dir().resolve()
+    if not root.is_dir():
+        return []
+    ids = sorted(
+        (d.name for d in root.iterdir() if d.is_dir() and d.name.startswith("route-")),
+        reverse=True,
+    )
+    if start is None and end is None:
+        return ids
+    if require_zip:
+        ids = [r for r in ids if (root / f"{r}.zip").is_file()]
+    out: list[str] = []
+    for route_id in ids:
+        ts = route_start_utc(route_id)
+        if ts is None:
+            continue
+        if start is not None and ts < start:
+            continue
+        if end is not None and ts > end:
+            continue
+        out.append(route_id)
+    return out
+
+
 def bundle_routes_zip(route_ids: list[str] | None, dest_path: Path) -> int:
     """Bundle each route's already-finalized .zip into one zip file on disk.
 

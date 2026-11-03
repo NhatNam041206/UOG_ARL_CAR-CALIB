@@ -1123,6 +1123,8 @@ function updateSelectionUI() {
   const n = _selectedRoutes.size;
   deleteSelectedBtn.disabled = n === 0;
   deleteSelectedBtn.textContent = n ? `🗑 selected (${n})` : "🗑 selected";
+  const dlBtn = document.getElementById("downloadAllSelected");
+  if (dlBtn) dlBtn.textContent = n ? `⬇ download selected (${n})` : "⬇ download (zip)";
   if (compareSelectedBtn) {
     compareSelectedBtn.disabled = n < 2;
     compareSelectedBtn.textContent = n >= 2 ? `⊟ compare (${n})` : "⊟ compare";
@@ -1162,9 +1164,83 @@ if (exportSelectedBtn) exportSelectedBtn.onclick = () => {
 const downloadAllBtn = document.getElementById("downloadAllSelected");
 if (downloadAllBtn) downloadAllBtn.onclick = () => {
   const ids = Array.from(_selectedRoutes);
+  if (!ids.length) { showRangeModal(); return; }
   const sep = qp ? "&" : "?";
-  const idsParam = ids.length ? sep + "ids=" + encodeURIComponent(ids.join(",")) : "";
-  window.location.href = "/routes/download_all" + qp + idsParam;
+  window.location.href = "/routes/download_all" + qp + sep + "ids=" + encodeURIComponent(ids.join(","));
+};
+
+// ---- Download runs by time range (shown when no rows are selected) ----
+const rangeModal = document.getElementById("rangeModal");
+const rangeFrom = document.getElementById("rangeFrom");
+const rangeTo = document.getElementById("rangeTo");
+const rangeCount = document.getElementById("rangeCount");
+const rangeDownloadBtn = document.getElementById("rangeDownload");
+let _rangeCountSeq = 0;
+
+// datetime-local value <-> Date, in the browser's local time.
+function toLocalInput(d) {
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function rangeParams() {
+  const parts = [];
+  const f = rangeFrom.value, t = rangeTo.value;
+  if (f) parts.push("from=" + encodeURIComponent(new Date(f).toISOString()));
+  // "To" is a whole minute; include runs started anywhere inside it.
+  if (t) parts.push("to=" + encodeURIComponent(new Date(new Date(t).getTime() + 59999).toISOString()));
+  return parts;
+}
+function rangeUrl(extra) {
+  const parts = rangeParams().concat(extra || []);
+  if (!parts.length) return "/routes/download_all" + qp;
+  return "/routes/download_all" + qp + (qp ? "&" : "?") + parts.join("&");
+}
+async function updateRangeCount() {
+  const seq = ++_rangeCountSeq;
+  if (rangeFrom.value && rangeTo.value && new Date(rangeFrom.value) > new Date(rangeTo.value)) {
+    rangeCount.textContent = "“From” is after “To”.";
+    rangeDownloadBtn.disabled = true;
+    return;
+  }
+  rangeCount.textContent = "counting…";
+  try {
+    const r = await fetch(rangeUrl(["count=1"]));
+    const j = await r.json();
+    if (seq !== _rangeCountSeq) return;
+    if (!r.ok) { rangeCount.textContent = j.detail || "error"; rangeDownloadBtn.disabled = true; return; }
+    rangeCount.textContent = j.count ? `${j.count} run(s) will be downloaded.` : "No finished runs in this range.";
+    rangeDownloadBtn.disabled = !j.count;
+  } catch (e) {
+    if (seq === _rangeCountSeq) { rangeCount.textContent = "could not count runs"; rangeDownloadBtn.disabled = false; }
+  }
+}
+function setQuickRange(kind) {
+  const now = new Date();
+  if (kind === "all") { rangeFrom.value = ""; rangeTo.value = ""; }
+  else if (kind === "today") {
+    const start = new Date(now); start.setHours(0, 0, 0, 0);
+    rangeFrom.value = toLocalInput(start); rangeTo.value = "";
+  } else {
+    rangeFrom.value = toLocalInput(new Date(now.getTime() - Number(kind) * 3600 * 1000));
+    rangeTo.value = "";
+  }
+  updateRangeCount();
+}
+function showRangeModal() {
+  rangeModal.classList.add("show");
+  updateRangeCount();
+}
+function hideRangeModal() { rangeModal.classList.remove("show"); }
+rangeFrom.onchange = updateRangeCount;
+rangeTo.onchange = updateRangeCount;
+document.getElementById("rangeQuick").onclick = (e) => {
+  if (e.target.dataset.hours) setQuickRange(e.target.dataset.hours);
+};
+document.getElementById("rangeCancel").onclick = hideRangeModal;
+rangeModal.addEventListener("click", (e) => { if (e.target === rangeModal) hideRangeModal(); });
+rangeDownloadBtn.onclick = () => {
+  window.location.href = rangeUrl();
+  hideRangeModal();
 };
 document.getElementById("refreshRoutes").onclick = refreshRoutes;
 setInterval(refreshRoutes, 5000);
