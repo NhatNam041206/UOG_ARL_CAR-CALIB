@@ -107,12 +107,13 @@ def turn_test_steps(side: str, before_tiles: int = 2, after_tiles: int = 1) -> l
     """Calibration test run: straight, one 90 deg turn at the next cross line,
     settle (where the turn error is measured), straight again.
 
-    Uses the same turn action as path_to_steps (TILE_TURN_ACTION), but always
-    by degrees with the next-line anchor, since only those turns are measured."""
+    Always a steered turn (left/right: FORWARD + servo lock), by degrees with
+    the next-line anchor: turn_left/turn_right only switch the base GPIO state
+    and do not steer, so on this car they do not rotate it (run
+    route-20261103T111642Z: TURN_RIGHT for 3.4 s, heading stayed at -2 deg)."""
     if side not in ("left", "right"):
         raise ValueError("side must be left or right")
-    steer = os.getenv("TILE_TURN_ACTION", "turn").strip().lower() == "steer"
-    action = side if steer else f"turn_{side}"
+    action = side
     return [
         {"action": "forward", "tiles": int(before_tiles)},
         {"action": action, "degrees": 90.0, "anchor": "next_line"},

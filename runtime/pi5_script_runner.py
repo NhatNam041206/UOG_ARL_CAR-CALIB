@@ -108,6 +108,10 @@ _VALID_ACTIONS = {
 # Active lane change into the next tile row: +1 left, -1 right.
 LANE_CHANGE_ACTIONS = {"lane_left": 1, "lane_right": -1}
 # Steps that pin the servo themselves, so the vision PID must not publish.
+# A degree turn ignores a heading sample further than this (plus 2x nominal
+# yaw rate x time since the last accepted one) from the last accepted yaw.
+YAW_JUMP_MIN_DEG = 30.0
+
 _SERVO_PINNED_ACTIONS = ("left", "right", "backward", "settle", "lane_left", "lane_right")
 
 
@@ -402,6 +406,9 @@ class Pi5ScriptRunner:
                 self._heading_reset()
             last_valid_elapsed = 0.0
             fallback_end_s: float | None = None
+            # Last accepted yaw, to drop single-frame jumps of the grid heading
+            # (seen on floors with faint seams: -2 deg -> +44 deg in one frame).
+            accepted_seen, accepted_at = 0.0, 0.0
         elif tiles is not None:
             # Safety timeout: the step fails (and the script stops) if the
             # counter does not see the seams in time.
@@ -477,6 +484,13 @@ class Pi5ScriptRunner:
                 sample = self._heading_sample() if self._heading_sample is not None else None
                 valid = sample is not None and bool(sample.valid)
                 seen = turn_sign * float(sample.yaw_deg) if sample is not None else 0.0
+                if valid:
+                    allowed = YAW_JUMP_MIN_DEG + 2.0 * cfg.nominal_omega_dps * (elapsed - accepted_at)
+                    if abs(seen - accepted_seen) > allowed:
+                        valid = False  # implausible jump: treat as a missing sample
+                        seen = accepted_seen
+                    else:
+                        accepted_seen, accepted_at = seen, elapsed
                 if valid:
                     last_valid_elapsed = elapsed
                 omega = turn_sign * float(sample.omega_dps) if valid and sample.omega_dps is not None else 0.0
