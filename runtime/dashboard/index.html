@@ -51,6 +51,14 @@
           <option value="astar">3 · theo đường A* (map)</option>
         </select>
         <button id="stepsFromMap" style="display:none" title="tạo step từ start → goal đã lưu ở tab Map">tạo từ map</button>
+        <span id="turnPresetBox" class="turn-preset-box" style="display:none" title="lệnh mặc định cho từng loại đoạn của map (route preset), lưu trên Pi; A* dùng các preset này để tạo script">
+          <label class="muted" for="segStraight">thẳng</label>
+          <select id="segStraight" data-seg="straight"><option value="">mặc định</option></select>
+          <label class="muted" for="segLeft">rẽ trái</label>
+          <select id="segLeft" data-seg="turn_left"><option value="">mặc định</option></select>
+          <label class="muted" for="segRight">rẽ phải</label>
+          <select id="segRight" data-seg="turn_right"><option value="">mặc định</option></select>
+        </span>
         <span class="muted" id="scriptModeHint"></span>
       </div>
       <div class="row" id="stepEditorRow">
@@ -358,6 +366,6 @@
       STATUS: "/api/status"
     };
   </script>
-  <script src="/dashboard/static/script.js?v=direct-20261103-calibration-2"></script>
+  <script src="/dashboard/static/script.js?v=direct-20261103-segment-commands-2"></script>
 </body>
 </html>

@@ -452,3 +452,6 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 .wiz-steps li.current { color: #eee; border-left-color: var(--warn); background: rgba(255, 255, 255, 0.04); }
 .wiz-steps li .how { display: block; margin-left: 1.4em; font-size: 0.9em; color: #bbb; }
 .wiz-steps li.done .how, .wiz-steps li.todo .how { display: none; }
+
+.turn-preset-box { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.turn-preset-box select { width: 150px; min-width: 0; max-width: 150px; flex: 0 0 auto; padding: 6px 8px; }

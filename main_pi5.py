@@ -70,7 +70,9 @@ from runtime.sasc_experiment_log import SascExperimentLogger
 from runtime.precalibrate import PreCalibrator
 from positioning.map_session import MapSession
 from positioning.map_store import MapStore, plan_route, plan_steps
-from positioning.route_steps import turn_test_steps
+from positioning.route_steps import (
+    SEGMENT_KINDS, apply_segment_commands, check_straight_command, turn_test_steps,
+)
 
 logger = logging.getLogger("pi5")
 
@@ -565,6 +567,61 @@ def main() -> None:
             _presets.pop(name, None)
             _save_presets()
 
+        # Default commands per map segment (straight / turn_left / turn_right):
+        # names of route presets that A* plans are built from. Kept on the Pi
+        # so every dashboard and the route summary see the same mapping.
+        segment_path = presets_path.parent / "segment_commands.json"
+        try:
+            _segment_names: dict[str, str] = {
+                k: str(v) for k, v in json.loads(segment_path.read_text(encoding="utf-8")).items()
+                if k in SEGMENT_KINDS and v
+            }
+        except Exception:
+            _segment_names = {}
+
+        def _segment_commands() -> dict[str, list[dict[str, Any]]]:
+            # A deleted preset falls back to the planner's default step.
+            return {k: _presets[n] for k, n in _segment_names.items() if n in _presets}
+
+        def _segment_status(_q: Any = None) -> dict[str, Any]:
+            return {
+                "commands": {k: _segment_names.get(k, "") for k in SEGMENT_KINDS},
+                "missing": [n for n in _segment_names.values() if n not in _presets],
+            }
+
+        def _set_segment_commands(body: dict[str, Any]) -> dict[str, Any]:
+            names = dict(_segment_names)
+            for kind in SEGMENT_KINDS:
+                if kind not in body:
+                    continue
+                name = str(body.get(kind) or "").strip()
+                if not name:
+                    names.pop(kind, None)
+                    continue
+                if name not in _presets:
+                    raise ValueError(f"preset not found: {name}")
+                if kind == "straight":
+                    check_straight_command(_presets[name])
+                names[kind] = name
+            try:
+                segment_path.write_text(json.dumps(names, indent=2), encoding="utf-8")
+            except OSError as exc:
+                storage.mark_error(exc)
+                raise ValueError("segment command storage is unavailable") from exc
+            _segment_names.clear()
+            _segment_names.update(names)
+            return _segment_status()
+
+        def _planned_steps() -> dict[str, Any]:
+            """A* steps from the saved map, with the segment commands applied."""
+            plan = dict(map_session.saved_route_steps())
+            plan["planner_steps"] = plan["steps"]
+            plan["steps"], plan["segments_replaced"] = apply_segment_commands(
+                plan["steps"], _segment_commands()
+            )
+            plan["segment_commands"] = _segment_status()["commands"]
+            return plan
+
         _steps: list[dict[str, Any]] = []
         script_runner = Pi5ScriptRunner()
         script_runner.turn = turn_settings
@@ -580,13 +637,15 @@ def main() -> None:
             payload = json.loads(body)
             script_mode = str(payload.get("mode") or "time")
             map_path = None
+            segment_commands = None
             if script_mode == "astar":
                 # A* mode: the dashboard loads the steps planned from the saved
                 # map start (/api/map/saved_steps); the operator may edit them,
                 # so run what was sent and fall back to the plan if empty.
-                plan = map_session.saved_route_steps()
+                plan = _planned_steps()
                 steps = validate_route_steps(payload.get("steps") or plan["steps"])
                 map_path = plan["path"]
+                segment_commands = plan["segment_commands"]
             else:
                 steps = validate_route_steps(payload.get("steps", []))
             preset_name = str(payload.get("preset_name") or "").strip()
@@ -607,6 +666,7 @@ def main() -> None:
                     "script_steps": steps,
                     "script_mode": script_mode,
                     "map_path": map_path,
+                    "segment_commands": segment_commands,
                     "source": "dashboard_direct",
                     "preset_name": preset_name,
                 }):
@@ -775,7 +835,9 @@ def main() -> None:
             "POST", "/api/map/steps",
             lambda body: plan_steps(body.get("map"), body.get("start"), body.get("goal")),
         )
-        http.add_route("GET", "/api/map/saved_steps", lambda _q: map_session.saved_route_steps())
+        http.add_route("GET", "/api/map/saved_steps", lambda _q: _planned_steps())
+        http.add_route("GET", "/api/segment_commands", _segment_status)
+        http.add_route("POST", "/api/segment_commands", _set_segment_commands)
         http.add_route("GET", "/api/precal", precal.status)
         http.add_route("POST", "/api/precal/capture", lambda body: precal.capture(tune_manager, body))
         http.start()

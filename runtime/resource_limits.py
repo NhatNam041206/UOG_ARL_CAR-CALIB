@@ -51,7 +51,7 @@ def turn_timeout_s(
 # Dashboard configuration is persistent control data, not disposable telemetry.
 # Keep this explicit even when a deployment accidentally mounts log_root and
 # route_root to the same host directory.
-PROTECTED_STORAGE_NAMES = frozenset({"presets.json", "calib_tune.json"})
+PROTECTED_STORAGE_NAMES = frozenset({"presets.json", "calib_tune.json", "segment_commands.json", "tune_profiles"})
 LOG_ARTIFACT_SUFFIXES = frozenset({".csv", ".log"})
 
 
