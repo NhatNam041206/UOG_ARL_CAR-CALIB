@@ -113,18 +113,62 @@ function updateDurationUnit() {
     durationUnit.style.display = DEGREE_ACTIONS.has(actionInput.value) ? "none" : "";
   }
 }
+// Turning presets for A*: each turn the planner emits (plus the settle that
+// follows it) is replaced by the steps of the route preset picked for that side.
+const TURN_PRESET_SIDES = {left: ["turn_left", "left"], right: ["turn_right", "right"]};
+const turnPresetSel = {left: document.getElementById("turnPresetLeft"), right: document.getElementById("turnPresetRight")};
+let turnPresetChoice = {left: "", right: ""};
+try { turnPresetChoice = Object.assign(turnPresetChoice, JSON.parse(localStorage.getItem("turnPresets") || "{}")); } catch (e) { /* private window */ }
+
+function presetStep(s) {
+  if (s.tiles != null) return {action: s.action, tiles: Number(s.tiles)};
+  if (s.degrees != null) return Object.assign({action: s.action, degrees: Number(s.degrees)}, s.anchor ? {anchor: s.anchor} : {});
+  return {action: s.action, duration_s: Number(s.duration_s)};
+}
+
+function expandTurns(planSteps, bySide) {
+  const out = [];
+  let replaced = 0;
+  for (let i = 0; i < planSteps.length; i++) {
+    const s = planSteps[i];
+    const side = Object.keys(TURN_PRESET_SIDES).find(k => TURN_PRESET_SIDES[k].includes(s.action));
+    const preset = side ? bySide[side] : null;
+    if (!preset) { out.push(s); continue; }
+    preset.forEach(p => out.push(presetStep(p)));
+    replaced++;
+    if (planSteps[i + 1] && planSteps[i + 1].action === "settle") i++;  // the preset brings its own settle
+  }
+  return {steps: out, replaced};
+}
+
+async function fetchPresetSteps(name) {
+  if (!name) return null;
+  const r = await fetch(`/presets/${encodeURIComponent(name)}${qp}`);
+  if (!r.ok) throw new Error(`preset "${name}" not found`);
+  const j = await r.json();
+  return ((j.preset || {}).steps || []);
+}
+
 async function loadStepsFromMap() {
   const hint = document.getElementById("scriptModeHint");
   try {
     const r = await fetch("/api/map/saved_steps" + qp);
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || r.status);
+    const bySide = {
+      left: await fetchPresetSteps(turnPresetChoice.left),
+      right: await fetchPresetSteps(turnPresetChoice.right),
+    };
+    const turns = j.steps.filter(s => s.action.startsWith("turn") || s.degrees != null).length;
+    const expanded = expandTurns(j.steps, bySide);
     steps.length = 0;
-    j.steps.forEach(s => steps.push(s));
+    expanded.steps.forEach(s => steps.push(s));
     resetEditor();
     render();
     const tiles = j.steps.reduce((n, s) => n + (s.tiles || 0), 0);
-    hint.textContent = `A* từ map ${j.map_id}: ${j.path.length - 1} ô, ${j.steps.filter(s => s.action.startsWith("turn")).length} lần rẽ (${tiles} ô forward). Sửa được từng action trước khi chạy.`;
+    const used = ["left", "right"].filter(k => turnPresetChoice[k]).map(k => `${k === "left" ? "trái" : "phải"} = ${turnPresetChoice[k]}`);
+    hint.textContent = `A* từ map ${j.map_id}: ${j.path.length - 1} ô, ${turns} lần rẽ (${tiles} ô forward)` +
+      (used.length ? `, ${expanded.replaced} lần rẽ dùng preset (${used.join(", ")})` : "") + ". Sửa được từng action trước khi chạy.";
   } catch (e) {
     hint.textContent = "lỗi: " + e.message;
   }
@@ -135,6 +179,8 @@ function applyScriptMode() {
   const fromMap = document.getElementById("stepsFromMap");
   fromMap.style.display = mode === "time" ? "none" : "";
   fromMap.textContent = mode === "astar" ? "tính lại A*" : "tạo từ map";
+  const turnPresetBox = document.getElementById("turnPresetBox");
+  if (turnPresetBox) turnPresetBox.style.display = mode === "astar" ? "" : "none";
   hint.textContent = mode === "time" ? "" : (mode === "tiles"
     ? "forward/straight đi theo số ô (bộ đếm vạch ngang), rẽ vẫn theo giây"
     : "");
@@ -146,6 +192,14 @@ if (scriptModeSel) {
   actionInput.addEventListener("change", updateDurationUnit);
   if (turnUnitSel) turnUnitSel.addEventListener("change", updateDurationUnit);
   document.getElementById("stepsFromMap").onclick = loadStepsFromMap;
+  Object.entries(turnPresetSel).forEach(([side, sel]) => {
+    if (!sel) return;
+    sel.onchange = () => {
+      turnPresetChoice[side] = sel.value;
+      try { localStorage.setItem("turnPresets", JSON.stringify(turnPresetChoice)); } catch (e) { /* private window */ }
+      if (scriptModeSel.value === "astar") loadStepsFromMap();
+    };
+  });
 }
 
 function resetEditor() {
@@ -1255,6 +1309,14 @@ async function refreshPresets() {
       presetSelect.appendChild(o);
     });
     if (cur) presetSelect.value = cur;
+    Object.entries(turnPresetSel).forEach(([side, sel]) => {
+      if (!sel || document.activeElement === sel) return;
+      const names = list.map(p => p.name);
+      if (turnPresetChoice[side] && !names.includes(turnPresetChoice[side])) names.push(turnPresetChoice[side]);
+      sel.innerHTML = `<option value="">mặc định</option>` + names
+        .map(n => `<option value="${safeText(n)}">${safeText(n)}</option>`).join("");
+      sel.value = turnPresetChoice[side] || "";
+    });
   } catch (e) {}
 }
 document.getElementById("presetLoad").onclick = async () => {
@@ -1265,11 +1327,7 @@ document.getElementById("presetLoad").onclick = async () => {
   const j = await r.json();
   const p = j.preset || {};
   steps.length = 0;
-  (p.steps || []).forEach(s => steps.push(s.tiles != null
-    ? {action: s.action, tiles: Number(s.tiles)}
-    : (s.degrees != null
-      ? {action: s.action, degrees: Number(s.degrees)}
-      : {action: s.action, duration_s: Number(s.duration_s)})));
+  (p.steps || []).forEach(s => steps.push(presetStep(s)));
   presetName.value = p.name || name;
   resetEditor();
   render();
