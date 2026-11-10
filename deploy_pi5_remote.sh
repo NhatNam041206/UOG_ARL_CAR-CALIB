@@ -33,16 +33,23 @@ VERSION="$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || e
 
 AUTO_CONFIRM=false
 SKIP_BUILD=false
+ROS_IMAGE=""
 
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy_pi5_remote.sh [--yes] [--no-build] [--env <path>]
+  ./deploy_pi5_remote.sh [--yes] [--no-build] [--env <path>] [--ros-image <file.tar.gz>]
 
 Options:
   --yes         Skip confirmation prompt
   --no-build    Skip docker build on remote (just upload + restart)
   --env <path>  Custom env file (default: .env.pi5)
+  --ros-image <file>
+                Load the NAV2 ros-nav image (car-calib-ros-nav:latest, a
+                .tar.gz or .tar from the "ros-nav image" GitHub Actions run)
+                onto the Pi5 before deploying. It is streamed over ssh into
+                `docker load`, so the tar is never stored on the SD card.
+                Once the image is on the Pi, every deploy starts ros-nav too.
 
 Setup:
   1. Create .env.pi5.remote with lines:
@@ -82,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --yes)       AUTO_CONFIRM=true; shift ;;
         --no-build)  SKIP_BUILD=true; shift ;;
         --env)       ENV_FILE="$2"; shift 2 ;;
+        --ros-image) ROS_IMAGE="$2"; shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         *)           log_err "Unknown: $1"; usage; exit 1 ;;
     esac
@@ -253,6 +261,36 @@ scp_cmd "$PI5_PASSWORD" "$ENV_FILE" "${PI5_USER}@${PI5_HOST}:${remote_env}"
 log_ok "Upload complete"
 
 # --------------------------------------------------------------------------- #
+# Optional: load the NAV2 ros-nav image (built off the Pi; the Pi has no
+# internet). Streamed straight into `docker load`: nothing lands on the SD
+# card except the image layers themselves.
+# --------------------------------------------------------------------------- #
+if [[ -n "$ROS_IMAGE" ]]; then
+    log_step "[3b] Loading ros-nav image: $ROS_IMAGE"
+    if [[ ! -f "$ROS_IMAGE" ]]; then
+        log_err "ros-nav image file not found: $ROS_IMAGE"
+        exit 1
+    fi
+    img_bytes=$(wc -c < "$ROS_IMAGE" | tr -d ' ')
+    # Compressed tar -> needs roughly 3x its size free once unpacked.
+    need_bytes=$(( img_bytes * 3 ))
+    free_bytes=$(ssh_cmd "$PI5_PASSWORD" "${PI5_USER}@${PI5_HOST}" \
+        "df --output=avail -B1 \$(sudo docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /) | tail -1" 2>/dev/null | tr -d ' \r')
+    if [[ -z "$free_bytes" || "$free_bytes" -lt "$need_bytes" ]]; then
+        log_err "Not enough free space on the Pi5 for the ros-nav image (free=${free_bytes:-?} B, need ~${need_bytes} B)."
+        log_err "Safe to free: ssh to the Pi and run 'sudo docker builder prune -f'."
+        log_err "Never remove car-calib-pi5:base or car-calib-pi5:latest (the offline build needs them)."
+        exit 1
+    fi
+    case "$ROS_IMAGE" in
+        *.gz) gunzip -c "$ROS_IMAGE" ;;
+        *)    cat "$ROS_IMAGE" ;;
+    esac | ssh_cmd "$PI5_PASSWORD" "${PI5_USER}@${PI5_HOST}" "sudo docker load" \
+        || { log_err "docker load of the ros-nav image failed"; exit 1; }
+    log_ok "ros-nav image loaded"
+fi
+
+# --------------------------------------------------------------------------- #
 # Step 4: Deploy remote
 # --------------------------------------------------------------------------- #
 log_step "[4/4] Deploying on Pi5..."
@@ -285,7 +323,7 @@ if ! sudo -n true 2>/dev/null; then
 fi
 
 echo "[remote] Extracting release..."
-sudo mkdir -p "$release_dir" "$root_dir/data/logs" "$root_dir/data/routes" "$root_dir/data/models" || { echo "[remote] ERROR: mkdir failed"; exit 1; }
+sudo mkdir -p "$release_dir" "$root_dir/data/logs" "$root_dir/data/routes" "$root_dir/data/models" "$root_dir/data/nav" || { echo "[remote] ERROR: mkdir failed"; exit 1; }
 sudo chown -R "$(id -un):$(id -gn)" "$root_dir" || { echo "[remote] ERROR: chown $root_dir failed"; exit 1; }
 tar -xzf "$remote_archive" -C "$release_dir" || { echo "[remote] ERROR: extracting $remote_archive failed"; exit 1; }
 tr -d '\r' < "$REMOTE_ENV" > "$release_dir/.env" || { echo "[remote] ERROR: copying env file into release failed"; exit 1; }
@@ -312,6 +350,18 @@ else
     exit 1
 fi
 
+# NAV2 mode (ros-nav) only runs when its image has been loaded onto the Pi
+# (deploy_pi5_remote.sh --ros-image). Without it, VISION deploys as before.
+NAV_ENABLED=false
+if sudo docker image inspect car-calib-ros-nav:latest >/dev/null 2>&1; then
+    NAV_ENABLED=true
+    # --profile, not COMPOSE_PROFILES: sudo drops the environment.
+    COMPOSE_CMD="$COMPOSE_CMD --profile nav"
+    echo "[remote] ros-nav image found: NAV2 sensors (ros-nav) will start too"
+else
+    echo "[remote] ros-nav image not on this Pi: VISION only"
+fi
+
 echo "[remote] Compose: $COMPOSE_CMD -f $COMPOSE_FILE"
 
 # Stop/remove old. `compose down` only finds containers it recognizes as
@@ -321,6 +371,7 @@ echo "[remote] Compose: $COMPOSE_CMD -f $COMPOSE_FILE"
 # -remove it directly as a belt-and-suspenders on top of `compose down`.
 $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>/dev/null || true
 sudo docker rm -f car-calib-pi5 2>/dev/null || true
+sudo docker rm -f car-calib-ros-nav 2>/dev/null || true
 
 # Build & start (may take 5-10 min first time on Raspberry Pi 5)
 BUILD_LOG="/tmp/car-calib-build-${VERSION}.log"
@@ -382,6 +433,11 @@ else
         sudo docker ps -a --filter "name=car-calib-pi5"
         sudo docker logs --tail 40 car-calib-pi5 2>&1 || true
         exit 1
+    fi
+    if [[ "$NAV_ENABLED" == "true" ]] && ! sudo docker ps --filter "name=^/car-calib-ros-nav$" --filter "status=running" -q | grep -q .; then
+        # Warning only: VISION is up and does not depend on ros-nav.
+        echo "[remote] WARNING: ros-nav did not reach running state (LiDAR/Astra unplugged?):"
+        sudo docker logs --tail 30 car-calib-ros-nav 2>&1 || true
     fi
 fi
 $COMPOSE_CMD -f "$COMPOSE_FILE" ps 2>/dev/null || true
