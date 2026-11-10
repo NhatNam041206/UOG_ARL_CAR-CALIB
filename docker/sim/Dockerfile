@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-nav2-rviz-plugins \
         ros-${ROS_DISTRO}-slam-toolbox \
         ros-${ROS_DISTRO}-ros-gz \
-        python3-numpy python3-yaml git build-essential \
+        python3-numpy python3-yaml git build-essential libboost-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws/src
@@ -32,9 +32,11 @@ COPY ros/car_nav /ws/src/car_nav
 COPY ros/car_nav_sim /ws/src/car_nav_sim
 
 # car_nav lists the car's sensor drivers; the simulator does not need them.
+# rf2o's package.xml names the ROS 1 key cmake_modules (no Jazzy entry and
+# unused by its CMakeLists); Boost/Eigen are installed above.
 RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
     && rosdep install --from-paths /ws/src --ignore-src -y --rosdistro ${ROS_DISTRO} \
-         --skip-keys "sllidar_ros2 astra_camera" \
+         --skip-keys "sllidar_ros2 astra_camera cmake_modules" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
