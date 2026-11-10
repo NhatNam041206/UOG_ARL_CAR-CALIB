@@ -1,9 +1,12 @@
 # Clockwise loop: every corner is a RIGHT turn (the weak side, ~27 deg servo).
 world: test_floor
 goal_timeout_s: 90
+# Goals sit on straight stretches at least ~1.3 m after a turn: the car
+# stops up to ~0.4 m off (latency + rf2o), and a forward-only car that
+# misses a goal right after a tight turn has no room to loop back.
 start: [1.3, 1.6, 1.5708]
 goals:
-  - [1.4, 4.0, 1.5708]
+  - [1.4, 3.3, 1.5708]
   - [4.5, 4.9, 0.0]
   - [7.6, 3.0, -1.5708]
   - [4.0, 1.1, 3.1416]
