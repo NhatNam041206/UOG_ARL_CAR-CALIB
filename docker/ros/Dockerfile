@@ -44,8 +44,8 @@ RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
     && rosdep install --from-paths /ws/src --ignore-src -y --rosdistro ${ROS_DISTRO} \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/ros/patch_jazzy_headers.sh /tmp/patch_jazzy_headers.sh
-RUN bash /tmp/patch_jazzy_headers.sh /ws/src/ros2_astra_camera
+COPY docker/ros/patch_astra_for_jazzy.sh /tmp/patch_astra_for_jazzy.sh
+RUN bash /tmp/patch_astra_for_jazzy.sh /ws/src/ros2_astra_camera
 
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
     && cd /ws && colcon build --merge-install --install-base /opt/car_nav_ws \

@@ -1,5 +1,6 @@
 #!/bin/bash
-# ros2_astra_camera targets Humble and includes ROS headers as "<pkg/x.h>".
+# Make ros2_astra_camera (written for Humble) build on Jazzy.
+# 1) It includes ROS headers as "<pkg/x.h>".
 # Jazzy removed several of those .h shims in favour of ".hpp". Rewrite an
 # include to ".hpp" only when the .h is missing and the .hpp exists.
 set -euo pipefail
@@ -16,3 +17,9 @@ grep -rhoE '#include[[:space:]]*<[a-z0-9_]+/[A-Za-z0-9_/]+\.h>' "$src_dir" \
         grep -rlF "<$hdr>" "$src_dir" | xargs sed -i "s#<$hdr>#<${hdr}pp>#g"
     fi
 done
+
+# rclcpp (Jazzy) dropped the old alias OnParametersSetCallbackType; the
+# same callback type is now called OnSetParametersCallbackType.
+grep -rlF "OnParametersSetCallbackType" "$src_dir" | xargs -r sed -i \
+    's/NodeParametersInterface::OnParametersSetCallbackType/NodeParametersInterface::OnSetParametersCallbackType/g'
+echo "patch: OnParametersSetCallbackType -> OnSetParametersCallbackType"
