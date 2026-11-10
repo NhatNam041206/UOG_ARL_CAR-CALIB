@@ -22,15 +22,18 @@ ARG ASTRA_REF=f7e71d9ce806e788cb48d8580aac2c778fba4214
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git build-essential cmake pkg-config libusb-1.0-0-dev \
+        git build-essential cmake pkg-config libusb-1.0-0-dev libjpeg-dev \
         libgflags-dev libgoogle-glog-dev libeigen3-dev nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# libuvc (Astra Pro colour stream is read over libuvc by astra_camera)
+# libuvc (Astra Pro colour stream is read over libuvc by astra_camera).
+# astra_camera calls uvc_mjpeg2rgb, which libuvc only builds when it finds
+# libjpeg, so fail here if JPEG support did not get compiled in.
 RUN git clone https://github.com/libuvc/libuvc.git /tmp/libuvc \
     && cd /tmp/libuvc && git checkout ${LIBUVC_REF} \
     && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
     && cmake --build build -j"$(nproc)" && cmake --install build \
+    && grep -q "^#define LIBUVC_HAS_JPEG" /usr/local/include/libuvc/libuvc_config.h \
     && rm -rf /tmp/libuvc
 
 WORKDIR /ws/src
@@ -63,7 +66,7 @@ COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /ws/src /tmp/src
 RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
     && rosdep install --from-paths /tmp/src --ignore-src -y -t exec --rosdistro ${ROS_DISTRO} \
-    && apt-get install -y --no-install-recommends libusb-1.0-0 libgoogle-glog0v6t64 libgflags2.2 \
+    && apt-get install -y --no-install-recommends libusb-1.0-0 libjpeg8 libgoogle-glog0v6t64 libgflags2.2 \
     && rm -rf /var/lib/apt/lists/* /tmp/src /root/.ros/rosdep \
     && ldconfig
 
