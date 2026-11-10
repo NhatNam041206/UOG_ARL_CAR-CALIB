@@ -45,8 +45,14 @@ def test_latency_margins():
     dead = v * LATENCY_S
     fp = rp("controller_server")["FollowPath"]
     assert fp["lookahead_dist"] >= 2 * dead
-    stop = ast.literal_eval(rp("collision_monitor")["PolygonStop"]["points"])
-    assert max(x for x, _ in stop) >= CAR["footprint"]["x_front"] + dead + 0.2
+    cm = rp("collision_monitor")
+    stop = ast.literal_eval(cm["PolygonStop"]["points"])
+    assert max(x for x, _ in stop) >= CAR["footprint"]["x_front"] + 0.1
+    # approach scales v to d / T; the bridge stops below the threshold, so
+    # the car stops for a blocked path within threshold * T metres.
+    thr = rp("cmd_vel_to_control")["forward_threshold_mps"]
+    assert thr < v
+    assert thr * cm["FootprintApproach"]["time_before_collision"] >= dead + 0.15
     assert rp("controller_server")["general_goal_checker"]["xy_goal_tolerance"] >= dead
 
 

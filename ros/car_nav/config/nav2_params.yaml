@@ -11,8 +11,8 @@
 #   baseline speed (0.5 m/s, unmeasured).
 # * Command latency ~0.65 s: the car drives ~0.33 m before a new command
 #   acts. Lookahead 0.9 m keeps tracking stable with that delay (pure-python
-#   check in tests: <0.1 m cross-track on 0.7 m radius turns); the stop
-#   polygon reaches 0.75 m ahead of the front axle.
+#   check in tests: <0.12 m cross-track on 0.75 m radius turns); the
+#   collision monitor stops when the path ahead is blocked within ~0.54 m.
 # * Weak side = right (~27 deg servo): min turning radius ~0.55 m with the
 #   placeholder curvature table; the planner uses 0.75 m for margin.
 # * All scan consumers read /scan_nav (frame laser_upright), never the raw
@@ -289,15 +289,21 @@ collision_monitor:
     base_shift_correction: true
     stop_pub_timeout: 2.0
     enable_stamped_cmd_vel: false
-    # The car has one speed, so "slowdown" zones cannot work: only stop.
+    # The car has ONE speed, so slowdown cannot happen. Two zones:
+    # * FootprintApproach follows the CURRENT curvature, so it does not
+    #   fire on walls a turn will miss (a straight box ahead did: CI sim
+    #   2026-11-10, the car froze before a turn next to a pillar). It
+    #   scales v to d / time_before_collision; cmd_vel_to_control sends
+    #   STOP below forward_threshold_mps (0.3), so the car stops when the
+    #   predicted path hits something within 0.3 x 1.8 = 0.54 m
+    #   (= 0.33 m latency travel + ~0.06 m braking + 0.15 m margin).
+    # * PolygonStop is the bumper zone for things that appear suddenly.
     polygons: ["PolygonStop", "FootprintApproach"]
     PolygonStop:
-      # 0.75 m ahead of the front axle = 0.16 body + 0.33 latency travel
-      # (0.5 m/s x 0.65 s) + ~0.1 braking + 0.15 margin. Sides +6.5 cm.
       type: polygon
-      points: "[[0.75, 0.2], [0.75, -0.2], [-0.40, -0.2], [-0.40, 0.2]]"
+      points: "[[0.30, 0.17], [0.30, -0.17], [0.0, -0.17], [0.0, 0.17]]"
       action_type: stop
-      min_points: 4
+      min_points: 3
       visualize: true
       polygon_pub_topic: polygon_stop
       enabled: true
@@ -305,9 +311,9 @@ collision_monitor:
       type: polygon
       action_type: approach
       footprint_topic: /local_costmap/published_footprint
-      time_before_collision: 2.0
-      simulation_time_step: 0.1
-      min_points: 6
+      time_before_collision: 1.8
+      simulation_time_step: 0.05
+      min_points: 3
       visualize: false
       enabled: true
     observation_sources: ["scan"]
@@ -334,4 +340,6 @@ cmd_vel_to_control:
     use_sim_time: false
     rate_hz: 10.0
     watchdog_s: 0.5
-    forward_threshold_mps: 0.05
+    # RPP always asks for 0.5 m/s (no regulation); anything the collision
+    # monitor scales below 0.3 becomes STOP (see collision_monitor above).
+    forward_threshold_mps: 0.3

@@ -90,8 +90,14 @@ without rebuilding.
 * Speed is fixed (no speed command, no feedback): `sim.yaml truth.speed_mps`
   vs. `car.yaml speed.baseline_speed_mps` (both 0.5, unmeasured).
 * Latency 0.65 s: at 0.5 m/s the car drives 0.33 m before a command acts.
-  This is why lookahead is 0.9 m, the stop zone reaches 0.75 m ahead and the
-  goal tolerance is 0.35 m.
+  This is why lookahead is 0.9 m and the goal tolerance is 0.35 m
+  (position only: the car cannot fix its heading without driving on).
+* One speed means the collision monitor cannot slow down. Its "approach"
+  zone follows the current curvature and the bridge turns any speed it
+  scales below 0.3 m/s into STOP, so the car stops when the path ahead is
+  blocked within ~0.54 m. A short bumper zone (0.30 m) catches sudden
+  obstacles. A straight 0.75 m stop box was tried first and froze the car
+  before turns next to pillars.
 
 ## Upside-down LiDAR: why `/scan_nav`
 
