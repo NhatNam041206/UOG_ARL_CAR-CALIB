@@ -25,10 +25,12 @@ done
 echo "patch: OnParametersSetCallbackType -> OnSetParametersCallbackType"
 
 # GCC 13 (Ubuntu 24.04) no longer pulls <cstdint> in transitively. Add it to
-# every C++ file that uses fixed-width int types without including it.
-{ grep -rlE '\bu?int(8|16|32|64)_t\b' "$src_dir" --include='*.h' --include='*.hpp' --include='*.cpp' || true; } \
+# every C++ file of the driver itself that uses fixed-width int types without
+# including it. Skip the vendored openni2 headers: they are fine as shipped and
+# start with a UTF-8 BOM, so a line put in front of it breaks them.
+{ grep -rlE '\bu?int(8|16|32|64)_t\b' "$src_dir" --exclude-dir=openni2 --include='*.h' --include='*.hpp' --include='*.cpp' || true; } \
     | { xargs -r grep -LE '#include[[:space:]]*<(cstdint|stdint\.h)>' || true; } \
     | while read -r f; do
-        sed -i '1i #include <cstdint>' "$f"
+        sed -i -e '1s/^\xEF\xBB\xBF//' -e '1i #include <cstdint>' "$f"
         echo "patch: +<cstdint> $f"
     done
