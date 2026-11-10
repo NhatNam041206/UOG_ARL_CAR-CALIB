@@ -107,7 +107,11 @@ controller_server:
       # (latency + braking): a tight tolerance would make it drive past
       # the goal and circle back. Final error is reported by the sim.
       xy_goal_tolerance: 0.35
-      yaw_goal_tolerance: 0.8
+      # Position-only goals. A forward-only car can only fix its heading by
+      # driving on, so a yaw tolerance made it circle the goal (sim, CI run
+      # 2026-11-10: 43 m driven for one goal). The planned path already
+      # ends on the goal heading; the report shows the final heading error.
+      yaw_goal_tolerance: 3.14
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.5
@@ -125,15 +129,19 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.25
-      use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 1.0
+      # Keep the curvature carrot 0.9 m ahead even at the end of the path
+      # (extended along the goal heading). Without it the carrot collapses
+      # onto the goal, curvature spikes in the last metre, and the 0.65 s
+      # of coasting after STOP swings the car up to ~35 deg off heading.
+      use_fixed_curvature_lookahead: true
+      curvature_lookahead_dist: 0.9
       use_rotate_to_heading: false
       rotate_to_heading_angular_vel: 1.0
       rotate_to_heading_min_angle: 3.14
       allow_reversing: false
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
-      interpolate_curvature_after_goal: false
+      interpolate_curvature_after_goal: true
       use_interpolation: true
 
 local_costmap:
