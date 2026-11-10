@@ -1,0 +1,22 @@
+# What the SIMULATED car really does (the "truth"). Nav2 does not read
+# this file: it only knows car.yaml. Make this car worse than car.yaml
+# says to see how much margin NAV2 has (e.g. understeer_factor 0.8,
+# latency_s 0.9, speed_mps 0.6).
+truth:
+  speed_mps: 0.5           # FORWARD speed (car.yaml baseline is 0.5, unmeasured)
+  latency_s: 0.65          # command sent -> wheels react (lidar-nav thread estimate)
+  accel_mps2: 1.0
+  decel_mps2: 2.0
+  servo_rate_dps: 300.0
+  understeer_factor: 1.0   # nam saw understeer on VISION turns; try 0.8
+  failsafe_timeout_s: null # null = the car keeps the last command if commands stop
+lidar:                     # RPLIDAR A1-like
+  rate_hz: 7.0
+  samples: 720
+  range_min_m: 0.15
+  range_max_m: 12.0
+  noise_std_m: 0.01
+  dropout: 0.02            # share of beams returning nothing
+lite:
+  physics_hz: 100.0
+  realtime_factor: 1.0     # >1 runs the lite backend faster than real time

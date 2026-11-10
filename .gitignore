@@ -220,3 +220,6 @@ temp/
 
 # Codex local worktrees
 .claude/worktrees/
+
+# NAV2 simulator reports
+run_logs/sim/

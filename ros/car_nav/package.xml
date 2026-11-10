@@ -9,6 +9,11 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <!-- nav.launch.py also needs Nav2, slam_toolbox and rf2o. They are NOT
+       listed here on purpose: the ros-nav (car) image stays sensors-only
+       until WO-03. docker/sim/Dockerfile installs them. -->
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

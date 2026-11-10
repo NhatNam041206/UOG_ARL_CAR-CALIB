@@ -13,6 +13,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
+        ("share/" + package_name + "/behavior_trees", glob("behavior_trees/*.xml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -23,6 +24,8 @@ setup(
             "scan_self_mask = car_nav.scan_self_mask:main",
             "front_range_logger = car_nav.front_range_logger:main",
             "scan_probe = car_nav.scan_probe:main",
+            "scan_upright = car_nav.scan_upright:main",
+            "cmd_vel_to_control = car_nav.cmd_vel_to_control:main",
         ],
     },
 )

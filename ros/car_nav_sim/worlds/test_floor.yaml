@@ -1,0 +1,22 @@
+# Test floor: a 9 x 6 m room with a 4 x 1.6 m shelf island in the middle,
+# so the car can drive loops around it (2.2-2.5 m wide aisles) with only
+# forward driving. A few small objects give the LiDAR features to match.
+# Units: metres, radians. The world frame is the map frame.
+name: test_floor
+bounds: [-0.5, -0.5, 9.5, 6.5]
+boxes:
+  # outer walls (0.1 m thick)
+  - {center: [4.5, -0.05], size: [9.2, 0.1]}
+  - {center: [4.5, 6.05], size: [9.2, 0.1]}
+  - {center: [-0.05, 3.0], size: [0.1, 6.0]}
+  - {center: [9.05, 3.0], size: [0.1, 6.0]}
+  # shelf island
+  - {center: [4.5, 3.0], size: [4.0, 1.6]}
+  # clutter
+  - {center: [8.1, 0.6], size: [0.4, 0.4]}
+  - {center: [3.0, 5.6], size: [0.6, 0.6]}
+  - {center: [6.0, 0.25], size: [1.2, 0.5], yaw: 0.0}
+cylinders:
+  - {center: [1.0, 5.0], radius: 0.15}
+  - {center: [8.3, 5.2], radius: 0.10}
+start: [1.0, 1.1, 0.0]

@@ -1,0 +1,193 @@
+"""Drive a mission (list of goals) through Nav2 and score it against the truth.
+
+    ros2 run car_nav_sim mission --ros-args -p mission:=loop_left -p report_dir:=/data/sim
+
+For every goal it records: Nav2 result, time, distance driven, smallest
+clearance between the car's footprint and any obstacle (0 = collision),
+final position / heading error, and the worst localisation error (AMCL
+pose vs. true pose). It also counts how often the steering command sat at
+a servo limit. The report is written as JSON and summarised in the log;
+the process exits 0 only if every goal succeeded without a collision.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import sys
+import time
+
+import rclpy
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav_msgs.msg import Odometry
+from std_msgs.msg import String
+import yaml
+
+from car_nav import config_loader
+from car_nav.actuation import parse_payload
+
+from . import sim_config
+from .world import World, footprint_polygon
+
+
+def _yaw(q) -> float:
+    return 2.0 * math.atan2(q.z, q.w)
+
+
+def _wrap(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def _pose(nav: BasicNavigator, x: float, y: float, yaw: float) -> PoseStamped:
+    p = PoseStamped()
+    p.header.frame_id = "map"
+    p.header.stamp = nav.get_clock().now().to_msg()
+    p.pose.position.x, p.pose.position.y = x, y
+    p.pose.orientation.z, p.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+    return p
+
+
+class Tracker:
+    def __init__(self, world: World, footprint, steer_cfg: dict) -> None:
+        self.world = world
+        self.fp = footprint
+        self.servo_min = float(steer_cfg.get("servo_min", 35))
+        self.servo_max = float(steer_cfg.get("servo_max", 140))
+        self.truth = None
+        self.amcl = None
+        self.reset()
+
+    def reset(self) -> None:
+        self.dist = 0.0
+        self.min_clear = math.inf
+        self.max_loc_err = 0.0
+        self.n_cmd = 0
+        self.n_sat = 0
+        self.n_forward = 0
+        self._last = None
+
+    def on_truth(self, msg: Odometry) -> None:
+        p = msg.pose.pose
+        x, y, th = p.position.x, p.position.y, _yaw(p.orientation)
+        if self._last is not None:
+            self.dist += math.hypot(x - self._last[0], y - self._last[1])
+        self._last = (x, y)
+        self.truth = (x, y, th)
+        poly = footprint_polygon(x, y, th, self.fp.x_front, self.fp.x_rear, self.fp.half_width)
+        self.min_clear = min(self.min_clear, self.world.clearance(poly))
+
+    def on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        p = msg.pose.pose
+        self.amcl = (p.position.x, p.position.y, _yaw(p.orientation))
+        if self.truth is not None:
+            self.max_loc_err = max(
+                self.max_loc_err, math.hypot(self.amcl[0] - self.truth[0], self.amcl[1] - self.truth[1])
+            )
+
+    def on_control(self, msg: String) -> None:
+        parsed = parse_payload(msg.data)
+        if parsed is None:
+            return
+        angle, code = parsed
+        self.n_cmd += 1
+        if code == 1:
+            self.n_forward += 1
+            if angle <= self.servo_min or angle >= self.servo_max:
+                self.n_sat += 1
+
+
+def main() -> None:
+    rclpy.init()
+    nav = BasicNavigator(node_name="sim_mission")
+    nav.declare_parameter("mission", "loop_left")
+    nav.declare_parameter("report_dir", "/data/sim")
+    nav.declare_parameter("localizer", "amcl")  # "amcl" or "slam"
+    nav.declare_parameter("start", [0.0])
+    mission_path = sim_config.resolve("missions", nav.get_parameter("mission").value)
+    with open(mission_path, "r", encoding="utf-8") as fh:
+        mission = yaml.safe_load(fh) or {}
+    world = World.load(sim_config.resolve("worlds", mission.get("world", "test_floor")))
+    start_param = list(nav.get_parameter("start").value)
+    start = start_param if len(start_param) == 3 else (mission.get("start") or world.start)
+    car = config_loader.load()
+    tracker = Tracker(world, config_loader.footprint(car), car.get("steering") or {})
+    nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
+    nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
+    nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)
+
+    localizer = nav.get_parameter("localizer").value
+    if localizer == "amcl":
+        nav.setInitialPose(_pose(nav, *start))
+        nav.waitUntilNav2Active(localizer="amcl")
+    else:
+        # slam_toolbox owns map->odom; nothing to initialise. "robot_localization"
+        # makes BasicNavigator skip the localizer lifecycle check.
+        nav.waitUntilNav2Active(localizer="robot_localization")
+
+    # Wait for the truth stream and check the sim started where we think.
+    t0 = time.monotonic()
+    while tracker.truth is None and time.monotonic() - t0 < 30:
+        rclpy.spin_once(nav, timeout_sec=0.1)
+    if tracker.truth is None:
+        nav.get_logger().error("no /sim/ground_truth: is the simulator running?")
+        sys.exit(3)
+    if math.hypot(tracker.truth[0] - start[0], tracker.truth[1] - start[1]) > 0.15:
+        nav.get_logger().warn(f"true start {tracker.truth} differs from mission start {start}")
+
+    timeout = float(mission.get("goal_timeout_s", 90))
+    results = []
+    for i, g in enumerate(mission.get("goals") or []):
+        gx, gy, gyaw = (float(v) for v in g)
+        tracker.reset()
+        sim_t0 = nav.get_clock().now().nanoseconds * 1e-9
+        nav.goToPose(_pose(nav, gx, gy, gyaw))
+        timed_out = False
+        while not nav.isTaskComplete():
+            if nav.get_clock().now().nanoseconds * 1e-9 - sim_t0 > timeout:
+                nav.cancelTask()
+                timed_out = True
+        result = nav.getResult()
+        sim_dt = nav.get_clock().now().nanoseconds * 1e-9 - sim_t0
+        # Let the car coast to a stop (latency + braking) before scoring the end pose.
+        settle_t0 = nav.get_clock().now().nanoseconds * 1e-9
+        while nav.get_clock().now().nanoseconds * 1e-9 - settle_t0 < 2.0:
+            rclpy.spin_once(nav, timeout_sec=0.05)
+        tx, ty, tth = tracker.truth
+        entry = {
+            "goal": [gx, gy, gyaw],
+            "result": "TIMEOUT" if timed_out else {
+                TaskResult.SUCCEEDED: "SUCCEEDED", TaskResult.CANCELED: "CANCELED", TaskResult.FAILED: "FAILED",
+            }.get(result, str(result)),
+            "time_s": round(sim_dt, 2),
+            "distance_m": round(tracker.dist, 2),
+            "min_clearance_m": round(tracker.min_clear, 3),
+            "collision": tracker.min_clear <= 0.0,
+            "final_xy_error_m": round(math.hypot(tx - gx, ty - gy), 3),
+            "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
+            "max_localization_error_m": round(tracker.max_loc_err, 3) if localizer == "amcl" else None,
+            "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
+        }
+        results.append(entry)
+        nav.get_logger().info(f"goal {i + 1}: {json.dumps(entry)}")
+
+    ok = bool(results) and all(r["result"] == "SUCCEEDED" and not r["collision"] for r in results)
+    report = {
+        "mission": os.path.basename(mission_path),
+        "world": world.name,
+        "localizer": localizer,
+        "car_yaml": car.get("_path"),
+        "sim_yaml": sim_config.load_sim().get("_path"),
+        "truth": sim_config.load_sim().get("truth"),
+        "passed": ok,
+        "goals": results,
+    }
+    out_dir = nav.get_parameter("report_dir").value
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, f"report-{os.path.splitext(report['mission'])[0]}-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2)
+    nav.get_logger().info(f"{'PASSED' if ok else 'FAILED'}: report {out}")
+    nav.destroy_node()
+    rclpy.try_shutdown()
+    sys.exit(0 if ok else 1)

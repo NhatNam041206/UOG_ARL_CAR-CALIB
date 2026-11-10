@@ -1,0 +1,95 @@
+# NAV2 simulator: builds the laptop sim image (amd64) and drives the
+# missions headless with the lightweight 2D backend. Reports are uploaded
+# as an artifact. Nothing here can reach the car.
+name: nav2 simulation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ros/**"
+      - "docker/sim/**"
+      - "docker-compose.sim.yml"
+      - "scripts/sim/**"
+      - "tests/test_car_nav_*.py"
+      - ".github/workflows/nav-sim.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest numpy pyyaml
+      - run: python -m pytest -q tests/test_car_nav_geometry.py tests/test_car_nav_actuation.py tests/test_car_nav_scan_upright.py tests/test_car_nav_sim.py tests/test_car_nav_nav2_params.py
+
+  sim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sim image
+        run: docker build -f docker/sim/Dockerfile -t car-calib-nav-sim:latest .
+
+      - name: Smoke test (packages, launch args)
+        run: |
+          docker run --rm car-calib-nav-sim:latest bash -c '
+            set -e
+            for p in car_nav car_nav_sim rf2o_laser_odometry nav2_collision_monitor nav2_smac_planner \
+                     nav2_regulated_pure_pursuit_controller slam_toolbox ros_gz_sim; do
+              ros2 pkg list | grep -qx "$p" || { echo "missing $p"; exit 1; }
+            done
+            ros2 launch car_nav_sim sim.launch.py --show-args > /dev/null
+            ros2 launch car_nav nav.launch.py --show-args > /dev/null
+            ros2 run car_nav_sim make_world test_floor /tmp/w
+          '
+
+      - name: Missions (2D backend)
+        run: |
+          mkdir -p run_logs/sim
+          rc=0
+          for run in "loop_left truth" "loop_right truth" "loop_left rf2o" "loop_right rf2o"; do
+            set -- $run
+            echo "::group::mission $1 odom=$2"
+            timeout 900 docker run --rm -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+              -v "$PWD/run_logs/sim:/data/sim" car-calib-nav-sim:latest \
+              ros2 launch car_nav_sim sim.launch.py mission:=$1 odom_source:=$2 report_dir:=/data/sim/$1-$2 \
+              > "run_logs/sim/$1-$2.log" 2>&1 || true
+            tail -n 60 "run_logs/sim/$1-$2.log"
+            echo "::endgroup::"
+            rep=$(ls run_logs/sim/$1-$2/report-*.json 2>/dev/null | head -1 || true)
+            if [ -z "$rep" ]; then echo "::error::$1 odom=$2: no report"; rc=1; continue; fi
+            python3 - "$rep" <<'PY' || rc=1
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          for i, g in enumerate(r["goals"], 1):
+              print(f"goal {i}: {g}")
+          print(("PASS " if r["passed"] else "FAIL ") + sys.argv[1])
+          sys.exit(0 if r["passed"] else 1)
+          PY
+          done
+          exit $rc
+
+      - name: Gazebo backend smoke (headless rendering, informational)
+        continue-on-error: true
+        run: |
+          docker run --rm -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST car-calib-nav-sim:latest bash -c '
+            (ros2 launch car_nav_sim sim.launch.py backend:=gazebo > /tmp/gz.log 2>&1 &)
+            sleep 60
+            timeout 15 ros2 topic hz /scan_nav | head -5
+            timeout 10 ros2 topic echo --once /sim/ground_truth | head -12
+            tail -40 /tmp/gz.log
+          '
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nav-sim-reports-${{ github.sha }}
+          path: run_logs/sim
+          retention-days: 14

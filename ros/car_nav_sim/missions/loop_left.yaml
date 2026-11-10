@@ -1,0 +1,8 @@
+# Counter-clockwise loop around the shelf island: every corner is a LEFT turn.
+world: test_floor
+goal_timeout_s: 90
+goals:
+  - [7.6, 2.4, 1.5708]
+  - [5.5, 4.9, 3.1416]
+  - [1.3, 3.6, -1.5708]
+  - [3.0, 1.1, 0.0]
