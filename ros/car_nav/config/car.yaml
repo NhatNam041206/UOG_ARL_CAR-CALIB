@@ -1,0 +1,52 @@
+# Car geometry for NAV2 mode (ros-nav container).
+#
+# base_link = the floor point directly under the centre of the FRONT
+# (fixed, non-steered) axle. The car steers with its REAR wheels.
+# Axes (REP-103): x forward, y left, z up. Metres, radians unless *_deg.
+#
+# A value of null means "not measured yet". The launch file warns loudly
+# and uses 0 for it. Measure it with a tape and replace null; never guess.
+
+footprint:
+  # Conservative until the front-axle position inside the 0.37 m body is
+  # measured (car_nav DECISIONS D-144): covers every possible axle position.
+  x_front: 0.16
+  x_rear: -0.37
+  half_width: 0.135
+
+laser:
+  # RPLIDAR A1, mounted upside down at 0.42 m. The upside-down mount is
+  # handled ONLY by roll = pi here; the driver's `inverted` stays false.
+  x: null          # front axle centre -> LiDAR centre, along x (m)
+  y: 0.0
+  z: 0.42
+  roll: 3.141592653589793
+  pitch: 0.0
+  yaw: null        # direction of the A1's 0 deg mark once mounted (rad)
+  max_range_m: 12.0
+
+self_mask:
+  # Scan points inside the footprint (+ margin) are the car itself.
+  margin_m: 0.03
+  # Extra sectors to drop, in base_link bearing degrees (0 = ahead,
+  # +90 = left), e.g. a mast leg outside the footprint: [[150, 170]].
+  sectors_deg: []
+
+camera:
+  # Orbbec Astra Pro at 1.035 m, tilted about 15 deg down (positive pitch
+  # = nose down in REP-103).
+  x: null
+  y: 0.0
+  z: 1.035
+  roll: 0.0
+  pitch_deg: 15.0
+  yaw: 0.0
+
+speed:
+  # There is no speed feedback and no speed command (drive_code is only
+  # STOP/FORWARD). Until a wall-approach run measures it, use a HIGH
+  # conservative value: every stop-zone size grows with it.
+  baseline_speed_mps: 0.5
+  measured: false
+  stopping_distance_m: null
+  command_latency_s: null

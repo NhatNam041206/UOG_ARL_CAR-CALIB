@@ -1,0 +1,54 @@
+# Builds the NAV2 ros-nav image (arm64) off the Pi: the Pi5 has no internet
+# and the school laptop is Windows. Download the artifact, then from the
+# laptop:  ./deploy_pi5_remote.sh --ros-image ros-nav-<sha>.tar.gz
+name: ros-nav image (arm64)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "docker/ros/**"
+      - "ros/**"
+      - ".github/workflows/ros-nav-image.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f docker/ros/Dockerfile -t car-calib-ros-nav:latest .
+
+      - name: Smoke test (packages present, launch file parses, no MQTT client)
+        run: |
+          docker run --rm car-calib-ros-nav:latest bash -c '
+            set -e
+            ros2 pkg list | grep -x sllidar_ros2
+            ros2 pkg list | grep -x astra_camera
+            ros2 pkg list | grep -x car_nav
+            ros2 launch car_nav sensors.launch.py --show-args > /dev/null
+            if python3 -c "import paho" 2>/dev/null; then echo "paho must not be installed"; exit 1; fi
+          '
+          docker run --rm car-calib-ros-nav:latest bash -c '
+            timeout 8 ros2 launch car_nav sensors.launch.py enable_lidar:=false enable_astra:=false || [ $? -eq 124 ]
+          '
+
+      - name: Export image
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          echo "SHORT=$SHORT" >> "$GITHUB_ENV"
+          docker save car-calib-ros-nav:latest | gzip -1 > "ros-nav-${SHORT}.tar.gz"
+          ls -lh "ros-nav-${SHORT}.tar.gz"
+          docker image ls car-calib-ros-nav:latest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ros-nav-${{ env.SHORT }}
+          path: ros-nav-${{ env.SHORT }}.tar.gz
+          compression-level: 0
+          retention-days: 14
