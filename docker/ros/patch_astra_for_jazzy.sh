@@ -10,7 +10,7 @@ find_header() {  # $1 = "pkg/name.ext" -> 0 if installed
     local pkg="${1%%/*}"
     [[ -f "$inc_root/$pkg/$1" || -f "$inc_root/$1" ]]
 }
-grep -rhoE '#include[[:space:]]*<[a-z0-9_]+/[A-Za-z0-9_/]+\.h>' "$src_dir" \
+{ grep -rhoE '#include[[:space:]]*<[a-z0-9_]+/[A-Za-z0-9_/]+\.h>' "$src_dir" || true; } \
     | sed -E 's/.*<(.*)>/\1/' | sort -u | while read -r hdr; do
     if ! find_header "$hdr" && find_header "${hdr}pp"; then
         echo "patch: <$hdr> -> <${hdr}pp>"
@@ -20,6 +20,15 @@ done
 
 # rclcpp (Jazzy) dropped the old alias OnParametersSetCallbackType; the
 # same callback type is now called OnSetParametersCallbackType.
-grep -rlF "OnParametersSetCallbackType" "$src_dir" | xargs -r sed -i \
+{ grep -rlF "OnParametersSetCallbackType" "$src_dir" || true; } | xargs -r sed -i \
     's/NodeParametersInterface::OnParametersSetCallbackType/NodeParametersInterface::OnSetParametersCallbackType/g'
 echo "patch: OnParametersSetCallbackType -> OnSetParametersCallbackType"
+
+# GCC 13 (Ubuntu 24.04) no longer pulls <cstdint> in transitively. Add it to
+# every C++ file that uses fixed-width int types without including it.
+{ grep -rlE '\bu?int(8|16|32|64)_t\b' "$src_dir" --include='*.h' --include='*.hpp' --include='*.cpp' || true; } \
+    | { xargs -r grep -LE '#include[[:space:]]*<(cstdint|stdint\.h)>' || true; } \
+    | while read -r f; do
+        sed -i '1i #include <cstdint>' "$f"
+        echo "patch: +<cstdint> $f"
+    done
