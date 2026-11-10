@@ -21,6 +21,11 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import Odometry
+
+try:  # Jazzy nav2_msgs
+    from nav2_msgs.msg import CollisionMonitorState
+except ImportError:  # pragma: no cover
+    CollisionMonitorState = None
 from std_msgs.msg import String
 import yaml
 
@@ -56,6 +61,7 @@ class Tracker:
         self.servo_max = float(steer_cfg.get("servo_max", 140))
         self.truth = None
         self.amcl = None
+        self.start = None  # true pose when the odom frame was born (first truth msg)
         self.reset()
 
     def reset(self) -> None:
@@ -65,6 +71,9 @@ class Tracker:
         self.n_cmd = 0
         self.n_sat = 0
         self.n_forward = 0
+        self.max_odom_drift = 0.0
+        self.cm = {}  # collision monitor action -> number of state messages
+        self.n_cm = 0
         self._last = None
 
     def on_truth(self, msg: Odometry) -> None:
@@ -74,6 +83,8 @@ class Tracker:
             self.dist += math.hypot(x - self._last[0], y - self._last[1])
         self._last = (x, y)
         self.truth = (x, y, th)
+        if self.start is None:
+            self.start = self.truth
         poly = footprint_polygon(x, y, th, self.fp.x_front, self.fp.x_rear, self.fp.half_width)
         self.min_clear = min(self.min_clear, self.world.clearance(poly))
 
@@ -84,6 +95,23 @@ class Tracker:
             self.max_loc_err = max(
                 self.max_loc_err, math.hypot(self.amcl[0] - self.truth[0], self.amcl[1] - self.truth[1])
             )
+
+    def on_odom(self, msg: Odometry) -> None:
+        """Odometry drift: /odom (rf2o or truth) mapped through the start pose vs. truth."""
+        if self.start is None or self.truth is None:
+            return
+        p = msg.pose.pose
+        x0, y0, th0 = self.start
+        c, s = math.cos(th0), math.sin(th0)
+        wx = x0 + c * p.position.x - s * p.position.y
+        wy = y0 + s * p.position.x + c * p.position.y
+        self.max_odom_drift = max(self.max_odom_drift, math.hypot(wx - self.truth[0], wy - self.truth[1]))
+
+    def on_cm(self, msg) -> None:
+        names = {0: "none", 1: "stop", 2: "slowdown", 3: "approach", 4: "limit"}
+        key = f"{names.get(msg.action_type, msg.action_type)}:{msg.polygon_name}"
+        self.cm[key] = self.cm.get(key, 0) + 1
+        self.n_cm += 1
 
     def on_control(self, msg: String) -> None:
         parsed = parse_payload(msg.data)
@@ -115,6 +143,9 @@ def main() -> None:
     nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
     nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)
+    nav.create_subscription(Odometry, "/odom", tracker.on_odom, 20)
+    if CollisionMonitorState is not None:
+        nav.create_subscription(CollisionMonitorState, "/collision_monitor_state", tracker.on_cm, 20)
 
     localizer = nav.get_parameter("localizer").value
     if localizer == "amcl":
@@ -167,6 +198,10 @@ def main() -> None:
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
             "max_localization_error_m": round(tracker.max_loc_err, 3) if localizer == "amcl" else None,
             "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
+            "forward_share": round(tracker.n_forward / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
+            "max_odom_drift_m": round(tracker.max_odom_drift, 3),
+            "collision_monitor": tracker.cm,
+            "true_end_pose": [round(tx, 3), round(ty, 3), round(math.degrees(tth), 1)],
         }
         results.append(entry)
         nav.get_logger().info(f"goal {i + 1}: {json.dumps(entry)}")

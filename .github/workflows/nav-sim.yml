@@ -61,7 +61,8 @@ jobs:
               -v "$PWD/run_logs/sim:/data/sim" car-calib-nav-sim:latest \
               ros2 launch car_nav_sim sim.launch.py mission:=$1 odom_source:=$2 report_dir:=/data/sim/$1-$2 \
               > "run_logs/sim/$1-$2.log" 2>&1 || true
-            tail -n 60 "run_logs/sim/$1-$2.log"
+            grep -aE "WARN|ERROR|Aborting|abort|failed|Failed|Collision|collision|stop|Goal|goal" "run_logs/sim/$1-$2.log" \
+              | grep -avE "Destroying|Cleaning|Deactivating|preshutdown|signal_handler|finished cleanly" | tail -n 150
             echo "::endgroup::"
             rep=$(ls run_logs/sim/$1-$2/report-*.json 2>/dev/null | head -1 || true)
             if [ -z "$rep" ]; then echo "::error::$1 odom=$2: no report"; rc=1; continue; fi
