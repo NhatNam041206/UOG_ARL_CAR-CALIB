@@ -56,7 +56,7 @@ scripts/sim/run_sim.sh view          # every report -> run_logs/sim/view/*.html
 start run_logs/sim/view/index.html   # Git Bash on Windows (Linux: xdg-open)
 ```
 
-Each page draws the room, the goals (circle = 0.35 m tolerance), the true
+Each page draws the room, the goals (circle = 0.5 m tolerance), the true
 path (solid) and the AMCL estimate (dashed). Play / the slider move the car
 outline through the run and show the command, the collision-monitor state
 and the clearance; a red ring marks a collision.
@@ -117,7 +117,7 @@ without rebuilding.
 * Speed is fixed (no speed command, no feedback): `sim.yaml truth.speed_mps`
   vs. `car.yaml speed.baseline_speed_mps` (both 0.5, unmeasured).
 * Latency 0.65 s: at 0.5 m/s the car drives 0.33 m before a command acts.
-  This is why lookahead is 0.9 m and the goal tolerance is 0.35 m
+  This is why lookahead is 1.1 m and the goal tolerance is 0.5 m
   (position only: the car cannot fix its heading without driving on).
 * One speed means the collision monitor cannot slow down. Its "approach"
   zone follows the current curvature and the bridge turns any speed it

@@ -6,7 +6,13 @@
 #
 # Round 1 (2026-11-11, nominal car, 6 repeats, rf2o): all variants 11-12/12;
 # min clearance baseline 0.08-0.14 m, lookahead11 0.34-0.37 m.
-variants: [baseline, lookahead11, combo]
+# Round 2 (hard car: latency 0.9 s, 0.6 m/s, understeer 0.85; 6 repeats, rf2o):
+#   old baseline  loop_right 0/6 (loop_left timed out)
+#   lookahead11   loop_left 0/6, loop_right 1/6
+#   combo         loop_left 5/6, loop_right 6/6   -> combo is now the default
+#   (nav2_params.yaml), so `baseline` below = combo.
+# Round 3: confirm the new default on both cars.
+variants: [baseline]
 stress: [nominal, hard]
 missions: [loop_left, loop_right]
 odom: [rf2o]

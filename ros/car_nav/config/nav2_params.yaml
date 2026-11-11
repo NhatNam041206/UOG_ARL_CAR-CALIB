@@ -28,10 +28,10 @@ amcl:
     global_frame_id: map
     scan_topic: scan_nav
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
-    alpha1: 0.25
-    alpha2: 0.25
-    alpha3: 0.25
-    alpha4: 0.25
+    alpha1: 0.5
+    alpha2: 0.5
+    alpha3: 0.5
+    alpha4: 0.5
     alpha5: 0.2
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -53,8 +53,8 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.1
-    update_min_d: 0.1
+    update_min_a: 0.05
+    update_min_d: 0.05
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
@@ -111,7 +111,7 @@ controller_server:
       # The car cannot slow down and keeps going ~0.35 m after STOP
       # (latency + braking): a tight tolerance would make it drive past
       # the goal and circle back. Final error is reported by the sim.
-      xy_goal_tolerance: 0.35
+      xy_goal_tolerance: 0.5
       # Position-only goals. A forward-only car can only fix its heading by
       # driving on, so a yaw tolerance made it circle the goal (sim, CI run
       # 2026-11-10: 43 m driven for one goal). The planned path already
@@ -120,9 +120,9 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.5
-      lookahead_dist: 0.9
-      min_lookahead_dist: 0.7
-      max_lookahead_dist: 1.2
+      lookahead_dist: 1.1
+      min_lookahead_dist: 0.9
+      max_lookahead_dist: 1.4
       lookahead_time: 1.8
       use_velocity_scaled_lookahead_dist: false
       transform_tolerance: 0.5
@@ -139,7 +139,7 @@ controller_server:
       # onto the goal, curvature spikes in the last metre, and the 0.65 s
       # of coasting after STOP swings the car up to ~35 deg off heading.
       use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 0.9
+      curvature_lookahead_dist: 1.1
       use_rotate_to_heading: false
       rotate_to_heading_angular_vel: 1.0
       rotate_to_heading_min_angle: 3.14

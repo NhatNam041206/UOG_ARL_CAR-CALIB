@@ -107,7 +107,7 @@ def render(report_path: str, out_path: str) -> dict:
         col = COLORS[i % len(COLORS)]
         gx, gy, gyaw = g["goal"]
         ok = g["result"] == "SUCCEEDED" and not g["collision"]
-        svg.append(f'<circle cx="{X(gx)}" cy="{Y(gy)}" r="{0.35 * SCALE}" fill="{col}" fill-opacity="0.12" '
+        svg.append(f'<circle cx="{X(gx)}" cy="{Y(gy)}" r="{0.5 * SCALE}" fill="{col}" fill-opacity="0.12" '
                    f'stroke="{col}" stroke-dasharray="4 3"/>')
         ax, ay = gx + 0.3 * math.cos(gyaw), gy + 0.3 * math.sin(gyaw)
         svg.append(f'<line x1="{X(gx)}" y1="{Y(gy)}" x2="{X(ax)}" y2="{Y(ay)}" stroke="{col}" stroke-width="2"/>')
