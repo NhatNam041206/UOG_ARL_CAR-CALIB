@@ -161,7 +161,7 @@ def _setup(context, *args, **kwargs):
                                                           "start": start_param}]))
 
     if arg("rviz").lower() == "true":
-        actions.append(Node(package="rviz2", executable="rviz2", name="rviz2", output="log",
+        actions.append(Node(package="rviz2", executable="rviz2", name="rviz2", output="screen",
                             arguments=["-d", _rviz_config(world_name)],
                             parameters=[sim_time]))
 

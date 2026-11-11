@@ -22,7 +22,41 @@ if ! docker info >/dev/null 2>&1; then
   exit 3
 fi
 
-run() { "${COMPOSE[@]}" run --rm sim "$@"; }
+RUN_EXTRA=()
+run() { "${COMPOSE[@]}" run --rm ${RUN_EXTRA[@]+"${RUN_EXTRA[@]}"} sim "$@"; }
+
+# A window (RViz / Gazebo) needs a display in the container. Stop early with
+# a clear message instead of a run where RViz silently never appears.
+need_display() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "Git Bash has no display, so RViz cannot open from here." >&2
+      echo "Open a WSL Ubuntu terminal, cd to the repo there (e.g. /mnt/c/.../Car-Calib-Deploy) and rerun." >&2
+      echo "(Docker Desktop -> Settings -> Resources -> WSL integration must be on for that distro.)" >&2
+      exit 4 ;;
+  esac
+  if [[ -z "${DISPLAY:-}" ]]; then
+    echo "DISPLAY is empty: no display for RViz. On Windows use a WSL Ubuntu terminal (WSLg)." >&2
+    echo "On Linux run from a desktop session and do: xhost +local:" >&2
+    exit 4
+  fi
+  RUN_EXTRA+=(-e QT_QPA_PLATFORM=xcb -e WAYLAND_DISPLAY= -e LIBGL_ALWAYS_SOFTWARE=1)
+  # Docker Desktop + WSLg: /tmp/.X11-unix in WSL is a symlink into /mnt/wslg that
+  # Docker Desktop's VM cannot follow; its own path to the WSLg socket works.
+  if [[ -d /mnt/wslg ]] && docker info 2>/dev/null | grep -qi "docker desktop"; then
+    # (an override file: compose replaces the /tmp/.X11-unix mount by target path)
+    cat > run_logs/sim/compose.wslg.yml <<'YML'
+services:
+  sim:
+    volumes:
+      - /run/desktop/mnt/host/wslg/.X11-unix:/tmp/.X11-unix
+      - /run/desktop/mnt/host/wslg:/mnt/wslg
+YML
+    COMPOSE+=(-f run_logs/sim/compose.wslg.yml)
+  fi
+  echo "display: DISPLAY=$DISPLAY ${RUN_EXTRA[*]}"
+  echo "RViz takes ~10-20 s to appear. If it does not, its error is printed above as [rviz2-...]."
+}
 
 latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
 
@@ -60,12 +94,13 @@ case "$cmd" in
       for o in truth rf2o; do echo "== $m odom=$o"; mission "$m" odom_source:="$o" || rc=1; done
     done
     exit $rc ;;
-  gui) run ros2 launch car_nav_sim sim.launch.py backend:=gazebo gui:=true rviz:=true "$@" ;;
-  rviz) run ros2 launch car_nav_sim sim.launch.py backend:=lite rviz:=true "$@" ;;
+  gui) need_display; run ros2 launch car_nav_sim sim.launch.py backend:=gazebo gui:=true rviz:=true "$@" ;;
+  rviz) need_display; run ros2 launch car_nav_sim sim.launch.py backend:=lite rviz:=true "$@" ;;
   campus)
+    need_display
     start="${1:-AAD-1}"; shift || true
     run ros2 launch car_nav_sim sim.launch.py backend:=lite rviz:=true world:=campus_path start:="$start" "$@" ;;
-  campus-mission) mission campus_block_left rviz:=true "$@" ;;
+  campus-mission) need_display; mission campus_block_left rviz:=true "$@" ;;
   view)
     # bash -c keeps Git Bash from rewriting the container path into a Windows one
     run bash -c "python3 /opt/car_nav_sim_tools/report_view.py"

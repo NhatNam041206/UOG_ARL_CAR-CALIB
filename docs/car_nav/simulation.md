@@ -71,6 +71,14 @@ RViz use **Nav2 Goal** to send goals by hand: click on a straight aisle at
 least ~1.5 m ahead and drag in the driving direction (the car only drives
 forward and needs ~0.75 m turning radius). Git Bash has no display, so use it only for headless runs and `view`.
 
+If no window appears: the script now stops with a message when there is no
+display (Git Bash, empty `DISPLAY`). With Docker Desktop it mounts the WSLg
+socket from Docker Desktop's own path (`/run/desktop/mnt/host/wslg`), because
+the `/tmp/.X11-unix` symlink in WSL is not visible to Docker Desktop's VM, and
+RViz uses software OpenGL. RViz errors are printed as `[rviz2-N]` lines. Quick
+check that WSLg works at all: `docker run --rm -e DISPLAY=:0 -v
+/run/desktop/mnt/host/wslg/.X11-unix:/tmp/.X11-unix car-calib-nav-sim:latest rviz2`.
+
 ## Backends
 
 | | `lite` (default) | `gazebo` |
