@@ -74,3 +74,8 @@ def test_behavior_tree_has_no_spin_or_backup():
     tags = {e.tag for e in ET.parse(P.BT_XML).iter()}
     assert not tags & {"Spin", "BackUp", "DriveOnHeading"}
     assert "ComputePathToPose" in tags and "FollowPath" in tags
+
+
+def test_bt_waits_long_enough_for_servers_to_accept_goals():
+    # 20 ms (Nav2 default) made goals fail on a slower laptop; the Pi is no faster.
+    assert rp("bt_navigator")["default_server_timeout"] >= 200
