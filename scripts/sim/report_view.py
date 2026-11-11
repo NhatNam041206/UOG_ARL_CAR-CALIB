@@ -35,7 +35,8 @@ CAR_YAMLS = [
     os.path.join(REPO, "ros", "car_nav", "config", "car.yaml"),
 ]
 COLORS = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d", "#dc2626"]
-SCALE = 80  # px per metre
+MAX_SCALE = 80   # px per metre (small rooms)
+MAX_SIDE_PX = 1800  # big maps (the 56 m school map) are scaled down to this
 
 
 def _first(paths):
@@ -76,6 +77,7 @@ def render(report_path: str, out_path: str) -> dict:
     world = load_world(rep.get("world", "test_floor"))
     fp = load_footprint()
     x0, y0, x1, y1 = (float(v) for v in world["bounds"])
+    SCALE = min(MAX_SCALE, MAX_SIDE_PX / max(x1 - x0, y1 - y0))
     W, H = (x1 - x0) * SCALE, (y1 - y0) * SCALE
 
     def X(x):
@@ -88,11 +90,11 @@ def render(report_path: str, out_path: str) -> dict:
         return " ".join(f"{X(x)},{Y(y)}" for x, y in pts)
 
     svg = [f'<rect x="0" y="0" width="{W}" height="{H}" fill="var(--floor)"/>']
-    # 1 m grid
-    for gx in range(math.ceil(x0), math.floor(x1) + 1):
+    step = 1 if max(x1 - x0, y1 - y0) < 20 else 5   # grid every 1 m (room) / 5 m (school map)
+    for gx in range(math.ceil(x0), math.floor(x1) + 1, step):
         svg.append(f'<line x1="{X(gx)}" y1="0" x2="{X(gx)}" y2="{H}" class="grid"/>')
         svg.append(f'<text x="{X(gx) + 2}" y="{H - 3}" class="tick">{gx}</text>')
-    for gy in range(math.ceil(y0), math.floor(y1) + 1):
+    for gy in range(math.ceil(y0), math.floor(y1) + 1, step):
         svg.append(f'<line x1="0" y1="{Y(gy)}" x2="{W}" y2="{Y(gy)}" class="grid"/>')
         svg.append(f'<text x="2" y="{Y(gy) - 2}" class="tick">{gy}</text>')
     for b in world.get("boxes") or []:
@@ -223,6 +225,7 @@ def main(argv: list[str]) -> int:
         print(f"no reports under {root}: run scripts/sim/run_sim.sh mission loop_left first")
         return 1
     out_dir = os.path.join(root, "view")
+    os.makedirs(out_dir, exist_ok=True)
     done = []
     for rp in reports:
         out = os.path.join(out_dir, os.path.splitext(os.path.basename(rp))[0] + ".html")

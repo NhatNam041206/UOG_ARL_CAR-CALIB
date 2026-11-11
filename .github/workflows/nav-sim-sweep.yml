@@ -6,12 +6,9 @@ name: nav2 sim sweep
 # `repeats` times with different LiDAR noise seeds; the summary job prints
 # one table. The sim never talks to the car (no MQTT, own container).
 
+# Started by hand only (Actions -> nav2 sim sweep -> Run workflow).
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "ros/car_nav_sim/sweeps/**"
-      - ".github/workflows/nav-sim-sweep.yml"
 
 permissions:
   contents: read

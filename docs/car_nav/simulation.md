@@ -161,3 +161,41 @@ joystick or script with a fixed servo angle:
 4. Re-run `scripts/sim/run_sim.sh all`; the planner radius test
    (`tests/test_car_nav_nav2_params.py`) fails if
    `minimum_turning_radius` is now below 1.2 × the weak side's radius.
+
+## School map (campus tile map)
+
+`ros/car_nav_sim/worlds/campus_path.yaml` is generated from the tile map
+`maps/tile_maps/campus-path.json` (0.6 m tiles, 1462 drivable cells, about
+56 x 38 m) by `scripts/sim/tile_map_to_world.py`:
+
+* every drivable cell is floor; every edge to a non-drivable cell is a thin
+  wall on the non-drivable side, so corridors keep their full width
+  (2 tiles = 1.2 m, 3 tiles = 1.8 m);
+* **assumption:** the LiDAR sees something at every map edge. Where the real
+  place is open (grass, a hall with no wall) the sim localises better than
+  the car will;
+* frame: x = east, y = north, cell (row, col) centre at
+  x = (col + 68.5) * 0.6, y = (15.5 - row) * 0.6;
+* the tile map anchors (AAD-1, gym-01, F.218, F.203, 1, 2) are named start
+  poses: the pose near the anchor where the car footprint has most room.
+
+After editing the tile map, regenerate (Python 3 with numpy + PyYAML,
+`pip install numpy pyyaml`), from the repo folder:
+
+    python3 scripts/sim/tile_map_to_world.py
+
+Drive it in RViz (WSL Ubuntu shell, see "See it"):
+
+    scripts/sim/run_sim.sh build                 # once: the launch file changed
+    scripts/sim/run_sim.sh campus                # car at AAD-1
+    scripts/sim/run_sim.sh campus gym-01         # car at another anchor
+    scripts/sim/run_sim.sh campus-mission        # campus_block_left with RViz, then a report
+
+In RViz click **Nav2 Goal** and drag the arrow on a corridor. The car only
+drives forward and turns no tighter than ~0.5-0.75 m radius, so a goal
+behind the car or round a tight corner of a 1.2 m corridor may fail; the
+mission `campus_block_left` goes round the block east of AAD-1 with left
+turns only (the car's stronger side).
+
+The simulation no longer runs on GitHub on every push (only the unit
+tests). To run it there anyway: Actions -> "nav2 simulation" -> Run workflow.

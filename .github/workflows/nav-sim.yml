@@ -1,10 +1,16 @@
-# NAV2 simulator: builds the laptop sim image (amd64) and drives the
-# missions headless with the lightweight 2D backend. Reports are uploaded
-# as an artifact. Nothing here can reach the car.
+# NAV2 simulator: on every push only the unit tests run. The simulation
+# job (build the sim image, drive missions headless with the 2D backend,
+# upload reports) runs only when started by hand (Actions -> nav2
+# simulation -> Run workflow): the sim is now run on the laptop with RViz
+# (scripts/sim/run_sim.sh). Nothing here can reach the car.
 name: nav2 simulation
 
 on:
   workflow_dispatch:
+    inputs:
+      runs:
+        description: "mission odom pairs, comma separated"
+        default: "loop_left rf2o,loop_right rf2o,campus_block_left rf2o"
   push:
     paths:
       - "ros/**"
@@ -26,9 +32,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest numpy pyyaml
-      - run: python -m pytest -q tests/test_car_nav_geometry.py tests/test_car_nav_actuation.py tests/test_car_nav_scan_upright.py tests/test_car_nav_sim.py tests/test_car_nav_nav2_params.py
+      - run: python -m pytest -q tests/test_car_nav_geometry.py tests/test_car_nav_actuation.py tests/test_car_nav_scan_upright.py tests/test_car_nav_sim.py tests/test_car_nav_nav2_params.py tests/test_tile_map_world.py
 
   sim:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -48,13 +55,17 @@ jobs:
             ros2 launch car_nav_sim sim.launch.py --show-args > /dev/null
             ros2 launch car_nav nav.launch.py --show-args > /dev/null
             ros2 run car_nav_sim make_world test_floor /tmp/w
+            ros2 run car_nav_sim make_world campus_path /tmp/w
           '
 
       - name: Missions (2D backend)
+        env:
+          RUNS: ${{ inputs.runs }}
         run: |
           mkdir -p run_logs/sim
           rc=0
-          for run in "loop_left truth" "loop_right truth" "loop_left rf2o" "loop_right rf2o"; do
+          IFS=',' read -ra RUN_LIST <<< "$RUNS"
+          for run in "${RUN_LIST[@]}"; do
             set -- $run
             echo "::group::mission $1 odom=$2"
             timeout 900 docker run --rm -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \

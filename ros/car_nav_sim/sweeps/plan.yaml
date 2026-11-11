@@ -1,4 +1,4 @@
-# Editing this file (or any variant) on a push runs .github/workflows/nav-sim-sweep.yml:
+# Run by hand: Actions -> nav2 sim sweep -> Run workflow (.github/workflows/nav-sim-sweep.yml):
 # every variant x stress x mission x odometry, `repeats` times with different LiDAR
 # noise seeds, then one table of pass rates in the job log.
 # variants = nav2_params overrides (files in this folder),
@@ -14,7 +14,8 @@
 # Round 3 (new default): nominal 12/12 (min clearance 0.33 m),
 #   hard 7/12 (loop_left 3/6 with 4 collisions, loop_right 4/6).
 #   Same params as round-2 combo (11/12), so 6 repeats are too few to rank.
-# Round 4: hard car only, 12 repeats, to get a usable number.
+# Round 4 (hard car only, 12 repeats): loop_left 6/12 (every failure at goal 3,
+#   with a collision), loop_right 7/12 -> 13/24.
 variants: [baseline]
 stress: [hard]
 missions: [loop_left, loop_right]

@@ -103,13 +103,14 @@ def test_clearance():
     assert w.clearance(footprint_polygon(0.85, 0.0, 0.0, 0.16, -0.37, 0.135)) == 0.0
 
 
-@pytest.mark.parametrize("mission", ["loop_left", "loop_right"])
+@pytest.mark.parametrize("mission", sorted(p.stem for p in (P.SIM_DIR / "missions").glob("*.yaml")))
 def test_mission_poses_are_free(mission):
     m = yaml.safe_load((P.SIM_DIR / "missions" / f"{mission}.yaml").read_text())
+    world = World.load(str(P.SIM_DIR / "worlds" / f"{m.get('world', 'test_floor')}.yaml"))
     fp = footprint(CAR)
-    for x, y, th in [m.get("start") or WORLD.start] + m["goals"]:
+    for x, y, th in [m.get("start") or world.start] + m["goals"]:
         poly = footprint_polygon(x, y, th, fp.x_front, fp.x_rear, fp.half_width)
-        assert WORLD.clearance(poly) > 0.4, (mission, x, y)
+        assert world.clearance(poly) > 0.4, (mission, x, y)
 
 
 def test_sdf_has_inverted_lidar_and_velocity_control():
