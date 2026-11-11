@@ -10,6 +10,7 @@
 #   scripts/sim/run_sim.sh all                       # every mission, both odometry sources
 #   scripts/sim/run_sim.sh view                      # reports -> run_logs/sim/view/index.html (browser)
 #   scripts/sim/run_sim.sh shell                     # bash inside the image
+# Windows: RViz opens in the browser at http://localhost:6080 (SIM_VIEW=x11 for a window).
 # Extra args are ros2 launch arguments of car_nav_sim sim.launch.py.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,40 +26,28 @@ fi
 RUN_EXTRA=()
 run() { "${COMPOSE[@]}" run --rm ${RUN_EXTRA[@]+"${RUN_EXTRA[@]}"} sim "$@"; }
 
-# A window (RViz / Gazebo) needs a display in the container. Stop early with
-# a clear message instead of a run where RViz silently never appears.
+# A window (RViz / Gazebo) needs a display. Two ways:
+#   browser (default on Windows / Git Bash / WSL): RViz on a virtual screen in
+#            the container, open http://localhost:6080 (noVNC). Needs nothing.
+#   x11     (default on a Linux desktop): RViz window via the host X server.
+# Force one with SIM_VIEW=browser or SIM_VIEW=x11.
 need_display() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-      echo "Git Bash has no display, so RViz cannot open from here." >&2
-      echo "Open a WSL Ubuntu terminal, cd to the repo there (e.g. /mnt/c/.../Car-Calib-Deploy) and rerun." >&2
-      echo "(Docker Desktop -> Settings -> Resources -> WSL integration must be on for that distro.)" >&2
-      exit 4 ;;
-  esac
+  local view="${SIM_VIEW:-}"
+  if [[ -z "$view" ]]; then
+    if [[ "$(uname -s)" == Linux && -n "${DISPLAY:-}" && ! -d /mnt/wslg ]]; then view=x11; else view=browser; fi
+  fi
+  if [[ "$view" == browser ]]; then
+    # 127.0.0.1 only: the page is not reachable from the LAN
+    RUN_EXTRA+=(-e SIM_VIEW=browser -p 127.0.0.1:6080:6080)
+    echo "view: browser -> open http://localhost:6080/vnc.html?autoconnect=1&resize=scale (wait ~15 s)"
+    return
+  fi
   if [[ -z "${DISPLAY:-}" ]]; then
-    echo "DISPLAY is empty: no display for RViz. On Windows use a WSL Ubuntu terminal (WSLg)." >&2
-    echo "On Linux run from a desktop session and do: xhost +local:" >&2
+    echo "DISPLAY is empty: no X display. Use SIM_VIEW=browser, or on Linux run from a desktop session (xhost +local:)." >&2
     exit 4
   fi
-  RUN_EXTRA+=(-e QT_QPA_PLATFORM=xcb -e WAYLAND_DISPLAY= -e LIBGL_ALWAYS_SOFTWARE=1)
-  # Docker Desktop + WSLg: /tmp/.X11-unix in WSL is a symlink into /mnt/wslg that
-  # Docker Desktop's VM cannot follow; its own path to the WSLg socket works.
-  # (no "docker info | grep -q": with pipefail, grep quitting early fails the pipe)
-  local os; os=$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)
-  if [[ -d /mnt/wslg && "$os" == *"Docker Desktop"* ]]; then
-    # (an override file: compose replaces the /tmp/.X11-unix mount by target path)
-    cat > run_logs/sim/compose.wslg.yml <<'YML'
-services:
-  sim:
-    volumes:
-      - /run/desktop/mnt/host/wslg/.X11-unix:/tmp/.X11-unix
-      - /run/desktop/mnt/host/wslg:/mnt/wslg
-YML
-    COMPOSE+=(-f run_logs/sim/compose.wslg.yml)
-    echo "display: Docker Desktop + WSLg -> mounting /run/desktop/mnt/host/wslg"
-  fi
-  echo "display: DISPLAY=$DISPLAY ${RUN_EXTRA[*]}"
-  echo "RViz takes ~10-20 s to appear. If it does not, its error is printed above as [rviz2-...]."
+  RUN_EXTRA+=(-v /tmp/.X11-unix:/tmp/.X11-unix -e QT_QPA_PLATFORM=xcb -e WAYLAND_DISPLAY= -e LIBGL_ALWAYS_SOFTWARE=1)
+  echo "view: x11 DISPLAY=$DISPLAY. RViz errors show as [rviz2-...] lines."
 }
 
 latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
@@ -109,5 +98,5 @@ case "$cmd" in
     run bash -c "python3 /opt/car_nav_sim_tools/report_view.py"
     echo "Open it:  start run_logs/sim/view/index.html   (Git Bash / Windows)" ;;
   shell) run bash ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

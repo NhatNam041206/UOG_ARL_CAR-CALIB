@@ -32,6 +32,5 @@ services:
       - ./ros/car_nav_sim/missions:/opt/car_nav_ws/share/car_nav_sim/missions:ro
       - ./run_logs/sim:/data/sim
       - ./scripts/sim:/opt/car_nav_sim_tools:ro   # report_view.py (run_sim.sh view)
-      # GUI (Linux X11, or WSLg on Windows 11 when run from a WSL shell)
-      - /tmp/.X11-unix:/tmp/.X11-unix
+      # X11 socket: added by run_sim.sh only for SIM_VIEW=x11 (the browser view needs none)
     shm_size: "1gb"

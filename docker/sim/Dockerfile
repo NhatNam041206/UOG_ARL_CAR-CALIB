@@ -28,6 +28,11 @@ RUN git clone https://github.com/MAPIRlab/rf2o_laser_odometry.git \
     && git -C rf2o_laser_odometry checkout ${RF2O_REF} \
     && grep -rl 'tf2_geometry_msgs/tf2_geometry_msgs.h"' rf2o_laser_odometry \
        | xargs -r sed -i 's#tf2_geometry_msgs/tf2_geometry_msgs.h"#tf2_geometry_msgs/tf2_geometry_msgs.hpp"#'
+# Browser view (SIM_VIEW=browser): RViz on a virtual screen, shown at
+# http://localhost:6080 through noVNC. Works without WSLg / X11 on the host.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb x11vnc novnc python3-websockify \
+    && rm -rf /var/lib/apt/lists/*
 COPY ros/car_nav /ws/src/car_nav
 COPY ros/car_nav_sim /ws/src/car_nav_sim
 

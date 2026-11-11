@@ -61,23 +61,18 @@ path (solid) and the AMCL estimate (dashed). Play / the slider move the car
 outline through the run and show the command, the collision-monitor state
 and the clearance; a red ring marks a collision.
 
-**Live (RViz / Gazebo window):** needs a display inside the container.
-On Windows 11 open a **WSL Ubuntu** terminal (Docker Desktop → Settings →
-Resources → WSL integration on for that distro), `cd` to the repo there
-and run `scripts/sim/run_sim.sh rviz` (light) or `scripts/sim/run_sim.sh gui`
-(Gazebo). WSLg provides the window. AMCL gets the true start pose
-automatically; the red arrow "True pose" shows where the car really is. In
-RViz use **Nav2 Goal** to send goals by hand: click on a straight aisle at
-least ~1.5 m ahead and drag in the driving direction (the car only drives
-forward and needs ~0.75 m turning radius). Git Bash has no display, so use it only for headless runs and `view`.
-
-If no window appears: the script now stops with a message when there is no
-display (Git Bash, empty `DISPLAY`). With Docker Desktop it mounts the WSLg
-socket from Docker Desktop's own path (`/run/desktop/mnt/host/wslg`), because
-the `/tmp/.X11-unix` symlink in WSL is not visible to Docker Desktop's VM, and
-RViz uses software OpenGL. RViz errors are printed as `[rviz2-N]` lines. Quick
-check that WSLg works at all: `docker run --rm -e DISPLAY=:0 -v
-/run/desktop/mnt/host/wslg/.X11-unix:/tmp/.X11-unix car-calib-nav-sim:latest rviz2`.
+**Live (RViz):** `scripts/sim/run_sim.sh rviz`, `campus`, `campus-mission`
+or `gui`. On Windows (Git Bash or WSL) RViz runs on a virtual screen inside
+the container and you watch it in the browser: open
+`http://localhost:6080/vnc.html?autoconnect=1&resize=scale` about 15 s after
+the start (the port is bound to 127.0.0.1 only). This needs no WSLg or X
+server; Docker Desktop could not pass the WSLg socket into the container on
+nam's laptop. On a Linux desktop the default is a normal window (`xhost
++local:` once); force either way with `SIM_VIEW=browser` or `SIM_VIEW=x11`.
+AMCL gets the true start pose automatically; the red arrow "True pose" shows
+where the car really is. In RViz use **Nav2 Goal** to send goals by hand:
+click on a straight aisle at least ~1.5 m ahead and drag in the driving
+direction (the car only drives forward and needs ~0.75 m turning radius).
 
 ## Backends
 
@@ -192,9 +187,9 @@ After editing the tile map, regenerate (Python 3 with numpy + PyYAML,
 
     python3 scripts/sim/tile_map_to_world.py
 
-Drive it in RViz (WSL Ubuntu shell, see "See it"):
+Drive it in RViz (browser view, see "See it"):
 
-    scripts/sim/run_sim.sh build                 # once: the launch file changed
+    scripts/sim/run_sim.sh build                 # once: the image changed
     scripts/sim/run_sim.sh campus                # car at AAD-1
     scripts/sim/run_sim.sh campus gym-01         # car at another anchor
     scripts/sim/run_sim.sh campus-mission        # campus_block_left with RViz, then a report
