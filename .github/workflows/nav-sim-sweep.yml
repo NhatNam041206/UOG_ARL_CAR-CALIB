@@ -99,7 +99,7 @@ jobs:
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import collections, glob, json, os, re
           rows = collections.defaultdict(lambda: {"runs": 0, "pass": 0, "goals": 0, "goals_ok": 0,
-                                                  "coll": 0, "min_clear": 9.0, "end_err": []})
+                                                  "coll": 0, "min_clear": 9.0, "end_err": [], "rev": []})
           for f in glob.glob("reports/**/report-*.json", recursive=True):
               m = re.search(r"/([^/]+)-(loop_[a-z]+)-([a-z0-9]+)-s\d+/", f)
               if not m:
@@ -113,14 +113,17 @@ jobs:
                   row["goals_ok"] += g["result"] == "SUCCEEDED" and not g["collision"]
                   row["coll"] += bool(g["collision"])
                   row["min_clear"] = min(row["min_clear"], g["min_clearance_m"])
+                  if "steer_reversals_per_m" in g and g["distance_m"] > 1.0:
+                      row["rev"].append(g["steer_reversals_per_m"])
                   if g["result"] == "SUCCEEDED":
                       row["end_err"].append(g["final_xy_error_m"])
-          print("| variant@car | mission | odom | missions passed | goals ok | collisions | min clearance m | median end err m |")
-          print("|---|---|---|---|---|---|---|---|")
+          print("| variant@car | mission | odom | missions passed | goals ok | collisions | min clearance m | median end err m | median rev/m |")
+          print("|---|---|---|---|---|---|---|---|---|")
           for (v, m, o), x in sorted(rows.items()):
               e = sorted(x["end_err"]); med = e[len(e) // 2] if e else float("nan")
+              rv = sorted(x["rev"]); rmed = rv[len(rv) // 2] if rv else float("nan")
               print(f"| {v} | {m} | {o} | {x['pass']}/{x['runs']} | {x['goals_ok']}/{x['goals']} | {x['coll']} "
-                    f"| {x['min_clear']:.2f} | {med:.2f} |")
+                    f"| {x['min_clear']:.2f} | {med:.2f} | {rmed:.2f} |")
           tot = collections.defaultdict(lambda: [0, 0])
           for (v, _, _), x in rows.items():
               tot[v][0] += x["pass"]; tot[v][1] += x["runs"]

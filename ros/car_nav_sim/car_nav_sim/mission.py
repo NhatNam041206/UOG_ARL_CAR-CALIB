@@ -88,6 +88,10 @@ class Tracker:
         self.max_loc_err = 0.0
         self.n_cmd = 0
         self.n_sat = 0
+        # zigzag: steering direction reversals with a swing of >= REV_DEG
+        self.n_rev = 0
+        self._ext: float | None = None   # last steering extreme (servo angle)
+        self._dir = 0                    # +1 rising, -1 falling, 0 unknown
         self.n_forward = 0
         self.max_odom_drift = 0.0
         self.cm = {}  # collision monitor action -> number of state messages
@@ -170,6 +174,23 @@ class Tracker:
             self.n_forward += 1
             if angle <= self.servo_min or angle >= self.servo_max:
                 self.n_sat += 1
+            self._track_reversal(float(angle))
+
+    REV_DEG = 4.0
+
+    def _track_reversal(self, a: float) -> None:
+        if self._ext is None:
+            self._ext = a
+            return
+        if self._dir >= 0 and a > self._ext or self._dir <= 0 and a < self._ext:
+            if self._dir == 0 and abs(a - self._ext) >= self.REV_DEG:
+                self._dir = 1 if a > self._ext else -1
+            if self._dir != 0:
+                self._ext = a          # still moving the same way: new extreme
+        elif abs(a - self._ext) >= self.REV_DEG:
+            self.n_rev += self._dir != 0
+            self._dir = 1 if a > self._ext else -1
+            self._ext = a
 
 
 def main() -> None:
@@ -250,6 +271,7 @@ def main() -> None:
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
             "max_localization_error_m": round(tracker.max_loc_err, 3),
             "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
+            "steer_reversals_per_m": round(tracker.n_rev / max(tracker.dist, 1.0), 3),
             "forward_share": round(tracker.n_forward / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
             "max_odom_drift_m": round(tracker.max_odom_drift, 3),
             "collision_monitor": tracker.cm,

@@ -7,7 +7,7 @@ import yaml
 from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
 from car_nav.actuation import (
     DRIVE_FORWARD, DRIVE_STOP, CmdVelMapper, SteeringConfig, SteeringTable,
-    format_payload, parse_payload, table_from_cfg,
+    SteeringSmoother, format_payload, parse_payload, table_from_cfg,
 )
 
 
@@ -79,3 +79,30 @@ def test_measured_table_is_used_and_validated():
 def test_servo_up_turns_right_flips_sign():
     t = SteeringTable(SteeringConfig(servo_up_turns="right"))
     assert t.curvature(70) < 0 and t.servo_for(1.0) < 62
+
+
+def test_smoother_off_passes_through():
+    s = SteeringSmoother()
+    assert not s.enabled
+    assert [s.step(a, 0.1) for a in (62, 100, 40)] == [62, 100, 40]
+
+
+def test_smoother_lowpass_reaches_target_and_ignores_call_rate():
+    a, b = SteeringSmoother(tau_s=0.3), SteeringSmoother(tau_s=0.3)
+    a.step(62, 0.1); b.step(62, 0.1)
+    for _ in range(10):
+        a.step(90, 0.1)
+    for _ in range(20):
+        b.step(90, 0.05)
+    assert a.step(90, 0.0) == pytest.approx(b.step(90, 0.0), abs=1e-6)
+    for _ in range(100):
+        a.step(90, 0.1)
+    assert a.step(90, 0.1) == pytest.approx(90, abs=0.01)
+
+
+def test_smoother_rate_limit_and_reset():
+    s = SteeringSmoother(max_rate_dps=60)
+    s.step(62, 0.1)
+    assert s.step(140, 0.1) == pytest.approx(68)
+    s.reset(None)
+    assert s.step(140, 0.1) == 140
