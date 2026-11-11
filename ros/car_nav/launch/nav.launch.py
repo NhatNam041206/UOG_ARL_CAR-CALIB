@@ -142,6 +142,8 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[{"use_sim_time": use_sim_time}]),
         Node(package="rf2o_laser_odometry", executable="rf2o_laser_odometry_node",
              name="rf2o_laser_odometry", output="screen", parameters=[params],
+             # rf2o logs every scan at INFO and "Waiting for laser_scans" at WARN (harmless)
+             arguments=["--ros-args", "--log-level", "rf2o_laser_odometry:=error"],
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'rf2o'"]))),
         localization,
         slam_launch,
