@@ -6,6 +6,7 @@
 #   scripts/sim/run_sim.sh gui [args]                # Gazebo + RViz, drive with "2D Goal Pose"
 #   scripts/sim/run_sim.sh rviz [args]               # 2D backend + RViz (lighter than Gazebo)
 #   scripts/sim/run_sim.sh all                       # every mission, both odometry sources
+#   scripts/sim/run_sim.sh view                      # reports -> run_logs/sim/view/index.html (browser)
 #   scripts/sim/run_sim.sh shell                     # bash inside the image
 # Extra args are ros2 launch arguments of car_nav_sim sim.launch.py.
 set -euo pipefail
@@ -54,6 +55,10 @@ case "$cmd" in
     exit $rc ;;
   gui) run ros2 launch car_nav_sim sim.launch.py backend:=gazebo gui:=true rviz:=true "$@" ;;
   rviz) run ros2 launch car_nav_sim sim.launch.py backend:=lite rviz:=true "$@" ;;
+  view)
+    # bash -c keeps Git Bash from rewriting the container path into a Windows one
+    run bash -c "python3 /opt/car_nav_sim_tools/report_view.py"
+    echo "Open it:  start run_logs/sim/view/index.html   (Git Bash / Windows)" ;;
   shell) run bash ;;
-  *) sed -n '2,11p' "$0"; exit 2 ;;
+  *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -26,6 +26,7 @@ scripts/sim/run_sim.sh mission loop_left         # left-turn loop, headless, PAS
 scripts/sim/run_sim.sh mission loop_right        # right-turn loop (the weak side)
 scripts/sim/run_sim.sh mission loop_left odom_source:=truth   # perfect odometry, isolates rf2o
 scripts/sim/run_sim.sh all                       # both loops x both odometry sources
+scripts/sim/run_sim.sh view                      # reports -> HTML pages, open in a browser
 scripts/sim/run_sim.sh rviz                      # 2D sim + RViz, click "Nav2 Goal"
 scripts/sim/run_sim.sh gui                       # Gazebo Harmonic + RViz
 ```
@@ -45,6 +46,27 @@ failed goal.
 GitHub Actions (`nav2 simulation` workflow) builds the image and runs all
 four missions on every push that touches `ros/` or `docker/sim/`; download
 `nav-sim-reports-<sha>` for the reports and logs.
+
+## See it
+
+**After a run (any shell, no display needed):**
+
+```bash
+scripts/sim/run_sim.sh view          # every report -> run_logs/sim/view/*.html
+start run_logs/sim/view/index.html   # Git Bash on Windows (Linux: xdg-open)
+```
+
+Each page draws the room, the goals (circle = 0.35 m tolerance), the true
+path (solid) and the AMCL estimate (dashed). Play / the slider move the car
+outline through the run and show the command, the collision-monitor state
+and the clearance; a red ring marks a collision.
+
+**Live (RViz / Gazebo window):** needs a display inside the container.
+On Windows 11 open a **WSL Ubuntu** terminal (Docker Desktop → Settings →
+Resources → WSL integration on for that distro), `cd` to the repo there
+and run `scripts/sim/run_sim.sh rviz` (light) or `scripts/sim/run_sim.sh gui`
+(Gazebo). WSLg provides the window. In RViz use **Nav2 Goal** to send goals
+by hand. Git Bash has no display, so use it only for headless runs and `view`.
 
 ## Backends
 
