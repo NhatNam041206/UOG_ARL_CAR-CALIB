@@ -43,7 +43,9 @@ need_display() {
   RUN_EXTRA+=(-e QT_QPA_PLATFORM=xcb -e WAYLAND_DISPLAY= -e LIBGL_ALWAYS_SOFTWARE=1)
   # Docker Desktop + WSLg: /tmp/.X11-unix in WSL is a symlink into /mnt/wslg that
   # Docker Desktop's VM cannot follow; its own path to the WSLg socket works.
-  if [[ -d /mnt/wslg ]] && docker info 2>/dev/null | grep -qi "docker desktop"; then
+  # (no "docker info | grep -q": with pipefail, grep quitting early fails the pipe)
+  local os; os=$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)
+  if [[ -d /mnt/wslg && "$os" == *"Docker Desktop"* ]]; then
     # (an override file: compose replaces the /tmp/.X11-unix mount by target path)
     cat > run_logs/sim/compose.wslg.yml <<'YML'
 services:
@@ -53,6 +55,7 @@ services:
       - /run/desktop/mnt/host/wslg:/mnt/wslg
 YML
     COMPOSE+=(-f run_logs/sim/compose.wslg.yml)
+    echo "display: Docker Desktop + WSLg -> mounting /run/desktop/mnt/host/wslg"
   fi
   echo "display: DISPLAY=$DISPLAY ${RUN_EXTRA[*]}"
   echo "RViz takes ~10-20 s to appear. If it does not, its error is printed above as [rviz2-...]."
