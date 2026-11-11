@@ -21,7 +21,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from . import config_loader
-from .actuation import CmdVelMapper, MapperConfig, SteeringSmoother, format_payload, table_from_cfg
+from .actuation import CmdVelMapper, MapperConfig, format_payload, table_from_cfg
 
 
 class CmdVelToControl(Node):
@@ -30,22 +30,12 @@ class CmdVelToControl(Node):
         self.declare_parameter("rate_hz", 10.0)
         self.declare_parameter("watchdog_s", 0.5)
         self.declare_parameter("forward_threshold_mps", 0.05)
-        # Steering smoothing (see actuation.SteeringSmoother). 0 = off.
-        self.declare_parameter("steer_smoothing_tau_s", 0.0)
-        self.declare_parameter("steer_max_rate_dps", 0.0)
         cfg = config_loader.load()
         table = table_from_cfg(cfg)
         self._mapper = CmdVelMapper(
             table, MapperConfig(forward_threshold_mps=float(self.get_parameter("forward_threshold_mps").value))
         )
         self._watchdog = float(self.get_parameter("watchdog_s").value)
-        self._smoother = SteeringSmoother(float(self.get_parameter("steer_smoothing_tau_s").value),
-                                          float(self.get_parameter("steer_max_rate_dps").value))
-        self._dt = 1.0 / float(self.get_parameter("rate_hz").value)
-        self._last_tick = 0.0
-        if self._smoother.enabled:
-            self.get_logger().info(f"steering smoothing: tau {self._smoother.tau_s} s, "
-                                   f"max rate {self._smoother.max_rate_dps} deg/s")
         if not table.measured:
             self.get_logger().warn(
                 "steering.curvature_table NOT MEASURED: using the placeholder built from "
@@ -60,7 +50,7 @@ class CmdVelToControl(Node):
         self._last_cmd: tuple[float, float] | None = None
         self._last_t = 0.0
         self._last_payload = ""
-        self.create_timer(self._dt, self._tick)
+        self.create_timer(1.0 / float(self.get_parameter("rate_hz").value), self._tick)
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd = (msg.linear.x, msg.angular.z)
@@ -68,17 +58,10 @@ class CmdVelToControl(Node):
         self._tick()
 
     def _tick(self) -> None:
-        now = time.monotonic()
-        dt = (now - self._last_tick) if self._last_tick else self._dt
-        self._last_tick = now
-        if self._last_cmd is None or now - self._last_t > self._watchdog:
+        if self._last_cmd is None or time.monotonic() - self._last_t > self._watchdog:
             angle, code = self._mapper.stop_payload
         else:
             angle, code = self._mapper.map(*self._last_cmd)
-        if code == 1:
-            angle = int(round(self._smoother.step(angle, dt)))
-        else:
-            self._smoother.reset(None)
         payload = format_payload(angle, code)
         self._pub.publish(String(data=payload))
         if payload != self._last_payload:

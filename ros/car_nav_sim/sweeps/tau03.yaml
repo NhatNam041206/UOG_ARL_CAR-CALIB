@@ -1,6 +1,0 @@
-description: steering smoothing tau 0.3 s, slew limit 0 deg/s (0 = off)
-nav2_params:
-  cmd_vel_to_control:
-    ros__parameters:
-      steer_smoothing_tau_s: 0.3
-      steer_max_rate_dps: 0.0

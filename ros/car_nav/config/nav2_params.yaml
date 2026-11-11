@@ -357,7 +357,3 @@ cmd_vel_to_control:
     # RPP always asks for 0.5 m/s (no regulation); anything the collision
     # monitor scales below 0.3 becomes STOP (see collision_monitor above).
     forward_threshold_mps: 0.3
-    # Steering smoothing: low-pass time constant and servo slew limit on the
-    # angle sent to the car. 0 = off. See actuation.SteeringSmoother.
-    steer_smoothing_tau_s: 0.0
-    steer_max_rate_dps: 0.0

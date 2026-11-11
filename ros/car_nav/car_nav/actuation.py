@@ -179,46 +179,6 @@ class CmdVelMapper:
         return int(round(servo)), DRIVE_FORWARD
 
 
-class SteeringSmoother:
-    """Smooths the servo angle sent to the car (no ROS imports).
-
-    tau_s:        first-order low-pass time constant (s); 0 = off. The angle
-                  covers ~63 % of a step in tau_s, ~95 % in 3 * tau_s.
-    max_rate_dps: the angle moves at most this many degrees per second toward
-                  the target; 0 = off.
-    Both depend on real elapsed time (dt), not on how often step() is called.
-    They only change how fast the servo follows Nav2, never the target, so a
-    held command is still reached. reset() after STOP so the next drive
-    starts from the commanded angle.
-    """
-
-    def __init__(self, tau_s: float = 0.0, max_rate_dps: float = 0.0) -> None:
-        self.tau_s = max(float(tau_s), 0.0)
-        self.max_rate_dps = max(float(max_rate_dps), 0.0)
-        self._angle: float | None = None
-
-    @property
-    def enabled(self) -> bool:
-        return self.tau_s > 0.0 or self.max_rate_dps > 0.0
-
-    def reset(self, angle: float | None = None) -> None:
-        self._angle = angle
-
-    def step(self, target: float, dt: float) -> float:
-        if self._angle is None or not self.enabled:
-            self._angle = float(target)
-            return self._angle
-        dt = max(dt, 0.0)
-        nxt = float(target)
-        if self.tau_s > 0.0:
-            nxt = self._angle + (1.0 - math.exp(-dt / self.tau_s)) * (target - self._angle)
-        if self.max_rate_dps > 0.0:
-            lim = self.max_rate_dps * dt
-            nxt = min(max(nxt, self._angle - lim), self._angle + lim)
-        self._angle = nxt
-        return self._angle
-
-
 def format_payload(angle: int, drive_code: int) -> str:
     return f"{int(angle)},{int(drive_code)}"
 

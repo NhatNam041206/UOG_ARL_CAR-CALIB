@@ -16,11 +16,8 @@
 #   Same params as round-2 combo (11/12), so 6 repeats are too few to rank.
 # Round 4 (hard car only, 12 repeats): loop_left 6/12 (every failure at goal 3,
 #   with a collision), loop_right 7/12 -> 13/24.
-# Round 5 (nam 2026-11-11: zigzag after turns, wants smoothing): steering
-#   low-pass (tau) and slew limit in cmd_vel_to_control; "rev/m" = steering
-#   reversals of >= 4 deg per metre driven (zigzag).
-variants: [baseline, tau03, rate60, tau03_rate60]
-stress: [nominal, hard]
+variants: [baseline]
+stress: [hard]
 missions: [loop_left, loop_right]
 odom: [rf2o]
-repeats: 6
+repeats: 12
