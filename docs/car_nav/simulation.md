@@ -65,8 +65,11 @@ and the clearance; a red ring marks a collision.
 On Windows 11 open a **WSL Ubuntu** terminal (Docker Desktop → Settings →
 Resources → WSL integration on for that distro), `cd` to the repo there
 and run `scripts/sim/run_sim.sh rviz` (light) or `scripts/sim/run_sim.sh gui`
-(Gazebo). WSLg provides the window. In RViz use **Nav2 Goal** to send goals
-by hand. Git Bash has no display, so use it only for headless runs and `view`.
+(Gazebo). WSLg provides the window. AMCL gets the true start pose
+automatically; the red arrow "True pose" shows where the car really is. In
+RViz use **Nav2 Goal** to send goals by hand: click on a straight aisle at
+least ~1.5 m ahead and drag in the driving direction (the car only drives
+forward and needs ~0.75 m turning radius). Git Bash has no display, so use it only for headless runs and `view`.
 
 ## Backends
 

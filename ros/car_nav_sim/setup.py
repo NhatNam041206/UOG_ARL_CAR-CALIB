@@ -28,6 +28,7 @@ setup(
             "truth_odom_tf = car_nav_sim.truth_odom_tf:main",
             "mission = car_nav_sim.mission:main",
             "make_world = car_nav_sim.make_world:main",
+            "initial_pose = car_nav_sim.initial_pose:main",
         ],
     },
 )

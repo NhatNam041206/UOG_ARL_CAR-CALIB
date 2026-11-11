@@ -70,6 +70,10 @@ def _setup(context, *args, **kwargs):
                         "--roll", f"{laser.roll}", "--pitch", f"{laser.pitch}", "--yaw", f"{laser.yaw}",
                         "--frame-id", "base_link", "--child-frame-id", "laser"],
              parameters=[sim_time]),
+        # The sim's "world" frame IS the map frame (the map is rasterised from the world),
+        # so RViz can draw the true pose (/sim/ground_truth, frame world) next to AMCL's.
+        Node(package="tf2_ros", executable="static_transform_publisher", name="tf_map_to_world",
+             arguments=["--frame-id", "map", "--child-frame-id", "world"], parameters=[sim_time]),
         Node(package="car_nav", executable="scan_self_mask", name="scan_self_mask",
              output="screen", parameters=[sim_time]),
     ]
@@ -112,6 +116,12 @@ def _setup(context, *args, **kwargs):
             "odom_source": "rf2o" if odom_source == "rf2o" else "external",
         }.items(),
     ))
+
+    if not mission and not slam:
+        # Driving by hand in RViz: give AMCL the true start (the mission runner does this itself).
+        actions.append(Node(package="car_nav_sim", executable="initial_pose", name="sim_initial_pose",
+                            output="screen", parameters=[{"use_sim_time": True, "world": world_name,
+                                                          "start": start_param}]))
 
     if arg("rviz").lower() == "true":
         actions.append(Node(package="rviz2", executable="rviz2", name="rviz2", output="log",
