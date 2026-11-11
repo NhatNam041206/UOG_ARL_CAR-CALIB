@@ -13,6 +13,7 @@ Arguments:
   slam         true = build the map with slam_toolbox instead of AMCL on the known map
   rviz, gui    show RViz / the Gazebo window
   report_dir   where mission reports go                      [/data/sim]
+  seed         LiDAR noise / dropout random seed (lite)      [1]
 """
 from __future__ import annotations
 
@@ -80,7 +81,8 @@ def _setup(context, *args, **kwargs):
 
     if backend == "lite":
         actions.append(Node(package="car_nav_sim", executable="lite_sim", name="lite_sim", output="screen",
-                            parameters=[{"world": world_name, "start": start_param}]))
+                            parameters=[{"world": world_name, "start": start_param,
+                                         "seed": int(arg("seed"))}]))
     elif backend == "gazebo":
         gz_args = ["gz", "sim", "-r", sdf_path]
         if arg("gui").lower() != "true":
@@ -153,5 +155,6 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("report_dir", default_value="/data/sim"),
         DeclareLaunchArgument("exit_after_mission", default_value="true"),
+        DeclareLaunchArgument("seed", default_value="1", description="LiDAR noise seed (lite backend)"),
         OpaqueFunction(function=_setup),
     ])

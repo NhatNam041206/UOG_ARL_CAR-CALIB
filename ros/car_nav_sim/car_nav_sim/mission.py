@@ -18,6 +18,8 @@ import sys
 import time
 
 import rclpy
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import Odometry
@@ -75,6 +77,8 @@ class Tracker:
         self.servo_max = float(steer_cfg.get("servo_max", 140))
         self.truth = None
         self.amcl = None
+        self.tf = None  # tf2 Buffer, set in main(): map -> base_link is what Nav2 drives by
+        self._loc_t = -math.inf
         self.start = None  # true pose when the odom frame was born (first truth msg)
         self.reset()
 
@@ -107,21 +111,35 @@ class Tracker:
         clear = self.world.clearance(poly)
         self.min_clear = min(self.min_clear, clear)
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if t - self._loc_t >= 0.1:
+            self._loc_t = t
+            est_pose = self.estimate()
+            if est_pose is not None:
+                self.max_loc_err = max(self.max_loc_err, math.hypot(est_pose[0] - x, est_pose[1] - y))
         if t - self._trace_t >= TRACE_DT:
             self._trace_t = t
-            est = [round(v, 2) for v in self.amcl[:2]] + [round(math.degrees(self.amcl[2]))] if self.amcl else None
+            e = self.estimate()
+            est = [round(e[0], 2), round(e[1], 2), round(math.degrees(e[2]))] if e else None
             self.trace.append({
                 "t": round(t, 1), "true": [round(x, 2), round(y, 2), round(math.degrees(th))],
                 "est": est, "cmd": self.last_cmd, "cm": self.cm_state, "clear": round(clear, 2),
             })
 
+    def estimate(self):
+        """Where Nav2 thinks the car is NOW: map -> base_link (AMCL + odometry since its
+        last update). /amcl_pose alone is only published every ~0.1 m and lags."""
+        if self.tf is not None:
+            try:
+                tr = self.tf.lookup_transform("map", "base_link", Time())
+                q = tr.transform.rotation
+                return (tr.transform.translation.x, tr.transform.translation.y, _yaw(q))
+            except Exception:  # noqa: BLE001 - TF not ready yet
+                pass
+        return self.amcl
+
     def on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         p = msg.pose.pose
         self.amcl = (p.position.x, p.position.y, _yaw(p.orientation))
-        if self.truth is not None:
-            self.max_loc_err = max(
-                self.max_loc_err, math.hypot(self.amcl[0] - self.truth[0], self.amcl[1] - self.truth[1])
-            )
 
     def on_odom(self, msg: Odometry) -> None:
         """Odometry drift: /odom (rf2o or truth) mapped through the start pose vs. truth."""
@@ -170,6 +188,8 @@ def main() -> None:
     start = start_param if len(start_param) == 3 else (mission.get("start") or world.start)
     car = config_loader.load()
     tracker = Tracker(world, config_loader.footprint(car), car.get("steering") or {})
+    tracker.tf = Buffer()
+    _tf_listener = TransformListener(tracker.tf, nav)  # noqa: F841 - keeps the subscription alive
     nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
     nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)
@@ -228,7 +248,7 @@ def main() -> None:
             "collision": tracker.min_clear <= 0.0,
             "final_xy_error_m": round(math.hypot(tx - gx, ty - gy), 3),
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
-            "max_localization_error_m": round(tracker.max_loc_err, 3) if localizer == "amcl" else None,
+            "max_localization_error_m": round(tracker.max_loc_err, 3),
             "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
             "forward_share": round(tracker.n_forward / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
             "max_odom_drift_m": round(tracker.max_odom_drift, 3),

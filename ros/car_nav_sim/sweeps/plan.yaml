@@ -1,0 +1,7 @@
+# Editing this file (or any variant) on a push runs .github/workflows/nav-sim-sweep.yml:
+# every variant x mission x odometry, `repeats` times with different LiDAR noise seeds,
+# then one table of pass rates in the job log. Variants: the other files in this folder.
+variants: [baseline, lookahead11, goaltol05, amcl_scan]
+missions: [loop_left, loop_right]
+odom: [rf2o]
+repeats: 6
