@@ -1,7 +1,13 @@
 # Editing this file (or any variant) on a push runs .github/workflows/nav-sim-sweep.yml:
-# every variant x mission x odometry, `repeats` times with different LiDAR noise seeds,
-# then one table of pass rates in the job log. Variants: the other files in this folder.
-variants: [baseline, lookahead11, goaltol05, amcl_scan]
+# every variant x stress x mission x odometry, `repeats` times with different LiDAR
+# noise seeds, then one table of pass rates in the job log.
+# variants = nav2_params overrides (files in this folder),
+# stress   = what the simulated car really does (sim.yaml overrides, stress/ folder).
+#
+# Round 1 (2026-11-11, nominal car, 6 repeats, rf2o): all variants 11-12/12;
+# min clearance baseline 0.08-0.14 m, lookahead11 0.34-0.37 m.
+variants: [baseline, lookahead11, combo]
+stress: [nominal, hard]
 missions: [loop_left, loop_right]
 odom: [rf2o]
 repeats: 6

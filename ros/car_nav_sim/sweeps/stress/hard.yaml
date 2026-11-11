@@ -1,0 +1,6 @@
+description: the real car is worse than car.yaml guesses - slower reaction, faster, steers less
+sim:
+  truth:
+    latency_s: 0.9
+    speed_mps: 0.6
+    understeer_factor: 0.85

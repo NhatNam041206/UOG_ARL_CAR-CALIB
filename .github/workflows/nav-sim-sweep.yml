@@ -29,8 +29,9 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, yaml
           p = yaml.safe_load(open("ros/car_nav_sim/sweeps/plan.yaml"))
-          inc = [{"variant": v, "mission": m, "odom": o}
-                 for v in p["variants"] for m in p["missions"] for o in p["odom"]]
+          inc = [{"variant": v, "stress": st, "mission": m, "odom": o}
+                 for v in p["variants"] for st in p.get("stress", ["nominal"])
+                 for m in p["missions"] for o in p["odom"]]
           print("matrix=" + json.dumps({"include": inc}))
           print(f"repeats={int(p.get('repeats', 5))}")
           PY
@@ -42,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    name: ${{ matrix.variant }} ${{ matrix.mission }} ${{ matrix.odom }}
+    name: ${{ matrix.variant }} ${{ matrix.stress }} ${{ matrix.mission }} ${{ matrix.odom }}
     steps:
       - uses: actions/checkout@v4
       - name: Build sim image
@@ -53,18 +54,23 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -v "$PWD/variant:/out" car-calib-nav-sim:latest \
             python3 /repo/scripts/sim/apply_overrides.py /repo/ros/car_nav/config/nav2_params.yaml \
               /repo/ros/car_nav_sim/sweeps/${{ matrix.variant }}.yaml /out/nav2_params.yaml
+          docker run --rm -v "$PWD:/repo:ro" -v "$PWD/variant:/out" car-calib-nav-sim:latest \
+            python3 /repo/scripts/sim/apply_overrides.py /repo/ros/car_nav_sim/config/sim.yaml \
+              /repo/ros/car_nav_sim/sweeps/stress/${{ matrix.stress }}.yaml /out/sim.yaml sim
       - name: Missions
         env:
           V: ${{ matrix.variant }}
+          S: ${{ matrix.stress }}
           M: ${{ matrix.mission }}
           O: ${{ matrix.odom }}
           N: ${{ needs.plan.outputs.repeats }}
         run: |
           mkdir -p out
           for seed in $(seq 1 "$N"); do
-            d="out/$V-$M-$O-s$seed"; mkdir -p "$d"
+            d="out/$V@$S-$M-$O-s$seed"; mkdir -p "$d"
             timeout 600 docker run --rm -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
-              -e CAR_NAV_NAV2_PARAMS=/variant/nav2_params.yaml -v "$PWD/variant:/variant:ro" \
+              -e CAR_NAV_NAV2_PARAMS=/variant/nav2_params.yaml -e CAR_NAV_SIM_CONFIG=/variant/sim.yaml \
+              -v "$PWD/variant:/variant:ro" \
               -v "$PWD/$d:/data/sim" car-calib-nav-sim:latest \
               ros2 launch car_nav_sim sim.launch.py mission:=$M odom_source:=$O seed:=$seed report_dir:=/data/sim \
               > "$d/launch.log" 2>&1 || true
@@ -78,7 +84,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sweep-${{ matrix.variant }}-${{ matrix.mission }}-${{ matrix.odom }}
+          name: sweep-${{ matrix.variant }}-${{ matrix.stress }}-${{ matrix.mission }}-${{ matrix.odom }}
           path: out/*/report-*.json
           retention-days: 14
 
@@ -112,7 +118,7 @@ jobs:
                   row["min_clear"] = min(row["min_clear"], g["min_clearance_m"])
                   if g["result"] == "SUCCEEDED":
                       row["end_err"].append(g["final_xy_error_m"])
-          print("| variant | mission | odom | missions passed | goals ok | collisions | min clearance m | median end err m |")
+          print("| variant@car | mission | odom | missions passed | goals ok | collisions | min clearance m | median end err m |")
           print("|---|---|---|---|---|---|---|---|")
           for (v, m, o), x in sorted(rows.items()):
               e = sorted(x["end_err"]); med = e[len(e) // 2] if e else float("nan")

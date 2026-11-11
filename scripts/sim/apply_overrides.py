@@ -2,6 +2,7 @@
 """Deep-merge a sweep variant onto nav2_params.yaml.
 
     python3 apply_overrides.py base_nav2_params.yaml variant.yaml out.yaml
+    python3 apply_overrides.py sim.yaml stress.yaml out.yaml sim      # the 'sim:' section
 
 A variant file holds only the keys it changes, nested exactly like
 nav2_params.yaml (node -> ros__parameters -> key). Keys that do not exist
@@ -28,8 +29,8 @@ def main(base_path, variant_path, out_path):
         base = yaml.safe_load(fh)
     with open(variant_path, encoding="utf-8") as fh:
         variant = yaml.safe_load(fh) or {}
-    variant.pop("description", None)
-    merge(base, variant.get("nav2_params") or {})
+    section = sys.argv[4] if len(sys.argv) > 4 else "nav2_params"
+    merge(base, variant.get(section) or {})
     with open(out_path, "w", encoding="utf-8") as fh:
         yaml.safe_dump(base, fh, sort_keys=False)
 
