@@ -14,6 +14,8 @@ car, sim.launch.py in the simulator). Starts:
   planner (Smac Hybrid-A*, DUBIN forward only), controller (RPP),
   behavior server (wait only), bt_navigator (no spin/backup),
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
+  pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
+                     pd_follow_path -> cmd_vel_nav. controller:=rpp uses Pure Pursuit.
   cmd_vel_to_control /cmd_vel -> "<angle>,<drive_code>" on /car/raspi5/control (ROS only)
 
 Nothing here talks MQTT: on the car, the WO-02 forwarder copies
@@ -69,6 +71,7 @@ def generate_launch_description() -> LaunchDescription:
     slam = LaunchConfiguration("slam")
     odom_source = LaunchConfiguration("odom_source")
     bt_xml = LaunchConfiguration("bt_xml")
+    controller = LaunchConfiguration("controller")
     autostart = LaunchConfiguration("autostart")
     log_level = LaunchConfiguration("log_level")
 
@@ -118,6 +121,9 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[params], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")], **common),
         Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator",
              parameters=[params], remappings=remap_tf, **common),
+        Node(package="car_nav", executable="pd_path_follower", name="pd_path_follower",
+             parameters=[params], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")],
+             condition=IfCondition(PythonExpression(["'", controller, "' == 'pd'"])), **common),
         Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
@@ -130,8 +136,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("params_file", default_value=os.environ.get(
             "CAR_NAV_NAV2_PARAMS", os.path.join(share, "config", "nav2_params.yaml"))),
         DeclareLaunchArgument("slam_params_file", default_value=os.path.join(share, "config", "slam_toolbox.yaml")),
-        DeclareLaunchArgument("bt_xml", default_value=os.path.join(
-            share, "behavior_trees", "navigate_forward_only.xml")),
+        DeclareLaunchArgument("controller", default_value="pd",
+                              description="pd (PD path follower) | rpp (Nav2 Regulated Pure Pursuit)"),
+        DeclareLaunchArgument("bt_xml", default_value=PythonExpression([
+            "'", os.path.join(share, "behavior_trees", "navigate_forward_only"), "' + "
+            "('_pd' if '", controller, "' == 'pd' else '') + '.xml'"])),
         DeclareLaunchArgument("map", default_value="", description="map yaml for AMCL (slam:=false)"),
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("odom_source", default_value="rf2o", description="rf2o | external"),

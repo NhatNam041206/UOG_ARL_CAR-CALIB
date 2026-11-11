@@ -26,6 +26,7 @@ setup(
             "scan_probe = car_nav.scan_probe:main",
             "scan_upright = car_nav.scan_upright:main",
             "cmd_vel_to_control = car_nav.cmd_vel_to_control:main",
+            "pd_path_follower = car_nav.pd_path_follower:main",
         ],
     },
 )

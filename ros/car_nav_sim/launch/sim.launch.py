@@ -151,6 +151,7 @@ def _setup(context, *args, **kwargs):
             "map": "" if slam else map_yaml,
             "slam": "true" if slam else "false",
             "odom_source": "rf2o" if odom_source == "rf2o" else "external",
+            "controller": arg("controller"),
         }.items(),
     ))
 
@@ -185,6 +186,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("start", default_value="", description="'x,y,yaw' or a world anchor id"),
         DeclareLaunchArgument("mission", default_value=""),
         DeclareLaunchArgument("odom_source", default_value="rf2o"),
+        DeclareLaunchArgument("controller", default_value="pd", description="pd | rpp (steering controller)"),
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="false"),
         DeclareLaunchArgument("gui", default_value="false"),

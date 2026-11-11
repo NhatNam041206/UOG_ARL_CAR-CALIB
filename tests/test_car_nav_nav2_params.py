@@ -79,3 +79,20 @@ def test_behavior_tree_has_no_spin_or_backup():
 def test_bt_waits_long_enough_for_servers_to_accept_goals():
     # 20 ms (Nav2 default) made goals fail on a slower laptop; the Pi is no faster.
     assert rp("bt_navigator")["default_server_timeout"] >= 200
+
+
+def test_pd_follower_matches_rpp_and_goal_checker():
+    pd = rp("pd_path_follower")
+    assert pd["speed_mps"] == rp("controller_server")["FollowPath"]["desired_linear_vel"]
+    assert pd["xy_goal_tolerance"] == rp("controller_server")["general_goal_checker"]["xy_goal_tolerance"]
+    assert all(isinstance(pd[k], float) for k in ("kp", "kd", "ff", "speed_mps", "xy_goal_tolerance"))
+
+
+def test_pd_behavior_tree_differs_only_in_follow_path_server():
+    a = P.BT_XML.read_text()
+    b = P.BT_XML.with_name("navigate_forward_only_pd.xml").read_text()
+    fp = [e for e in ET.fromstring(b).iter() if e.tag == "FollowPath"]
+    assert len(fp) == 1 and fp[0].get("server_name") == "pd_follow_path"
+    strip = lambda t: [l for l in t.split("<!--")[1].split("-->")[1].splitlines()]  # noqa: E731
+    diff = [x for x, y in zip(strip(a), strip(b)) if x != y]
+    assert len(diff) == 1 and "FollowPath path=" in diff[0]

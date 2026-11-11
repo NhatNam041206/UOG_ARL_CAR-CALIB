@@ -11,7 +11,7 @@ the car uses.
   │ lite_sim (2D)  or  Gazebo        │   │ scan_self_mask → scan_upright → /scan_nav  │
   │  • LiDAR upside down, frame laser├──►│ rf2o (odom) · AMCL or slam_toolbox (map)   │
   │  • actuator model: latency,      │   │ Smac Hybrid-A* (DUBIN, forward only)       │
-  │    fixed speed, understeer       │◄──┤ RPP → collision_monitor → cmd_vel_to_control│
+  │    fixed speed, understeer       │◄──┤ PD  → collision_monitor → cmd_vel_to_control│
   └──────────────────────────────────┘   └───────────── "/car/raspi5/control" ────────┘
          ▲ truth pose → mission scorer (clearance, end error, localisation error)
 ```
@@ -131,6 +131,16 @@ without rebuilding.
 * Latency 0.65 s: at 0.5 m/s the car drives 0.33 m before a command acts.
   This is why lookahead is 1.1 m and the goal tolerance is 0.5 m
   (position only: the car cannot fix its heading without driving on).
+* Steering controller (`controller:=pd`, default): a classical PD on the
+  planned path, like the VISION lane PID, in `car_nav/pd_follower.py`:
+  curvature = path curvature − kp·sideways offset − kd·sin(heading error).
+  The heading error is the rate of change of the offset along the path, so
+  kd is the D term that stops the rocking Pure Pursuit (a pure P: gain =
+  1/lookahead) showed after turns. Gains `pd_path_follower.kp/kd` in
+  nav2_params.yaml (0.7 / 1.2), tunable without a rebuild. Too much kd reacts
+  to AMCL heading noise and, with the 0.65 s delay, rocks again; too little
+  kp leaves the car off the path in turns when it understeers.
+  `controller:=rpp` brings back Nav2's Regulated Pure Pursuit.
 * One speed means the collision monitor cannot slow down. Its "approach"
   zone follows the current curvature and the bridge turns any speed it
   scales below 0.3 m/s into STOP, so the car stops when the path ahead is

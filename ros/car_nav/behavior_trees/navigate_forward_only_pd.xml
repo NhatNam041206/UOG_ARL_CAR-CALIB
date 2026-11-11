@@ -1,0 +1,34 @@
+<!--
+  NAV2 behaviour tree for the forward-only rear-steer car, PD controller
+  variant: identical to navigate_forward_only.xml except that FollowPath goes
+  to car_nav's PD path follower (action pd_follow_path) instead of
+  controller_server's Pure Pursuit. Selected by nav.launch.py controller:=pd.
+  Same shape as Nav2's default navigate_to_pose tree, minus Spin and
+  BackUp (the car cannot turn in place and NAV2 never reverses: drive
+  code 2 is unconfirmed). Recovery = clear costmaps, wait, replan.
+-->
+<root BTCPP_format="4" main_tree_to_execute="NavigateForwardOnly">
+  <BehaviorTree ID="NavigateForwardOnly">
+    <RecoveryNode number_of_retries="4" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" server_name="pd_follow_path"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <Sequence name="RecoveryActions">
+        <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+        <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+        <Wait wait_duration="2.0"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
