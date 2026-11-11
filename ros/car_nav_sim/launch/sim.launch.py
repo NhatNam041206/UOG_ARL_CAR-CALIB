@@ -123,6 +123,7 @@ def _setup(context, *args, **kwargs):
         runner = Node(package="car_nav_sim", executable="mission", name="sim_mission", output="screen",
                       parameters=[{"use_sim_time": True, "mission": mission, "report_dir": arg("report_dir"),
                                    "localizer": "slam" if slam else "amcl",
+                                   "odom_source": odom_source,
                                    "start": start_param}])
         actions.append(runner)
         if arg("exit_after_mission").lower() == "true":

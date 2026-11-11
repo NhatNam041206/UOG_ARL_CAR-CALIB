@@ -131,18 +131,19 @@ def render(report_path: str, out_path: str) -> dict:
             f'<td class="{"ok" if ok else "bad"}">{html.escape(g["result"])}{" · COLLISION" if g["collision"] else ""}</td>'
             f'<td>{g["time_s"]}</td><td>{g["distance_m"]}</td><td>{g["min_clearance_m"]}</td>'
             f'<td>{g["final_xy_error_m"]}</td><td>{g.get("max_localization_error_m")}</td>'
-            f'<td>{g.get("steer_saturated_share")}</td></tr>')
+            f'<td>{g.get("steer_saturated_share")}</td><td>{html.escape(str(g.get("nav2_error") or ""))}</td></tr>')
 
     passed = bool(rep.get("passed"))
     title = f'{os.path.splitext(rep.get("mission", "mission"))[0]} · {os.path.basename(report_path)}'
-    note = "" if frames else ('<p class="warn">This report has no trace (made before 2026-11-11). '
-                              'Pull the branch and run the mission again to get the animation.</p>')
+    note = "" if frames else ('<p class="warn">No trace in this report, so Play has nothing to show: the '
+                              'sim image was built before the trace was added. Run '
+                              '<code>scripts/sim/run_sim.sh build</code>, then the mission again.</p>')
     car = {"xf": fp.get("x_front", 0.16), "xr": fp.get("x_rear", -0.37), "hw": fp.get("half_width", 0.135)}
     truth = rep.get("truth") or {}
     page = TEMPLATE.format(
         title=html.escape(title), W=W, H=H, svg="\n".join(svg), rows="\n".join(rows), note=note,
         verdict="PASS" if passed else "FAIL", vclass="ok" if passed else "bad",
-        meta=html.escape(f'localizer {rep.get("localizer")} · speed {truth.get("speed_mps")} m/s · '
+        meta=html.escape(f'odometry {rep.get("odom_source") or "?"} · localizer {rep.get("localizer")} · speed {truth.get("speed_mps")} m/s · '
                          f'latency {truth.get("latency_s")} s · understeer {truth.get("understeer_factor")}'),
         frames=json.dumps(frames), car=json.dumps(car), x0=x0, y1=y1, scale=SCALE,
     )
@@ -181,7 +182,7 @@ button {{ padding:4px 12px; }} #info {{ font-family:ui-monospace,monospace; font
 <select id="speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="5">5×</option></select>
 <input type="range" id="slider" min="0" max="0" value="0"><span id="info"></span></div>
 <div class="card"><table><tr><th>Goal</th><th>Result</th><th>Time s</th><th>Dist m</th><th>Min clear m</th>
-<th>End err m</th><th>Max loc err m</th><th>Steer sat</th></tr>{rows}</table></div>
+<th>End err m</th><th>Max loc err m</th><th>Steer sat</th><th>Nav2 error</th></tr>{rows}</table></div>
 <script>
 const F = {frames}, CAR = {car}, X0 = {x0}, Y1 = {y1}, S = {scale};
 const sx = x => (x - X0) * S, sy = y => (Y1 - y) * S;
@@ -191,6 +192,7 @@ const outline = (x, y, thDeg) => {{
 }};
 const slider = document.getElementById('slider'), info = document.getElementById('info');
 slider.max = Math.max(F.length - 1, 0);
+if (!F.length) {{ document.getElementById('play').disabled = true; slider.disabled = true; }}
 function show(i) {{
   const f = F[i]; if (!f) {{ info.textContent = 'no trace'; return; }}
   document.getElementById('car').setAttribute('points', outline(f.x, f.y, f.th));

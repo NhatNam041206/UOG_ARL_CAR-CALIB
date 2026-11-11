@@ -27,7 +27,9 @@ latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
 mission() {
   local name="$1"; shift
   local before; before=$(latest_report || true)
-  run ros2 launch car_nav_sim sim.launch.py backend:=lite mission:="$name" "$@" || true
+  local log; log="run_logs/sim/${name}-$(date +%Y%m%d-%H%M%S).log"
+  run ros2 launch car_nav_sim sim.launch.py backend:=lite mission:="$name" "$@" 2>&1 | tee "$log" || true
+  echo "full log: $log"
   local rep; rep=$(latest_report || true)
   if [[ -z "$rep" || "$rep" == "$before" ]]; then
     echo "FAIL $name: no report written (see the log above)"; return 1
@@ -37,7 +39,10 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 for i, g in enumerate(r["goals"], 1):
     print(f"  goal {i}: {g['result']:9s} t={g['time_s']:6.1f}s clear={g['min_clearance_m']:.2f}m "
-          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['steer_saturated_share']}")
+          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['steer_saturated_share']}"
+          + (f"  nav2: {g['nav2_error']}" if g.get("nav2_error") else ""))
+if not any(g.get("trace") for g in r["goals"]):
+    print("  (no trace in this report: the image is older than the code -> scripts/sim/run_sim.sh build)")
 print(("PASS " if r["passed"] else "FAIL ") + r["mission"] + "  report: " + sys.argv[1])
 sys.exit(0 if r["passed"] else 1)
 PY

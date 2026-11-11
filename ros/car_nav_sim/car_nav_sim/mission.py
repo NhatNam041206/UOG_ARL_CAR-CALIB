@@ -47,6 +47,17 @@ def _wrap(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
 
+def _nav_error(nav: BasicNavigator) -> str | None:
+    """Error code + message of the last NavigateToPose result (Jazzy), if any."""
+    try:
+        res = nav.result_future.result().result
+    except Exception:  # noqa: BLE001 - older/newer BasicNavigator, cancelled goal
+        return None
+    code = getattr(res, "error_code", 0)
+    msg = getattr(res, "error_msg", "")
+    return f"{code} {msg}".strip() if code else None
+
+
 def _pose(nav: BasicNavigator, x: float, y: float, yaw: float) -> PoseStamped:
     p = PoseStamped()
     p.header.frame_id = "map"
@@ -150,6 +161,7 @@ def main() -> None:
     nav.declare_parameter("report_dir", "/data/sim")
     nav.declare_parameter("localizer", "amcl")  # "amcl" or "slam"
     nav.declare_parameter("start", [0.0])
+    nav.declare_parameter("odom_source", "")
     mission_path = sim_config.resolve("missions", nav.get_parameter("mission").value)
     with open(mission_path, "r", encoding="utf-8") as fh:
         mission = yaml.safe_load(fh) or {}
@@ -197,6 +209,7 @@ def main() -> None:
                 nav.cancelTask()
                 timed_out = True
         result = nav.getResult()
+        err = _nav_error(nav)
         sim_dt = nav.get_clock().now().nanoseconds * 1e-9 - sim_t0
         # Let the car coast to a stop (latency + braking) before scoring the end pose.
         settle_t0 = nav.get_clock().now().nanoseconds * 1e-9
@@ -208,6 +221,7 @@ def main() -> None:
             "result": "TIMEOUT" if timed_out else {
                 TaskResult.SUCCEEDED: "SUCCEEDED", TaskResult.CANCELED: "CANCELED", TaskResult.FAILED: "FAILED",
             }.get(result, str(result)),
+            "nav2_error": err,  # Nav2 error code / message when the goal did not succeed
             "time_s": round(sim_dt, 2),
             "distance_m": round(tracker.dist, 2),
             "min_clearance_m": round(tracker.min_clear, 3),
@@ -231,6 +245,7 @@ def main() -> None:
         "mission": os.path.basename(mission_path),
         "world": world.name,
         "localizer": localizer,
+        "odom_source": nav.get_parameter("odom_source").value,
         "car_yaml": car.get("_path"),
         "sim_yaml": sim_config.load_sim().get("_path"),
         "truth": sim_config.load_sim().get("truth"),
