@@ -10,6 +10,8 @@ from car_nav.actuation import table_from_cfg
 CAR = yaml.safe_load(P.CAR_YAML.read_text())
 NAV = yaml.safe_load(P.NAV2_YAML.read_text())
 LATENCY_S = 0.65  # lidar-nav thread estimate; also config/sim.yaml truth.latency_s
+SCAN_HZ = 7.0     # RPLIDAR A1
+DECEL_MPS2 = 2.0  # config/sim.yaml truth.decel_mps2 (unmeasured)
 
 
 def rp(node):
@@ -47,7 +49,11 @@ def test_latency_margins():
     assert fp["lookahead_dist"] >= 2 * dead
     cm = rp("collision_monitor")
     stop = ast.literal_eval(cm["PolygonStop"]["points"])
-    assert max(x for x, _ in stop) >= CAR["footprint"]["x_front"] + 0.1
+    # bumper: reach past the nose by the distance the car covers before a
+    # STOP acts (one scan period + latency + braking at the sim's 2 m/s^2)
+    stop_dist = v / SCAN_HZ + dead + v * v / (2 * DECEL_MPS2)
+    assert max(x for x, _ in stop) >= CAR["footprint"]["x_front"] + stop_dist
+    assert max(abs(y) for _, y in stop) <= CAR["footprint"]["half_width"] + 0.03  # not wider than needed
     # approach scales v to d / T; the bridge stops below the threshold, so
     # the car stops for a blocked path within threshold * T metres.
     thr = rp("cmd_vel_to_control")["forward_threshold_mps"]

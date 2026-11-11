@@ -38,7 +38,9 @@ Reports go to `run_logs/sim/report-<mission>-<time>.json`. Per goal: result,
 time, distance, **smallest clearance** between the car outline and any
 obstacle (0 = collision), **end position/heading error** after the car has
 coasted to a stop, **worst localisation error** (AMCL vs. truth), and the
-share of commands at a servo limit.
+share of commands at a servo limit, plus a 0.5 s trace (true pose, AMCL
+pose, command, collision-monitor state, clearance) that CI prints for any
+failed goal.
 
 GitHub Actions (`nav2 simulation` workflow) builds the image and runs all
 four missions on every push that touches `ros/` or `docker/sim/`; download
@@ -95,9 +97,12 @@ without rebuilding.
 * One speed means the collision monitor cannot slow down. Its "approach"
   zone follows the current curvature and the bridge turns any speed it
   scales below 0.3 m/s into STOP, so the car stops when the path ahead is
-  blocked within ~0.54 m. A short bumper zone (0.30 m) catches sudden
-  obstacles. A straight 0.75 m stop box was tried first and froze the car
-  before turns next to pillars.
+  blocked within ~0.54 m. A narrow bumper zone reaching 0.64 m ahead of
+  the front axle (0.48 m past the nose = scan period + latency + braking)
+  is the backstop when that prediction is wrong, because the wheels follow
+  a new curvature only ~0.65 s later. A shorter 0.30 m bumper fired too
+  late and the car hit a shelf; a wider 0.75 m box froze the car before
+  turns next to pillars.
 
 ## Upside-down LiDAR: why `/scan_nav`
 

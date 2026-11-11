@@ -70,7 +70,12 @@ jobs:
           import json, sys
           r = json.load(open(sys.argv[1]))
           for i, g in enumerate(r["goals"], 1):
+              trace = g.pop("trace", [])
               print(f"goal {i}: {g}")
+              if g["result"] != "SUCCEEDED" or g["collision"]:
+                  print(f"  trace of goal {i} (t, true x y deg, AMCL x y deg, command, collision monitor, clearance):")
+                  for row in trace:
+                      print(f"    {row}")
           print(("PASS " if r["passed"] else "FAIL ") + sys.argv[1])
           sys.exit(0 if r["passed"] else 1)
           PY

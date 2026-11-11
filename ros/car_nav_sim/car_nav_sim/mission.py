@@ -36,6 +36,9 @@ from . import sim_config
 from .world import World, footprint_polygon
 
 
+TRACE_DT = 0.5
+
+
 def _yaw(q) -> float:
     return 2.0 * math.atan2(q.z, q.w)
 
@@ -75,6 +78,10 @@ class Tracker:
         self.cm = {}  # collision monitor action -> number of state messages
         self.n_cm = 0
         self._last = None
+        self.trace = []  # one row every TRACE_DT s of sim time, for debugging failed goals
+        self._trace_t = -math.inf
+        self.last_cmd = None
+        self.cm_state = ""
 
     def on_truth(self, msg: Odometry) -> None:
         p = msg.pose.pose
@@ -86,7 +93,16 @@ class Tracker:
         if self.start is None:
             self.start = self.truth
         poly = footprint_polygon(x, y, th, self.fp.x_front, self.fp.x_rear, self.fp.half_width)
-        self.min_clear = min(self.min_clear, self.world.clearance(poly))
+        clear = self.world.clearance(poly)
+        self.min_clear = min(self.min_clear, clear)
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if t - self._trace_t >= TRACE_DT:
+            self._trace_t = t
+            est = [round(v, 2) for v in self.amcl[:2]] + [round(math.degrees(self.amcl[2]))] if self.amcl else None
+            self.trace.append({
+                "t": round(t, 1), "true": [round(x, 2), round(y, 2), round(math.degrees(th))],
+                "est": est, "cmd": self.last_cmd, "cm": self.cm_state, "clear": round(clear, 2),
+            })
 
     def on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         p = msg.pose.pose
@@ -111,6 +127,7 @@ class Tracker:
         names = {0: "none", 1: "stop", 2: "slowdown", 3: "approach", 4: "limit"}
         key = f"{names.get(msg.action_type, msg.action_type)}:{msg.polygon_name}"
         self.cm[key] = self.cm.get(key, 0) + 1
+        self.cm_state = key
         self.n_cm += 1
 
     def on_control(self, msg: String) -> None:
@@ -118,6 +135,7 @@ class Tracker:
         if parsed is None:
             return
         angle, code = parsed
+        self.last_cmd = msg.data
         self.n_cmd += 1
         if code == 1:
             self.n_forward += 1
@@ -202,9 +220,11 @@ def main() -> None:
             "max_odom_drift_m": round(tracker.max_odom_drift, 3),
             "collision_monitor": tracker.cm,
             "true_end_pose": [round(tx, 3), round(ty, 3), round(math.degrees(tth), 1)],
+            # truth / AMCL pose, last command, collision-monitor state every 0.5 s
+            "trace": tracker.trace,
         }
         results.append(entry)
-        nav.get_logger().info(f"goal {i + 1}: {json.dumps(entry)}")
+        nav.get_logger().info(f"goal {i + 1}: {json.dumps({k: v for k, v in entry.items() if k != 'trace'})}")
 
     ok = bool(results) and all(r["result"] == "SUCCEEDED" and not r["collision"] for r in results)
     report = {
