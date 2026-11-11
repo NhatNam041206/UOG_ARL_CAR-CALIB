@@ -25,6 +25,11 @@ services:
       - QT_X11_NO_MITSHM=1
     volumes:
       # Edit these on the laptop; no rebuild needed (restart the run).
+      # Whole packages (the image is built with --symlink-install, so Python
+      # code and launch files are read from here). Rebuild only after adding a
+      # new file to launch/ or rviz/, a new executable, or a Dockerfile change.
+      - ./ros/car_nav:/ws/src/car_nav:ro
+      - ./ros/car_nav_sim:/ws/src/car_nav_sim:ro
       - ./ros/car_nav/config:/opt/car_nav_ws/share/car_nav/config:ro
       - ./ros/car_nav/behavior_trees:/opt/car_nav_ws/share/car_nav/behavior_trees:ro
       - ./ros/car_nav_sim/config:/opt/car_nav_ws/share/car_nav_sim/config:ro

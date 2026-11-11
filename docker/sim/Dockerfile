@@ -33,21 +33,37 @@ RUN git clone https://github.com/MAPIRlab/rf2o_laser_odometry.git \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb x11vnc novnc python3-websockify \
     && rm -rf /var/lib/apt/lists/*
-COPY ros/car_nav /ws/src/car_nav
-COPY ros/car_nav_sim /ws/src/car_nav_sim
+# Layers ordered so a code change only redoes the last, few-second step:
+#   rf2o (C++, ~2 min) -> rosdep (package.xml only) -> our Python packages.
+RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
+    && rosdep install --from-paths /ws/src --ignore-src -y --rosdistro ${ROS_DISTRO} \
+         --skip-keys "cmake_modules" \
+    && rm -rf /var/lib/apt/lists/*
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
+    && cd /ws && colcon build --merge-install --install-base /opt/car_nav_ws \
+        --packages-select rf2o_laser_odometry \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && rm -rf /ws/build/rf2o_laser_odometry /ws/log
 
 # car_nav lists the car's sensor drivers; the simulator does not need them.
 # rf2o's package.xml names the ROS 1 key cmake_modules (no Jazzy entry and
 # unused by its CMakeLists); Boost/Eigen are installed above.
+COPY ros/car_nav/package.xml /ws/src/car_nav/package.xml
+COPY ros/car_nav_sim/package.xml /ws/src/car_nav_sim/package.xml
 RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
     && rosdep install --from-paths /ws/src --ignore-src -y --rosdistro ${ROS_DISTRO} \
-         --skip-keys "sllidar_ros2 astra_camera cmake_modules" \
+         --skip-keys "sllidar_ros2 astra_camera cmake_modules rf2o_laser_odometry" \
     && rm -rf /var/lib/apt/lists/*
 
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
-    && cd /ws && colcon build --merge-install --install-base /opt/car_nav_ws \
-        --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-    && rm -rf /ws/build /ws/log
+# --symlink-install: the installed Python code and launch files point into
+# /ws/src, which docker-compose.sim.yml mounts from the repo, so editing them
+# on the laptop needs no rebuild (only new files / new executables do).
+COPY ros/car_nav /ws/src/car_nav
+COPY ros/car_nav_sim /ws/src/car_nav_sim
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && . /opt/car_nav_ws/setup.sh \
+    && cd /ws && colcon build --merge-install --install-base /opt/car_nav_ws --symlink-install \
+        --packages-select car_nav car_nav_sim \
+    && rm -rf /ws/log
 
 COPY docker/sim/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data/sim

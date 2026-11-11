@@ -75,6 +75,14 @@ where the car really is. In RViz use **Nav2 Goal** to send goals by hand:
 click on a straight aisle at least ~1.5 m ahead and drag in the driving
 direction (the car only drives forward and needs ~0.75 m turning radius).
 
+**When to rebuild.** `docker-compose.sim.yml` mounts `ros/car_nav` and
+`ros/car_nav_sim` into the container and the image is built with
+`--symlink-install`, so edits to Python code, launch files, configs, worlds and
+missions take effect on the next run with no build. Rebuild
+(`run_sim.sh build`) only after a Dockerfile change, a new executable in
+`setup.py`, or a new file in `launch/` or `rviz/`. A rebuild after a code
+change redoes only the last layer (seconds); rf2o (C++, ~2 min) stays cached.
+
 ## Backends
 
 | | `lite` (default) | `gazebo` |
