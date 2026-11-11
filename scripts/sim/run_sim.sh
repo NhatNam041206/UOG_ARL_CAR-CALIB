@@ -13,6 +13,12 @@ cd "$(dirname "$0")/../.."
 COMPOSE=(docker compose -f docker-compose.sim.yml)
 mkdir -p run_logs/sim
 
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is not running. Start Docker Desktop, wait for 'Engine running', then retry." >&2
+  echo "(check with: docker version  -> it must show a 'Server:' section)" >&2
+  exit 3
+fi
+
 run() { "${COMPOSE[@]}" run --rm sim "$@"; }
 
 latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
