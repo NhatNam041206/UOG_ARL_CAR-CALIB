@@ -62,13 +62,14 @@ outline through the run and show the command, the collision-monitor state
 and the clearance; a red ring marks a collision.
 
 **Live (RViz):** `scripts/sim/run_sim.sh rviz`, `campus`, `campus-mission`
-or `gui`. On Windows (Git Bash or WSL) RViz runs on a virtual screen inside
-the container and you watch it in the browser: open
+or `gui`. From a **WSL Ubuntu** terminal (Docker Desktop -> Settings ->
+Resources -> WSL integration on for that distro; not the `docker-desktop`
+distro, it has no bash) or a Linux desktop (`xhost +local:` once) RViz opens
+as a normal window: the script mounts `/tmp/.X11-unix` (WSLg) into the
+container. From Git Bash, or with `SIM_VIEW=browser`, RViz runs on a virtual
+screen inside the container instead: open
 `http://localhost:6080/vnc.html?autoconnect=1&resize=scale` about 15 s after
-the start (the port is bound to 127.0.0.1 only). This needs no WSLg or X
-server; Docker Desktop could not pass the WSLg socket into the container on
-nam's laptop. On a Linux desktop the default is a normal window (`xhost
-+local:` once); force either way with `SIM_VIEW=browser` or `SIM_VIEW=x11`.
+the start (bound to 127.0.0.1 only). Force a window with `SIM_VIEW=x11`.
 AMCL gets the true start pose automatically; the red arrow "True pose" shows
 where the car really is. In RViz use **Nav2 Goal** to send goals by hand:
 click on a straight aisle at least ~1.5 m ahead and drag in the driving

@@ -10,7 +10,7 @@
 #   scripts/sim/run_sim.sh all                       # every mission, both odometry sources
 #   scripts/sim/run_sim.sh view                      # reports -> run_logs/sim/view/index.html (browser)
 #   scripts/sim/run_sim.sh shell                     # bash inside the image
-# Windows: RViz opens in the browser at http://localhost:6080 (SIM_VIEW=x11 for a window).
+# RViz: a window from WSL Ubuntu / Linux; from Git Bash in the browser at http://localhost:6080 (SIM_VIEW=browser|x11).
 # Extra args are ros2 launch arguments of car_nav_sim sim.launch.py.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -27,14 +27,15 @@ RUN_EXTRA=()
 run() { "${COMPOSE[@]}" run --rm ${RUN_EXTRA[@]+"${RUN_EXTRA[@]}"} sim "$@"; }
 
 # A window (RViz / Gazebo) needs a display. Two ways:
-#   browser (default on Windows / Git Bash / WSL): RViz on a virtual screen in
-#            the container, open http://localhost:6080 (noVNC). Needs nothing.
-#   x11     (default on a Linux desktop): RViz window via the host X server.
+#   x11     (default when DISPLAY is set: Linux desktop, WSL Ubuntu via WSLg):
+#            a normal RViz window, /tmp/.X11-unix mounted into the container.
+#   browser (default otherwise, e.g. Git Bash): RViz on a virtual screen in the
+#            container, open http://localhost:6080 (noVNC). Needs nothing.
 # Force one with SIM_VIEW=browser or SIM_VIEW=x11.
 need_display() {
   local view="${SIM_VIEW:-}"
   if [[ -z "$view" ]]; then
-    if [[ "$(uname -s)" == Linux && -n "${DISPLAY:-}" && ! -d /mnt/wslg ]]; then view=x11; else view=browser; fi
+    if [[ "$(uname -s)" == Linux && -n "${DISPLAY:-}" ]]; then view=x11; else view=browser; fi
   fi
   if [[ "$view" == browser ]]; then
     # 127.0.0.1 only: the page is not reachable from the LAN
