@@ -372,7 +372,7 @@ pd_path_follower:
     progress_time_s: 10.0
     global_frame: map
     robot_frame: base_link
-    transform_tolerance_s: 0.5
+    max_pose_age_s: 0.5      # stop while the pose is older (overloaded computer, lagging odometry)
 
 cmd_vel_to_control:
   ros__parameters:

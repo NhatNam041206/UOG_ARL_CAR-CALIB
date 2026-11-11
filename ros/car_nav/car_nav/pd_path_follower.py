@@ -12,6 +12,10 @@ cmd_vel_to_control downstream are unchanged. Gains are ROS parameters
 (nav2_params.yaml, section pd_path_follower) so they can be tuned without a
 rebuild.
 
+Stops the car (zero cmd_vel -> STOP) while the pose map -> base_link is
+older than max_pose_age_s, e.g. when the computer is overloaded and odometry
+/ AMCL fall behind; it drives on once the pose is fresh again.
+
 Done when the car is within xy_goal_tolerance of the path end, or has passed
 it (remaining path < tolerance). Aborts when it moves less than
 progress_radius_m in progress_time_s (stuck), like Nav2's progress checker.
@@ -55,7 +59,7 @@ class PDPathFollower(Node):
         p("progress_time_s", 10.0)
         p("global_frame", "map")
         p("robot_frame", "base_link")
-        p("transform_tolerance_s", 0.5)
+        p("max_pose_age_s", 0.5)
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
@@ -90,8 +94,12 @@ class PDPathFollower(Node):
             self.get_logger().warn(f"no pose: {exc}", throttle_duration_sec=2.0)
             return None
         age = (self.get_clock().now() - Time.from_msg(t.header.stamp)).nanoseconds * 1e-9
-        if age > self._f("transform_tolerance_s") + 1.0:
-            self.get_logger().warn(f"pose is {age:.1f} s old", throttle_duration_sec=2.0)
+        if age > self._f("max_pose_age_s"):
+            # Steering on an old pose turns the car long after it has turned
+            # (seen in the sim: a 6-8 s backlog drove it into a wall). Stop.
+            self.get_logger().warn(f"pose is {age:.2f} s old (> {self._f('max_pose_age_s')} s): stopping",
+                                   throttle_duration_sec=1.0)
+            return None
         tr = t.transform.translation
         return tr.x, tr.y, _yaw(t.transform.rotation)
 
