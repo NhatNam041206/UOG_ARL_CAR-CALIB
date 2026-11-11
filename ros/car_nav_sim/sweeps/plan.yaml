@@ -11,9 +11,12 @@
 #   lookahead11   loop_left 0/6, loop_right 1/6
 #   combo         loop_left 5/6, loop_right 6/6   -> combo is now the default
 #   (nav2_params.yaml), so `baseline` below = combo.
-# Round 3: confirm the new default on both cars.
+# Round 3 (new default): nominal 12/12 (min clearance 0.33 m),
+#   hard 7/12 (loop_left 3/6 with 4 collisions, loop_right 4/6).
+#   Same params as round-2 combo (11/12), so 6 repeats are too few to rank.
+# Round 4: hard car only, 12 repeats, to get a usable number.
 variants: [baseline]
-stress: [nominal, hard]
+stress: [hard]
 missions: [loop_left, loop_right]
 odom: [rf2o]
-repeats: 6
+repeats: 12
