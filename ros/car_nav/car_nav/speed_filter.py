@@ -32,12 +32,17 @@ from typing import Sequence
 
 def scan_observability(ranges: Sequence[float], angle_min: float, angle_inc: float,
                        max_range: float = 8.0, facing_cos: float = 0.5,
-                       n_low: int = 10, n_high: int = 50, step: int = 2) -> tuple[float, int]:
+                       n_low: int = 10, n_high: int = 50, min_span: float = 0.25,
+                       max_span: float = 0.8, max_resid: float = 0.03, stride: int = 2) -> tuple[float, int]:
     """(w in 0..1, n facing points). Scan in the base frame (x = forward).
 
-    A point "faces" the driving direction when the local wall normal (from
-    its neighbours `step` beams away) has |cos(angle to x)| >= facing_cos.
-    w = 0 below n_low facing points, 1 above n_high, linear between.
+    For every `stride`-th point, a straight line is fitted (PCA) to its
+    neighbours, growing the window until it spans >= min_span metres (with
+    1 cm range noise a 5 cm window beside the car gives a random normal).
+    The point "faces" the driving direction when that wall's normal has
+    |cos(angle to x)| >= facing_cos and the wall is straight (residual <=
+    max_resid). w = 0 below n_low facing points, 1 above n_high (counted
+    on every point, i.e. stride x the sampled ones).
     """
     pts: list[tuple[float, float] | None] = []
     for i, r in enumerate(ranges):
@@ -46,18 +51,46 @@ def scan_observability(ranges: Sequence[float], angle_min: float, angle_inc: flo
         else:
             a = angle_min + i * angle_inc
             pts.append((r * math.cos(a), r * math.sin(a)))
+    n_pts = len(pts)
     n = 0
-    for i in range(step, len(pts) - step):
-        p, a, b = pts[i], pts[i - step], pts[i + step]
-        if p is None or a is None or b is None:
+    for i in range(0, n_pts, stride):
+        if pts[i] is None:
             continue
-        tx, ty = b[0] - a[0], b[1] - a[1]
-        tl = math.hypot(tx, ty)
-        if tl < 1e-6 or tl > 0.5:      # gap between two objects, not a surface
+        lo = hi = i
+        span = 0.0
+        ok = True
+        while span < min_span:
+            if lo - 1 < 0 or hi + 1 >= n_pts or pts[lo - 1] is None or pts[hi + 1] is None:
+                ok = False
+                break
+            lo, hi = lo - 1, hi + 1
+            # a jump between neighbours = two different objects
+            if math.dist(pts[lo], pts[lo + 1]) > 0.2 or math.dist(pts[hi], pts[hi - 1]) > 0.2:
+                ok = False
+                break
+            span = math.dist(pts[lo], pts[hi])
+            if span > max_span or hi - lo > 80:
+                ok = False
+                break
+        if not ok:
             continue
-        # normal = tangent rotated 90 deg; |n_x| = |t_y| / |t|
-        if abs(ty) / tl >= facing_cos:
-            n += 1
+        seg = pts[lo:hi + 1]
+        m = len(seg)
+        mx = sum(p[0] for p in seg) / m
+        my = sum(p[1] for p in seg) / m
+        sxx = sum((p[0] - mx) ** 2 for p in seg) / m
+        syy = sum((p[1] - my) ** 2 for p in seg) / m
+        sxy = sum((p[0] - mx) * (p[1] - my) for p in seg) / m
+        # direction of the line = main axis; residual = smaller eigenvalue
+        tr, det = sxx + syy, sxx * syy - sxy * sxy
+        disc = math.sqrt(max(tr * tr / 4 - det, 0.0))
+        lam_min = tr / 2 - disc
+        if lam_min > max_resid ** 2:
+            continue
+        theta = 0.5 * math.atan2(2 * sxy, sxx - syy)      # line direction
+        # normal = direction + 90 deg; |n_x| = |sin(theta)|
+        if abs(math.sin(theta)) >= facing_cos:
+            n += stride
     w = min(max((n - n_low) / float(n_high - n_low), 0.0), 1.0)
     return w, n
 

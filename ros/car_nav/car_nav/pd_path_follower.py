@@ -59,7 +59,7 @@ class PDPathFollower(Node):
         p("progress_time_s", 10.0)
         p("global_frame", "map")
         p("robot_frame", "base_link")
-        p("max_pose_age_s", 0.5)
+        p("max_pose_age_s", 1.0)
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)

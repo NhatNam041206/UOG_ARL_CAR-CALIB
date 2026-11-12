@@ -390,7 +390,8 @@ pd_path_follower:
     progress_time_s: 10.0
     global_frame: map
     robot_frame: base_link
-    max_pose_age_s: 0.5      # stop while the pose is older (overloaded computer, lagging odometry)
+    max_pose_age_s: 1.0      # stop while the pose is older (lagging odometry); 7 Hz LiDAR + rf2o on a
+                             # busy laptop reached 0.5-1.0 s now and then, 0.5 stopped the car often
 
 cmd_vel_to_control:
   ros__parameters:

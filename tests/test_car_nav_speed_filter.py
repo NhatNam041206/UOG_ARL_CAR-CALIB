@@ -12,14 +12,20 @@ ANG = np.linspace(-math.pi, math.pi, 720, endpoint=False)
 CAMPUS = World.load(str(P.SIM_DIR / "worlds" / "campus_path.yaml"))
 
 
-def _w(x, y, th):
-    r = CAMPUS.raycast(x, y, ANG + th, 12.0)
+def _w(x, y, th, noise=0.01, seed=0):
+    # like the simulated A1: 1 cm range noise, 2 % dropouts (noise made the
+    # first version see "facing" walls everywhere)
+    rng = np.random.default_rng(seed)
+    r = CAMPUS.raycast(x, y, ANG + th, 12.0) + rng.normal(0, noise, ANG.shape)
+    r[rng.random(ANG.shape) < 0.02] = np.inf
     return scan_observability(list(r), -math.pi, 2 * math.pi / 720)[0]
 
 
 def test_plain_corridor_is_blind_ends_are_not():
     # the corridor south of AAD-1 (campus_block_left goal 1), driving south
-    assert _w(43.5, 20.0, -math.pi / 2) < 0.1          # middle: only side walls
+    for seed in range(5):
+        assert _w(43.5, 20.0, -math.pi / 2, seed=seed) < 0.1    # middle: only side walls
+        assert _w(43.5, 18.0, -math.pi / 2, seed=seed) < 0.1
     assert _w(43.5, 13.0, -math.pi / 2) == 1.0          # at the corner
     assert _w(43.5, 26.0, -math.pi / 2) == 1.0          # at the start (end wall behind)
 
