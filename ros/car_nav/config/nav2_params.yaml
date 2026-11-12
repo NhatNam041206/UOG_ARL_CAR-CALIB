@@ -349,6 +349,24 @@ rf2o_laser_odometry:
     init_pose_from_topic: ""
     freq: 10.0
 
+adaptive_odom:
+  # odom_source:=adaptive (car_nav/adaptive_odom.py + speed_filter.py):
+  # forward motion = w*rf2o + (1-w)*learned speed, w = how many scan points
+  # face the driving direction (obs_points_low..high). The start speed and
+  # command latency come from car.yaml (speed.*); the speed is then learned.
+  ros__parameters:
+    use_sim_time: false
+    accel_mps2: 1.0
+    decel_mps2: 2.0
+    speed_random_walk: 0.01       # how fast the real speed may drift (m/s per sqrt(s))
+    rf2o_speed_noise: 0.08        # m/s, rf2o forward speed where it sees well
+    obs_points_low: 10            # <= this many facing points: rf2o cannot see forward motion
+    obs_points_high: 50           # >= this many: trust rf2o fully
+    obs_max_range_m: 8.0
+    correction_min_blind_m: 1.0   # AMCL correction -> speed after >= this many blind metres
+    correction_min_along_m: 0.3
+    correction_max_blind_m: 6.0
+
 pd_path_follower:
   # PD path follower (car_nav/pd_follower.py), used with controller:=pd
   # (default). kappa = ff*path_curvature - kp*offset - kd*sin(heading error).

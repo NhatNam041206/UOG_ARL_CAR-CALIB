@@ -131,6 +131,19 @@ without rebuilding.
 * Latency 0.65 s: at 0.5 m/s the car drives 0.33 m before a command acts.
   This is why lookahead is 1.1 m and the goal tolerance is 0.5 m
   (position only: the car cannot fix its heading without driving on).
+* Odometry (`odom_source:=adaptive`, default): between two long parallel
+  walls the LiDAR cannot see forward motion, so rf2o alone reports the car
+  standing still and AMCL fell up to 5 m behind on the school map.
+  `car_nav/adaptive_odom.py` keeps rf2o for rotation and sideways motion and
+  takes forward motion from rf2o only where the scan shows it (points facing
+  the driving direction: end walls, corners, pillars); in blind stretches it
+  uses a learned speed (Kalman filter, `speed_filter.py`) that rf2o and
+  AMCL's corrections keep updating, starting from car.yaml's
+  `baseline_speed_mps`. STOP commands (delayed by the command latency) mean
+  speed 0. A speed change in the middle of a blind corridor is only fixed at
+  the next observable place. Try it against a car that is slower than
+  car.yaml says: `SIM_STRESS=speed_drift scripts/sim/run_sim.sh campus-mission`
+  (0.42 m/s, +-15 % drift). `odom_source:=rf2o` is the old behaviour.
 * Steering controller (`controller:=pd`, default): a classical PD on the
   planned path, like the VISION lane PID, in `car_nav/pd_follower.py`:
   curvature = path curvature − kp·sideways offset − kd·sin(heading error).

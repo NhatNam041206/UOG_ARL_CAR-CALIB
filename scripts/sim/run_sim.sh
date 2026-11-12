@@ -7,6 +7,7 @@
 #   scripts/sim/run_sim.sh rviz [args]               # 2D backend + RViz (lighter than Gazebo)
 #   scripts/sim/run_sim.sh campus [anchor] [args]    # school map in RViz, car at an anchor (AAD-1)
 #   scripts/sim/run_sim.sh campus-mission [args]     # school map mission (campus_block_left), with RViz
+#   SIM_STRESS=speed_drift scripts/sim/run_sim.sh ... # car worse than car.yaml (sweeps/stress/*.yaml)
 #   scripts/sim/run_sim.sh all                       # every mission, both odometry sources
 #   scripts/sim/run_sim.sh view                      # reports -> run_logs/sim/view/index.html (browser)
 #   scripts/sim/run_sim.sh shell                     # bash inside the image
@@ -50,6 +51,19 @@ need_display() {
   RUN_EXTRA+=(-v /tmp/.X11-unix:/tmp/.X11-unix -e QT_QPA_PLATFORM=xcb -e WAYLAND_DISPLAY= -e LIBGL_ALWAYS_SOFTWARE=1)
   echo "view: x11 DISPLAY=$DISPLAY. RViz errors show as [rviz2-...] lines."
 }
+
+# SIM_STRESS=<name>: the simulated car behaves as ros/car_nav_sim/sweeps/stress/<name>.yaml
+# says (e.g. SIM_STRESS=speed_drift: real speed 0.42 m/s +-15 % while car.yaml says 0.5).
+apply_stress() {
+  [[ -z "${SIM_STRESS:-}" ]] && return
+  local f="ros/car_nav_sim/sweeps/stress/${SIM_STRESS}.yaml"
+  [[ -f "$f" ]] || { echo "no stress file $f" >&2; exit 2; }
+  run bash -c "python3 /opt/car_nav_sim_tools/apply_overrides.py /opt/car_nav_ws/share/car_nav_sim/config/sim.yaml \
+    /ws/src/car_nav_sim/sweeps/stress/${SIM_STRESS}.yaml /data/sim/stress-sim.yaml sim"
+  RUN_EXTRA+=(-e CAR_NAV_SIM_CONFIG=/data/sim/stress-sim.yaml)
+  echo "stress: $SIM_STRESS"
+}
+apply_stress
 
 latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
 
@@ -99,5 +113,5 @@ case "$cmd" in
     run bash -c "python3 /opt/car_nav_sim_tools/report_view.py"
     echo "Open it:  start run_logs/sim/view/index.html   (Git Bash / Windows)" ;;
   shell) run bash ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

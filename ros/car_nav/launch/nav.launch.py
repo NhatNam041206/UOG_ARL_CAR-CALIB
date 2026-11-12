@@ -9,6 +9,7 @@ car, sim.launch.py in the simulator). Starts:
 
   scan_upright      /scan_filtered -> /scan_nav (frame laser_upright) + its static TF
   rf2o              laser odometry, odom -> base_link   (odom_source:=rf2o)
+  adaptive_odom     rf2o + learned forward speed, odom -> base_link (odom_source:=adaptive, default)
   map_server + AMCL map -> odom                         (slam:=false)
   slam_toolbox      map -> odom + /map                  (slam:=true)
   planner (Smac Hybrid-A*, DUBIN forward only), controller (RPP),
@@ -143,7 +144,8 @@ def generate_launch_description() -> LaunchDescription:
             "('_pd' if '", controller, "' == 'pd' else '') + '.xml'"])),
         DeclareLaunchArgument("map", default_value="", description="map yaml for AMCL (slam:=false)"),
         DeclareLaunchArgument("slam", default_value="false"),
-        DeclareLaunchArgument("odom_source", default_value="rf2o", description="rf2o | external"),
+        DeclareLaunchArgument("odom_source", default_value="adaptive",
+                              description="adaptive (rf2o + learned speed) | rf2o | external"),
         DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("log_level", default_value="info"),
         OpaqueFunction(function=_upright_tf),
@@ -154,6 +156,16 @@ def generate_launch_description() -> LaunchDescription:
              # rf2o logs every scan at INFO and "Waiting for laser_scans" at WARN (harmless)
              arguments=["--ros-args", "--log-level", "rf2o_laser_odometry:=error"],
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'rf2o'"]))),
+        # odom_source:=adaptive: rf2o only measures (/odom_rf2o, no TF); adaptive_odom
+        # adds the learned forward speed and owns /odom + odom -> base_link.
+        Node(package="rf2o_laser_odometry", executable="rf2o_laser_odometry_node",
+             name="rf2o_laser_odometry", output="screen",
+             parameters=[params, {"publish_tf": False, "odom_topic": "/odom_rf2o"}],
+             arguments=["--ros-args", "--log-level", "rf2o_laser_odometry:=error"],
+             condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
+        Node(package="car_nav", executable="adaptive_odom", name="adaptive_odom", output="screen",
+             parameters=[params],
+             condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
         localization,
         slam_launch,
         navigation,

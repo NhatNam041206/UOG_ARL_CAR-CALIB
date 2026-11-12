@@ -31,6 +31,9 @@ class TruthParams:
     decel_mps2: float = 2.0
     servo_rate_dps: float = 300.0
     understeer_factor: float = 1.0
+    # Real speed drifts: speed_mps * (1 + speed_variation * sin(2 pi t / speed_period_s)).
+    speed_variation: float = 0.0
+    speed_period_s: float = 40.0
     # Seconds without any command before the car stops by itself.
     # None = the car holds the last command forever (worst case).
     failsafe_timeout_s: float | None = None
@@ -91,7 +94,8 @@ class ActuatorModel:
             self.drive = 0
         dmax = p.servo_rate_dps * dt
         self.servo += max(-dmax, min(dmax, self.target_servo - self.servo))
-        v_target = p.speed_mps if self.drive == DRIVE_FORWARD else 0.0
+        v_cruise = p.speed_mps * (1.0 + p.speed_variation * math.sin(2.0 * math.pi * t / max(p.speed_period_s, 1e-3)))
+        v_target = v_cruise if self.drive == DRIVE_FORWARD else 0.0
         if v_target > self.v:
             self.v = min(v_target, self.v + p.accel_mps2 * dt)
         else:

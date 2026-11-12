@@ -9,6 +9,8 @@ truth:
   decel_mps2: 2.0
   servo_rate_dps: 300.0
   understeer_factor: 1.0   # nam saw understeer on VISION turns; try 0.8
+  speed_variation: 0.0     # real speed = speed_mps * (1 + this * sin(2 pi t / speed_period_s))
+  speed_period_s: 40.0
   failsafe_timeout_s: null # null = the car keeps the last command if commands stop
 lidar:                     # RPLIDAR A1-like
   rate_hz: 7.0

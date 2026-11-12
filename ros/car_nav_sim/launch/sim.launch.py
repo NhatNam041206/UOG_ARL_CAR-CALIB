@@ -12,7 +12,7 @@ Arguments:
   start        car start: 'x,y,yaw' or an anchor id of the world (AAD-1, gym-01,
                F.218, F.203, ...); '' = the world's start. Ignored with a mission.
   mission      mission name in missions/ ('' = drive by hand in RViz)
-  odom_source  rf2o (like the car) | truth (perfect odometry)
+  odom_source  adaptive (rf2o + learned speed, like the car) | rf2o | truth (perfect odometry)
   slam         true = build the map with slam_toolbox instead of AMCL on the known map
   rviz, gui    show RViz / the Gazebo window
   report_dir   where mission reports go                      [/data/sim]
@@ -150,7 +150,7 @@ def _setup(context, *args, **kwargs):
             "use_sim_time": "true",
             "map": "" if slam else map_yaml,
             "slam": "true" if slam else "false",
-            "odom_source": "rf2o" if odom_source == "rf2o" else "external",
+            "odom_source": odom_source if odom_source in ("rf2o", "adaptive") else "external",
             "controller": arg("controller"),
         }.items(),
     ))
@@ -185,7 +185,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("world", default_value="test_floor"),
         DeclareLaunchArgument("start", default_value="", description="'x,y,yaw' or a world anchor id"),
         DeclareLaunchArgument("mission", default_value=""),
-        DeclareLaunchArgument("odom_source", default_value="rf2o"),
+        DeclareLaunchArgument("odom_source", default_value="adaptive"),
         DeclareLaunchArgument("controller", default_value="pd", description="pd | rpp (steering controller)"),
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="false"),
