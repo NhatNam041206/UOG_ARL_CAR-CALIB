@@ -155,14 +155,23 @@ without rebuilding.
   kp leaves the car off the path in turns when it understeers.
   `controller:=rpp` brings back Nav2's Regulated Pure Pursuit.
 * Wall avoidance (reactive layer, `car_nav/wall_avoid.py`, inside the PD
-  follower): every scan, a wall closer than 1.0 m ahead of the nose or
-  0.45 m beside the body pushes the steering away from it, blended with the
-  PD (`layer 0..100 %` in the log, "wall avoid: ..."). It needs no pose, so
-  it still works when localisation is wrong. Only walls ahead of the front
-  axle push; the rear-steered car swings its rear out when it turns, so a
-  wall right beside the rear limits that swing instead. A wall straight
-  ahead turns the car the way the path turns. Params `pd_path_follower.avoid_*`;
-  `avoid_enabled: false` switches it off.
+  follower): a wall closer than 0.30 m beside the body or 1.07 m ahead of
+  the nose makes the car turn away with a FIXED curvature (0.4 1/m, about a
+  third of full lock; more only if the PD already turns away harder). It
+  keeps turning away until that wall is out of the zone again (0.45 m beside
+  / 1.6 m ahead): two thresholds, so it does not switch on and off every
+  scan ("wall avoid: left wall ... turning away" / "clear of the left wall"
+  in the log). It needs no pose, so it still works when localisation is
+  wrong. Only walls ahead of the front axle count; the rear-steered car
+  swings its rear out when it turns, so a wall right beside the rear scales
+  the turn down. A wall straight ahead turns the car the way the path
+  turns. Params `pd_path_follower.avoid_*`; `avoid_enabled: false` switches
+  it off.
+* Reading the path curvature further ahead (`ff_ahead_m` 0.65 instead of
+  0.3) was checked 2026-11-13 and NOT adopted: with a true pose and the
+  0.65 s delay the PD follows a 1 m-radius corner within ~2 cm at 0.3 m,
+  while 0.65 m cuts it by ~20 cm. A turn that starts late in the sim means
+  the pose estimate lags along the corridor.
 * Pose gate (`car_nav/pose_gate.py`, `pose_gate:=true` default): AMCL no
   longer publishes map -> odom itself. The gate takes AMCL's sideways and
   heading corrections, but its correction along the heading only as far as

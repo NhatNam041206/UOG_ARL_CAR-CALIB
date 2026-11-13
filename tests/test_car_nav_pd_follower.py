@@ -6,7 +6,10 @@ import pytest
 from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
 from car_nav.pd_follower import PathTracker, PDGains, pd_curvature
 
+import yaml
+
 G = PDGains(kp=0.7, kd=1.2)
+NAV_FF_AHEAD = yaml.safe_load(P.NAV2_YAML.read_text())["pd_path_follower"]["ros__parameters"]["ff_ahead_m"]
 STRAIGHT = [(x * 0.05, 0.0) for x in range(100)]
 
 
@@ -60,3 +63,36 @@ def test_returns_to_path_with_the_cars_delay():
     path = [(x * 0.05, 0.0) for x in range(240)]
     tr, overshoot = _drive(path, 0.0, 0.4, 0.2)    # 0.4 m off, pointing further away
     assert abs(tr.e) < 0.02 and overshoot < 0.08
+
+
+def _corner_error(ff_ahead, latency=0.65, v=0.5):
+    # straight 2 m, 90 deg left arc of radius 1.0 m, straight 2 m
+    path = [(x * 0.05, 0.0) for x in range(41)]
+    path += [(2.0 + math.sin(a), 1.0 - math.cos(a)) for a in [i * math.pi / 2 / 30 for i in range(1, 31)]]
+    path += [(3.0, 1.0 + i * 0.05) for i in range(1, 41)]
+    g = PDGains(kp=G.kp, kd=G.kd, ff=G.ff, ff_ahead_m=ff_ahead)
+    t = PathTracker(path)
+    x, y, th = 0.0, 0.0, 0.0
+    queue = [0.0] * int(round(latency / 0.1))
+    worst = 0.0
+    for _ in range(400):
+        tr = t.track(x, y, th, g)
+        queue.append(max(-1.33, min(1.33, pd_curvature(tr, g))))
+        k = queue.pop(0)
+        for _ in range(5):
+            x += v * math.cos(th) * 0.02
+            y += v * math.sin(th) * 0.02
+            th += v * k * 0.02
+        worst = max(worst, abs(tr.e))
+        if tr.remaining < 0.1:
+            break
+    return worst
+
+
+def test_corner_with_the_cars_delay_and_a_true_pose():
+    # 2026-11-13 check: with a TRUE pose the 0.65 s delay does not make the
+    # PD turn late (0.3 m: ~2 cm off). Reading the curvature further ahead
+    # makes it cut the corner instead (0.65 m: ~20 cm inside). So a late turn
+    # in the sim comes from the pose estimate lagging, not from the delay.
+    assert _corner_error(NAV_FF_AHEAD) < 0.05
+    assert _corner_error(0.65) > 3 * _corner_error(0.3)
