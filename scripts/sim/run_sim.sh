@@ -39,6 +39,14 @@ need_display() {
     if [[ "$(uname -s)" == Linux && -n "${DISPLAY:-}" ]]; then view=x11; else view=browser; fi
   fi
   if [[ "$view" == browser ]]; then
+    # A previous sim run that did not exit (window closed, Ctrl+C in Git Bash)
+    # still holds port 6080: remove only our own sim containers that publish it.
+    local old
+    old=$(docker ps -q --filter "name=car_calib-sim-run" --filter "publish=6080" 2>/dev/null || true)
+    if [[ -n "$old" ]]; then
+      echo "stopping the previous sim run that still holds port 6080"
+      docker rm -f $old >/dev/null
+    fi
     # 127.0.0.1 only: the page is not reachable from the LAN
     RUN_EXTRA+=(-e SIM_VIEW=browser -p 127.0.0.1:6080:6080)
     echo "view: browser -> open http://localhost:6080/vnc.html?autoconnect=1&resize=scale (wait ~15 s)"
