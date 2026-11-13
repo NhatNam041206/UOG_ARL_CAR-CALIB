@@ -12,6 +12,10 @@ cmd_vel_to_control downstream are unchanged. Gains are ROS parameters
 (nav2_params.yaml, section pd_path_follower) so they can be tuned without a
 rebuild.
 
+Wall avoidance (wall_avoid.py, avoid_enabled): every /scan_nav pushes the
+steering away from walls closer than front/side_influence_m, whatever the
+pose says. That is the safety net for a wrong pose in a long corridor.
+
 Stops the car (zero cmd_vel -> STOP) while the pose map -> base_link is
 older than max_pose_age_s, e.g. when the computer is overloaded and odometry
 / AMCL fall behind; it drives on once the pose is fresh again.
@@ -34,10 +38,14 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
+from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
+from . import config_loader
 from .pd_follower import PathTracker, PDGains, pd_curvature
+from .wall_avoid import AvoidParams, WallPush, blend, points_in_base, wall_push
 
 
 def _yaw(q) -> float:
@@ -60,9 +68,29 @@ class PDPathFollower(Node):
         p("global_frame", "map")
         p("robot_frame", "base_link")
         p("max_pose_age_s", 1.0)
+        p("avoid_enabled", True)
+        p("avoid_front_influence_m", 1.0)
+        p("avoid_side_influence_m", 0.45)
+        p("avoid_look_ahead_m", 1.5)
+        p("avoid_max_curvature", 1.33)
+        p("avoid_rear_margin_m", 0.12)
+        p("avoid_max_scan_age_s", 0.5)
+        cfg = config_loader.load()
+        fp = config_loader.footprint(cfg)
+        self._avoid = AvoidParams(
+            x_front=fp.x_front, x_rear=fp.x_rear, half_width=fp.half_width,
+            front_influence_m=self._f("avoid_front_influence_m"), side_influence_m=self._f("avoid_side_influence_m"),
+            look_ahead_m=self._f("avoid_look_ahead_m"), max_curvature=self._f("avoid_max_curvature"),
+            rear_margin_m=self._f("avoid_rear_margin_m"))
+        self._push = WallPush()
+        self._push_t = 0.0
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
+        # /scan_nav is in laser_upright = base_link shifted to the laser, turned by its yaw
+        self._laser = config_loader.laser_pose(cfg)
+        self.create_subscription(LaserScan, "/scan_nav", self._on_scan, qos_profile_sensor_data,
+                                 callback_group=ReentrantCallbackGroup())
         self._lock = threading.Lock()
         self._active = None  # goal_handle currently driving
         self._srv = ActionServer(
@@ -78,6 +106,26 @@ class PDPathFollower(Node):
 
     def _f(self, name: str) -> float:
         return float(self.get_parameter(name).value)
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        pts = points_in_base(msg.ranges, msg.angle_min, msg.angle_increment, self._laser.x, self._laser.y,
+                             self._laser.yaw, max_range=self._avoid.look_ahead_m + 1.0)
+        self._push = wall_push(pts, self._avoid)
+        self._push_t = time.monotonic()
+
+    def _avoid_kappa(self, kappa_pd: float) -> float:
+        if not self.get_parameter("avoid_enabled").value:
+            return kappa_pd
+        if time.monotonic() - self._push_t > self._f("avoid_max_scan_age_s"):
+            return kappa_pd
+        push = self._push
+        kappa, a = blend(kappa_pd, push, self._avoid)
+        if a > 0.2:
+            side = "left" if push.left >= push.right else "right"
+            self.get_logger().info(
+                f"wall avoid: wall {side} {push.nearest_m:.2f} m, layer {a:.0%}: "
+                f"curvature {kappa_pd:+.2f} -> {kappa:+.2f} 1/m", throttle_duration_sec=1.0)
+        return kappa
 
     def _on_accepted(self, goal_handle) -> None:
         # A new path (the tree replans at 1 Hz) replaces the one being driven.
@@ -160,7 +208,7 @@ class PDPathFollower(Node):
                                         f"{self._f('progress_radius_m')} m in {self._f('progress_time_s')} s")
                 goal_handle.abort()
                 return self._result(105, "failed to make progress")
-            kappa = pd_curvature(tr, gains)
+            kappa = self._avoid_kappa(pd_curvature(tr, gains))
             cmd = Twist()
             cmd.linear.x = v
             cmd.angular.z = v * kappa

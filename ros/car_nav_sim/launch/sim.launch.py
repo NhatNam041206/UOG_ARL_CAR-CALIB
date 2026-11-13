@@ -152,6 +152,9 @@ def _setup(context, *args, **kwargs):
             "slam": "true" if slam else "false",
             "odom_source": odom_source if odom_source in ("rf2o", "adaptive") else "external",
             "controller": arg("controller"),
+            "pose_gate": arg("pose_gate"),
+            # the laptop's odometry often runs ~1.1 s behind (log 2026-11-12): do not stop for that
+            "max_pose_age_s": arg("max_pose_age_s"),
         }.items(),
     ))
 
@@ -187,6 +190,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("mission", default_value=""),
         DeclareLaunchArgument("odom_source", default_value="adaptive"),
         DeclareLaunchArgument("controller", default_value="pd", description="pd | rpp (steering controller)"),
+        DeclareLaunchArgument("pose_gate", default_value="true",
+                              description="true: hold back AMCL along-corridor corrections in blind corridors"),
+        DeclareLaunchArgument("max_pose_age_s", default_value="1.5"),
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="false"),
         DeclareLaunchArgument("gui", default_value="false"),

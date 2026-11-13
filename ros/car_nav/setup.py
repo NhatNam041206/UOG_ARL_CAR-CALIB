@@ -28,6 +28,7 @@ setup(
             "cmd_vel_to_control = car_nav.cmd_vel_to_control:main",
             "pd_path_follower = car_nav.pd_path_follower:main",
             "adaptive_odom = car_nav.adaptive_odom:main",
+            "pose_gate = car_nav.pose_gate:main",
         ],
     },
 )

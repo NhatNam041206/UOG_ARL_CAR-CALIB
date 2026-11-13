@@ -154,6 +154,24 @@ without rebuilding.
   to AMCL heading noise and, with the 0.65 s delay, rocks again; too little
   kp leaves the car off the path in turns when it understeers.
   `controller:=rpp` brings back Nav2's Regulated Pure Pursuit.
+* Wall avoidance (reactive layer, `car_nav/wall_avoid.py`, inside the PD
+  follower): every scan, a wall closer than 1.0 m ahead of the nose or
+  0.45 m beside the body pushes the steering away from it, blended with the
+  PD (`layer 0..100 %` in the log, "wall avoid: ..."). It needs no pose, so
+  it still works when localisation is wrong. Only walls ahead of the front
+  axle push; the rear-steered car swings its rear out when it turns, so a
+  wall right beside the rear limits that swing instead. A wall straight
+  ahead turns the car the way the path turns. Params `pd_path_follower.avoid_*`;
+  `avoid_enabled: false` switches it off.
+* Pose gate (`car_nav/pose_gate.py`, `pose_gate:=true` default): AMCL no
+  longer publishes map -> odom itself. The gate takes AMCL's sideways and
+  heading corrections, but its correction along the heading only as far as
+  the scan can see forward motion (`/scan_observability` from
+  adaptive_odom). In a blind corridor AMCL's particles slide along it (log
+  2026-11-12: AMCL 4.2 m off, odometry alone 1.35 m); when the cloud is more
+  than 0.3 m away along the corridor the gate reseeds AMCL at the gated pose.
+  `pose_gate:=false` is the old behaviour. The sim stops for a stale pose
+  only above 1.5 s (`max_pose_age_s`, 1.0 on the car).
 * One speed means the collision monitor cannot slow down. Its "approach"
   zone follows the current curvature and the bridge turns any speed it
   scales below 0.3 m/s into STOP, so the car stops when the path ahead is

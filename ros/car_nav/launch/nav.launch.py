@@ -10,13 +10,17 @@ car, sim.launch.py in the simulator). Starts:
   scan_upright      /scan_filtered -> /scan_nav (frame laser_upright) + its static TF
   rf2o              laser odometry, odom -> base_link   (odom_source:=rf2o)
   adaptive_odom     rf2o + learned forward speed, odom -> base_link (odom_source:=adaptive, default)
-  map_server + AMCL map -> odom                         (slam:=false)
+  map_server + AMCL                                     (slam:=false)
+  pose_gate         AMCL -> map -> odom, holding back AMCL's along-corridor
+                    corrections in blind corridors (pose_gate:=true, default);
+                    pose_gate:=false lets AMCL publish map -> odom itself
   slam_toolbox      map -> odom + /map                  (slam:=true)
   planner (Smac Hybrid-A*, DUBIN forward only), controller (RPP),
   behavior server (wait only), bt_navigator (no spin/backup),
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
   pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
-                     pd_follow_path -> cmd_vel_nav. controller:=rpp uses Pure Pursuit.
+                     pd_follow_path -> cmd_vel_nav, plus LiDAR wall avoidance.
+                     controller:=rpp uses Pure Pursuit.
   cmd_vel_to_control /cmd_vel -> "<angle>,<drive_code>" on /car/raspi5/control (ROS only)
 
 Nothing here talks MQTT: on the car, the WO-02 forwarder copies
@@ -33,6 +37,7 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from nav2_common.launch import RewrittenYaml
 
 from car_nav import config_loader
@@ -75,6 +80,8 @@ def generate_launch_description() -> LaunchDescription:
     controller = LaunchConfiguration("controller")
     autostart = LaunchConfiguration("autostart")
     log_level = LaunchConfiguration("log_level")
+    pose_gate = LaunchConfiguration("pose_gate")
+    gate_on = PythonExpression(["'", pose_gate, "' == 'true'"])
 
     params = RewrittenYaml(
         source_file=params_file,
@@ -93,8 +100,13 @@ def generate_launch_description() -> LaunchDescription:
         actions=[
             Node(package="nav2_map_server", executable="map_server", name="map_server",
                  parameters=[params], remappings=remap_tf, **common),
+            # with the gate, AMCL only publishes /amcl_pose; pose_gate owns map -> odom
             Node(package="nav2_amcl", executable="amcl", name="amcl",
-                 parameters=[params], remappings=remap_tf, **common),
+                 parameters=[params, {"tf_broadcast": ParameterValue(
+                     PythonExpression(["'", pose_gate, "' != 'true'"]), value_type=bool)}],
+                 remappings=remap_tf, **common),
+            Node(package="car_nav", executable="pose_gate", name="pose_gate",
+                 parameters=[params], remappings=remap_tf, condition=IfCondition(gate_on), **common),
             Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
                  name="lifecycle_manager_localization", output="screen",
                  parameters=[{"use_sim_time": use_sim_time, "autostart": autostart,
@@ -123,7 +135,8 @@ def generate_launch_description() -> LaunchDescription:
         Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="car_nav", executable="pd_path_follower", name="pd_path_follower",
-             parameters=[params], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")],
+             parameters=[params, {"max_pose_age_s": ParameterValue(
+                 LaunchConfiguration("max_pose_age_s"), value_type=float)}], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")],
              condition=IfCondition(PythonExpression(["'", controller, "' == 'pd'"])), **common),
         Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
              parameters=[params], remappings=remap_tf, **common),
@@ -146,6 +159,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("odom_source", default_value="adaptive",
                               description="adaptive (rf2o + learned speed) | rf2o | external"),
+        DeclareLaunchArgument("pose_gate", default_value="true",
+                              description="true: pose_gate holds back AMCL along-corridor corrections when blind"),
+        DeclareLaunchArgument("max_pose_age_s", default_value="1.0",
+                              description="pd_path_follower stops while the pose is older than this (s)"),
         DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("log_level", default_value="info"),
         OpaqueFunction(function=_upright_tf),
@@ -164,7 +181,8 @@ def generate_launch_description() -> LaunchDescription:
              arguments=["--ros-args", "--log-level", "rf2o_laser_odometry:=error"],
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
         Node(package="car_nav", executable="adaptive_odom", name="adaptive_odom", output="screen",
-             parameters=[params],
+             parameters=[params, {"localized_pose_topic": PythonExpression(
+                 ["'/localized_pose' if '", pose_gate, "' == 'true' else '/amcl_pose'"])}],
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
         localization,
         slam_launch,

@@ -14,7 +14,8 @@ AMCL's corrections along the heading after blind stretches. STOP commands
 (/car/raspi5/control, delayed by the command latency) mean speed 0.
 
 Logs the learned speed every 5 s and publishes it on /odom_speed_estimate
-(std_msgs/Float32) for plots.
+(std_msgs/Float32) for plots, and the scan observability on
+/scan_observability (pose_gate uses it to hold back AMCL in blind corridors).
 """
 from __future__ import annotations
 
@@ -69,6 +70,8 @@ class AdaptiveOdom(Node):
         p("odom_frame", "odom")
         p("base_frame", "base_link")
         p("publish_tf", True)
+        # pose_gate's /localized_pose (AMCL minus its blind-corridor guesses); /amcl_pose without the gate
+        p("localized_pose_topic", "/localized_pose")
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._laser_yaw = float(config_loader.laser_pose(cfg).yaw)
         self._motion = MotionModel(latency_s=float(g("command_latency_s")), accel_mps2=float(g("accel_mps2")),
@@ -91,11 +94,12 @@ class AdaptiveOdom(Node):
 
         self._odom_pub = self.create_publisher(Odometry, "/odom", 20)
         self._speed_pub = self.create_publisher(Float32, "/odom_speed_estimate", 10)
+        self._obs_pub = self.create_publisher(Float32, "/scan_observability", 10)
         self._tf = TransformBroadcaster(self) if g("publish_tf") else None
         self.create_subscription(Odometry, "/odom_rf2o", self._on_rf2o, 20)
         self.create_subscription(LaserScan, "/scan_nav", self._on_scan, qos_profile_sensor_data)
         self.create_subscription(String, "/car/raspi5/control", self._on_control, 20)
-        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        self.create_subscription(PoseWithCovarianceStamped, str(g("localized_pose_topic")), self._on_amcl, 10)
         self.get_logger().info(
             f"adaptive odometry: start speed {self._kf.v:.2f} m/s (learned online), "
             f"command latency {self._motion.latency_s:.2f} s")
@@ -112,6 +116,7 @@ class AdaptiveOdom(Node):
     def _on_scan(self, msg: LaserScan) -> None:
         self._w, self._n_facing = scan_observability(
             msg.ranges, msg.angle_min + self._laser_yaw, msg.angle_increment, **self._obs_args)
+        self._obs_pub.publish(Float32(data=float(self._w)))
 
     def _on_rf2o(self, msg: Odometry) -> None:
         t = _stamp(msg)

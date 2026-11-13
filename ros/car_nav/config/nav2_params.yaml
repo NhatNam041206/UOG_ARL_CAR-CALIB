@@ -51,7 +51,7 @@ amcl:
     resample_interval: 1
     save_pose_rate: 0.5
     sigma_hit: 0.2
-    tf_broadcast: true
+    tf_broadcast: true   # nav.launch sets false when pose_gate (default) publishes map -> odom
     transform_tolerance: 1.0
     update_min_a: 0.05
     update_min_d: 0.05
@@ -367,6 +367,25 @@ adaptive_odom:
     correction_min_along_m: 0.3
     correction_max_blind_m: 6.0
 
+pose_gate:
+  # car_nav/pose_gate.py + localization_gate.py: map -> odom from AMCL, but
+  # AMCL's correction ALONG the heading is only taken in proportion to the
+  # scan observability (adaptive_odom /scan_observability): in a blind
+  # corridor AMCL's particles wander along it (2026-11-12: AMCL 4.2 m off,
+  # odometry alone 1.35 m). Sideways and heading corrections are always taken.
+  ros__parameters:
+    use_sim_time: false
+    obs_full: 0.5                 # observability at which the along correction is taken fully
+    publish_rate_hz: 20.0
+    transform_tolerance: 0.5
+    observability_timeout_s: 2.0  # no observability (odom_source rf2o): pass AMCL through
+    reseed_enabled: true          # put AMCL back on the gated pose when its cloud wanders
+    reseed_along_m: 0.3
+    reseed_min_interval_s: 2.0
+    reseed_sigma_along_m: 0.15
+    reseed_sigma_lateral_m: 0.08
+    reseed_sigma_yaw_rad: 0.05
+
 pd_path_follower:
   # PD path follower (car_nav/pd_follower.py), used with controller:=pd
   # (default). kappa = ff*path_curvature - kp*offset - kd*sin(heading error).
@@ -392,6 +411,19 @@ pd_path_follower:
     robot_frame: base_link
     max_pose_age_s: 1.0      # stop while the pose is older (lagging odometry); 7 Hz LiDAR + rf2o on a
                              # busy laptop reached 0.5-1.0 s now and then, 0.5 stopped the car often
+                             # (nav.launch arg max_pose_age_s overrides it; the sim uses 1.5)
+    # LiDAR wall avoidance (car_nav/wall_avoid.py): a wall closer than
+    # front_influence ahead of the nose / side_influence beside the body
+    # bends the steering away from it, whatever the pose says. Footprint
+    # from car.yaml. Corridors on the campus map are ~1.8 m wide: centred,
+    # the side walls are 0.8 m from the body, outside the side zone.
+    avoid_enabled: true
+    avoid_front_influence_m: 1.0
+    avoid_side_influence_m: 0.45
+    avoid_look_ahead_m: 1.5
+    avoid_max_curvature: 1.33     # 1/m = 1 / planner minimum turning radius 0.75
+    avoid_rear_margin_m: 0.12     # rear-wheel steering swings the rear out: guard it
+    avoid_max_scan_age_s: 0.5
 
 cmd_vel_to_control:
   ros__parameters:
