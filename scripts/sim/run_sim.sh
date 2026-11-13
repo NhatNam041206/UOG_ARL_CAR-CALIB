@@ -42,7 +42,7 @@ need_display() {
     # A previous sim run that did not exit (window closed, Ctrl+C in Git Bash)
     # still holds port 6080: remove only our own sim containers that publish it.
     local old
-    old=$(docker ps -q --filter "name=car_calib-sim-run" --filter "publish=6080" 2>/dev/null || true)
+    old=$(docker ps -q --filter "name=sim-run" --filter "publish=6080" 2>/dev/null || true)
     if [[ -n "$old" ]]; then
       echo "stopping the previous sim run that still holds port 6080"
       docker rm -f $old >/dev/null
