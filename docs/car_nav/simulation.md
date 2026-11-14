@@ -172,6 +172,10 @@ without rebuilding.
   0.65 s delay the PD follows a 1 m-radius corner within ~2 cm at 0.3 m,
   while 0.65 m cuts it by ~20 cm. A turn that starts late in the sim means
   the pose estimate lags along the corridor.
+* Global costmap = static map only (2026-11-15): the planner no longer
+  marks scans into its map. With a pose that lags in blind corridors, scans
+  marked at the wrong place closed the 1.2 m corridor ("no valid path
+  found"). Live obstacles: local costmap, collision monitor, wall avoidance.
 * Pose gate (`car_nav/pose_gate.py`, `pose_gate:=true` default): AMCL no
   longer publishes map -> odom itself. The gate takes AMCL's sideways and
   heading corrections, but its correction along the heading only as far as

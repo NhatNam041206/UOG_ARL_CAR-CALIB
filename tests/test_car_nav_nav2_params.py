@@ -96,3 +96,10 @@ def test_pd_behavior_tree_differs_only_in_follow_path_server():
     strip = lambda t: [l for l in t.split("<!--")[1].split("-->")[1].splitlines()]  # noqa: E731
     diff = [x for x, y in zip(strip(a), strip(b)) if x != y]
     assert len(diff) == 1 and "FollowPath path=" in diff[0]
+
+
+def test_global_costmap_plans_on_the_static_map_only():
+    # phantom obstacles from a lagging pose blocked narrow corridors (2026-11-14)
+    plugins = NAV["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
+    assert "obstacle_layer" not in plugins and "static_layer" in plugins
+    assert "obstacle_layer" in NAV["local_costmap"]["local_costmap"]["ros__parameters"]["plugins"]

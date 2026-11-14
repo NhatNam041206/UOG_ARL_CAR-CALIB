@@ -197,11 +197,17 @@ global_costmap:
       footprint_padding: 0.02
       resolution: 0.05
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # Static map only (nam 2026-11-15): with a pose that lags 0.6-1 m in
+      # blind corridors, scans marked at the wrong place left phantom
+      # obstacles that closed the 1.2 m corridor ("no valid path found",
+      # sim 2026-11-14). Live obstacles are handled by the local costmap,
+      # the collision monitor and the PD follower's wall avoidance. To plan
+      # around live obstacles again, add "obstacle_layer" back to plugins.
+      plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
-      obstacle_layer:
+      obstacle_layer:       # not in plugins (see above), kept for switching back
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         observation_sources: scan
