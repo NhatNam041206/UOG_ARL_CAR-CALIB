@@ -155,18 +155,17 @@ without rebuilding.
   kp leaves the car off the path in turns when it understeers.
   `controller:=rpp` brings back Nav2's Regulated Pure Pursuit.
 * Wall avoidance (reactive layer, `car_nav/wall_avoid.py`, inside the PD
-  follower): a wall closer than 0.30 m beside the body or 1.07 m ahead of
-  the nose makes the car turn away with a FIXED curvature (0.4 1/m, about a
-  third of full lock; more only if the PD already turns away harder). It
-  keeps turning away until that wall is out of the zone again (0.45 m beside
-  / 1.6 m ahead): two thresholds, so it does not switch on and off every
-  scan ("wall avoid: left wall ... turning away" / "clear of the left wall"
-  in the log). It needs no pose, so it still works when localisation is
-  wrong. Only walls ahead of the front axle count; the rear-steered car
-  swings its rear out when it turns, so a wall right beside the rear scales
-  the turn down. A wall straight ahead turns the car the way the path
-  turns. Params `pd_path_follower.avoid_*`; `avoid_enabled: false` switches
-  it off.
+  follower), arc check like DWA: before each command the car's footprint
+  (rear swing included) is swept 1.3 m along the PD's arc on the latest
+  scan. Clear -> the PD drives, however close a wall is, so the inner corner
+  of a planned turn is not "avoided" (the earlier distance-based layer forced
+  a right turn there, sim 2026-11-14). Hits -> of 13 arcs from full right to
+  full left (steering table limits) it drives the one that goes furthest,
+  closest to the PD's among the clear ones, until the PD's arc is clear over
+  1.3 x the horizon ("wall avoid: PD arc ... hits a wall" / "back to the
+  path" in the log). Needs no pose. In tests it gets a car whose pose lags
+  0.8-1.2 m into a 1.2 m side corridor that it otherwise hits. Params
+  `pd_path_follower.avoid_*`; `avoid_enabled: false` switches it off.
 * Reading the path curvature further ahead (`ff_ahead_m` 0.65 instead of
   0.3) was checked 2026-11-13 and NOT adopted: with a true pose and the
   0.65 s delay the PD follows a 1 m-radius corner within ~2 cm at 0.3 m,

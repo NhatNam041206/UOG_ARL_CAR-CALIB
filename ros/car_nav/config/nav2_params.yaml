@@ -418,22 +418,18 @@ pd_path_follower:
     max_pose_age_s: 1.0      # stop while the pose is older (lagging odometry); 7 Hz LiDAR + rf2o on a
                              # busy laptop reached 0.5-1.0 s now and then, 0.5 stopped the car often
                              # (nav.launch arg max_pose_age_s overrides it; the sim uses 1.5)
-    # LiDAR wall avoidance (car_nav/wall_avoid.py), whatever the pose says:
-    # a wall inside enter_ratio of the zone (0.30 m beside the body / 1.07 m
-    # ahead of the nose) -> turn away with a FIXED curvature until that side
-    # is out of the zone again (0.45 m beside / 1.6 m ahead). With the 0.65 s
-    # delay a fixed 0.4 1/m turn needs the early front zone: entered at 0.67 m
-    # ahead it still scraped a wall approached at 25 deg (test_car_nav_wall_avoid). Hysteresis, no
-    # turn that grows with closeness (nam 2026-11-13: avoids bang-bang).
-    # Campus corridors are ~1.8 m wide: centred, the walls are 0.8 m away.
+    # LiDAR wall avoidance (car_nav/wall_avoid.py), arc check like DWA
+    # (nam 2026-11-15): the footprint (rear swing included) is swept along
+    # the PD's arc on the latest scan. Clear for avoid_horizon_m -> the PD
+    # drives, however close a wall is (inner corners of planned turns).
+    # Hits -> the clear candidate arc (full right .. full left, from the
+    # steering table) closest to the PD's is driven until the PD's arc is
+    # clear for release_factor x horizon. Needs no pose.
     avoid_enabled: true
-    avoid_front_exit_m: 1.6
-    avoid_side_exit_m: 0.45
-    avoid_enter_ratio: 0.67
-    avoid_turn_curvature: 0.4     # 1/m (radius 2.5 m), ~1/3 of full lock
-    avoid_look_ahead_m: 2.0
-    avoid_max_curvature: 1.33     # 1/m = 1 / planner minimum turning radius 0.75
-    avoid_rear_margin_m: 0.12     # rear-wheel steering swings the rear out: guard it
+    avoid_margin_m: 0.05
+    avoid_horizon_m: 1.3          # 0.33 m driven in the 0.65 s delay + 1 m; 1.0 saved a 0.8 m pose lag too late (test)
+    avoid_release_factor: 1.3
+    avoid_candidates: 13
     avoid_max_scan_age_s: 0.5
 
 cmd_vel_to_control:

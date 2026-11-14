@@ -12,10 +12,11 @@ cmd_vel_to_control downstream are unchanged. Gains are ROS parameters
 (nav2_params.yaml, section pd_path_follower) so they can be tuned without a
 rebuild.
 
-Wall avoidance (wall_avoid.py, avoid_enabled): a wall closer than the enter
-threshold makes the car turn away with a fixed curvature until it is past
-the exit threshold again (hysteresis), whatever the pose says. That is the
-safety net for a wrong pose in a long corridor.
+Wall avoidance (wall_avoid.py, avoid_enabled): before each command the car's
+footprint is swept along the PD's arc on the latest scan; only if that arc
+hits a wall within avoid_horizon_m does a clear arc from full right to full
+left replace it (hysteresis on the way back). Needs no pose: the safety net
+for a wrong pose, without fighting planned turns.
 
 Stops the car (zero cmd_vel -> STOP) while the pose map -> base_link is
 older than max_pose_age_s, e.g. when the computer is overloaded and odometry
@@ -46,7 +47,8 @@ from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
 from .pd_follower import PathTracker, PDGains, pd_curvature
-from .wall_avoid import AvoidParams, WallAvoider, WallDist, points_in_base, wall_distances
+from .actuation import table_from_cfg
+from .wall_avoid import ArcAvoider, AvoidParams, points_in_base
 
 
 def _yaw(q) -> float:
@@ -70,25 +72,23 @@ class PDPathFollower(Node):
         p("robot_frame", "base_link")
         p("max_pose_age_s", 1.0)
         p("avoid_enabled", True)
-        p("avoid_front_exit_m", 1.6)
-        p("avoid_side_exit_m", 0.45)
-        p("avoid_enter_ratio", 0.67)
-        p("avoid_turn_curvature", 0.4)
-        p("avoid_look_ahead_m", 2.0)
-        p("avoid_max_curvature", 1.33)
-        p("avoid_rear_margin_m", 0.12)
+        p("avoid_margin_m", 0.05)
+        p("avoid_horizon_m", 1.3)
+        p("avoid_release_factor", 1.3)
+        p("avoid_candidates", 13)
         p("avoid_max_scan_age_s", 0.5)
         cfg = config_loader.load()
         fp = config_loader.footprint(cfg)
+        table = table_from_cfg(cfg)
         self._avoid = AvoidParams(
             x_front=fp.x_front, x_rear=fp.x_rear, half_width=fp.half_width,
-            front_exit_m=self._f("avoid_front_exit_m"), side_exit_m=self._f("avoid_side_exit_m"),
-            enter_ratio=self._f("avoid_enter_ratio"), turn_curvature=self._f("avoid_turn_curvature"),
-            look_ahead_m=self._f("avoid_look_ahead_m"), max_curvature=self._f("avoid_max_curvature"),
-            rear_margin_m=self._f("avoid_rear_margin_m"))
-        self._avoider = WallAvoider(self._avoid)
-        self._walls = WallDist()
-        self._walls_t = 0.0
+            margin_m=self._f("avoid_margin_m"), horizon_m=self._f("avoid_horizon_m"),
+            release_factor=self._f("avoid_release_factor"),
+            max_left=abs(table.max_left_curvature), max_right=abs(table.max_right_curvature),
+            n_candidates=int(self.get_parameter("avoid_candidates").value))
+        self._avoider = ArcAvoider(self._avoid)
+        self._points: list = []
+        self._points_t = 0.0
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
@@ -113,28 +113,26 @@ class PDPathFollower(Node):
         return float(self.get_parameter(name).value)
 
     def _on_scan(self, msg: LaserScan) -> None:
-        pts = points_in_base(msg.ranges, msg.angle_min, msg.angle_increment, self._laser.x, self._laser.y,
-                             self._laser.yaw, max_range=self._avoid.look_ahead_m + 1.0)
-        self._walls = wall_distances(pts, self._avoid)
-        self._walls_t = time.monotonic()
+        reach = self._avoid.horizon_m * self._avoid.release_factor + 1.0
+        self._points = points_in_base(msg.ranges, msg.angle_min, msg.angle_increment, self._laser.x,
+                                      self._laser.y, self._laser.yaw, max_range=reach + 0.5)
+        self._points_t = time.monotonic()
 
     def _avoid_kappa(self, kappa_pd: float) -> float:
         if not self.get_parameter("avoid_enabled").value:
             return kappa_pd
-        if time.monotonic() - self._walls_t > self._f("avoid_max_scan_age_s"):
+        if time.monotonic() - self._points_t > self._f("avoid_max_scan_age_s"):
             self._avoider.reset()
             return kappa_pd
-        before = self._avoider.side
-        kappa = self._avoider.step(kappa_pd, self._walls)
-        side = self._avoider.side
-        if side != before:
-            if side is None:
-                self.get_logger().info(f"wall avoid: clear of the {before} wall, back to the path")
-            else:
-                self.get_logger().info(
-                    f"wall avoid: {side} wall {self._walls.nearest_m:.2f} m, turning away "
-                    f"(curvature {kappa_pd:+.2f} -> {kappa:+.2f} 1/m)")
-        return kappa
+        was = self._avoider.override_k
+        ch = self._avoider.step(kappa_pd, self._points)
+        if ch.overriding and (was is None or abs(ch.kappa - was) > 1e-6):
+            self.get_logger().info(
+                f"wall avoid: PD arc {kappa_pd:+.2f} 1/m hits a wall after {ch.pd_free_m:.2f} m, "
+                f"driving arc {ch.kappa:+.2f} 1/m (clear {ch.chosen_free_m:.2f} m)")
+        elif not ch.overriding and was is not None:
+            self.get_logger().info("wall avoid: PD arc clear again, back to the path")
+        return ch.kappa
 
     def _on_accepted(self, goal_handle) -> None:
         # A new path (the tree replans at 1 Hz) replaces the one being driven.

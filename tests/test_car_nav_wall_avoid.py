@@ -1,134 +1,174 @@
-"""LiDAR wall avoidance under the PD follower (ros/car_nav/car_nav/wall_avoid.py)."""
+"""LiDAR arc-check wall avoidance under the PD follower (ros/car_nav/car_nav/wall_avoid.py)."""
 import math
 
 import numpy as np
 import yaml
 
 from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
-from car_nav.wall_avoid import AvoidParams, WallAvoider, WallDist, points_in_base, wall_distances
+from car_nav.actuation import table_from_cfg
+from car_nav.pd_follower import PathTracker, PDGains, pd_curvature
+from car_nav.wall_avoid import ArcAvoider, AvoidParams, free_distance, points_in_base
 
 NAV = yaml.safe_load(P.NAV2_YAML.read_text())
 PD = NAV["pd_path_follower"]["ros__parameters"]
 CAR = yaml.safe_load(P.CAR_YAML.read_text())
 F = CAR["footprint"]
+TABLE = table_from_cfg(CAR)
 PARAMS = AvoidParams(x_front=F["x_front"], x_rear=F["x_rear"], half_width=F["half_width"],
-                     front_exit_m=PD["avoid_front_exit_m"], side_exit_m=PD["avoid_side_exit_m"],
-                     enter_ratio=PD["avoid_enter_ratio"], turn_curvature=PD["avoid_turn_curvature"],
-                     look_ahead_m=PD["avoid_look_ahead_m"], max_curvature=PD["avoid_max_curvature"],
-                     rear_margin_m=PD["avoid_rear_margin_m"])
+                     margin_m=PD["avoid_margin_m"], horizon_m=PD["avoid_horizon_m"],
+                     release_factor=PD["avoid_release_factor"], n_candidates=PD["avoid_candidates"],
+                     max_left=TABLE.max_left_curvature, max_right=TABLE.max_right_curvature)
+G = PDGains(kp=PD["kp"], kd=PD["kd"], ff=PD["ff"], ff_ahead_m=PD["ff_ahead_m"])
 ANG = np.linspace(-math.pi, math.pi, 720, endpoint=False)
-HALF = 0.9  # campus corridors are ~1.8 m between the walls
-K = PARAMS.turn_curvature
+HALF = 0.9   # campus 3-tile corridor: 1.8 m between the walls
+E = 6.0      # end wall of the corridor (x)
+BRANCH = 1.2  # 2-tile branch to the left, x in [E - BRANCH, E]  (sim goal 2, 2026-11-14)
 
 
-def scan(y0, th, end_x=None):
-    """Ranges from base_link at (0, y0, th) in a corridor |y| <= HALF along x (end wall at x = end_x)."""
+def corridor():
+    return [((-50.0, HALF), (50.0, HALF)), ((-50.0, -HALF), (50.0, -HALF))]
+
+
+def l_junction():
+    # main corridor along +x ending at x = E; a 1.2 m branch turns left (+y)
+    return [((-50.0, -HALF), (E, -HALF)), ((E, -HALF), (E, 20.0)),
+            ((-50.0, HALF), (E - BRANCH, HALF)), ((E - BRANCH, HALF), (E - BRANCH, 20.0))]
+
+
+def raycast(segs, x, y, th):
     a = ANG + th
-    r = np.full(ANG.shape, np.inf)
-    s, c = np.sin(a), np.cos(a)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        for wall in (HALF, -HALF):
-            t = (wall - y0) / s
-            r = np.where((t > 0) & (t < r), t, r)
-        if end_x is not None:
-            t = end_x / c
-            r = np.where((t > 0) & (t < r), t, r)
-    return r
+    dx, dy = np.cos(a), np.sin(a)
+    best = np.full(ANG.shape, np.inf)
+    for (x0, y0), (x1, y1) in segs:
+        ex, ey = x1 - x0, y1 - y0
+        den = dx * ey - dy * ex
+        wx, wy = x0 - x, y0 - y
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = (wx * ey - wy * ex) / den
+            u = (wx * dy - wy * dx) / den
+        ok = (np.abs(den) > 1e-12) & (t > 1e-6) & (u >= 0) & (u <= 1)
+        best = np.minimum(best, np.where(ok, t, np.inf))
+    return best
 
 
-def walls_at(y0, th, end_x=None):
-    return wall_distances(points_in_base(scan(y0, th, end_x), -math.pi, ANG[1] - ANG[0]), PARAMS)
+def points_at(segs, x, y, th):
+    return points_in_base(raycast(segs, x, y, th), -math.pi, ANG[1] - ANG[0], max_range=4.0)
 
 
-def test_centred_in_corridor_does_nothing():
-    av = WallAvoider(PARAMS)
-    assert av.step(0.3, walls_at(0.0, 0.0)) == 0.3 and av.side is None
-    assert av.step(0.3, walls_at(0.3, 0.0)) == 0.3 and av.side is None   # 0.3 m off: the PD's job
-
-
-def test_fixed_turn_not_growing_with_closeness():
-    for y0 in (0.5, 0.6):                          # 0.27, 0.17 m from the left wall (rear still clear)
-        av = WallAvoider(PARAMS)
-        assert av.step(0.0, walls_at(y0, 0.0)) == -K and av.side == "left"
-    av = WallAvoider(PARAMS)
-    assert av.step(-1.0, walls_at(0.6, 0.0)) == -1.0     # the PD already turns away harder: keep it
-    assert av.step(+0.5, walls_at(0.6, 0.0)) == -K       # the PD (wrong pose) turns into the wall
-
-
-def test_hysteresis_no_on_off_between_thresholds():
-    av = WallAvoider(PARAMS)
-    # gap beside the body: 0.9 - y0 - 0.135; enter below 0.30 m, leave above 0.45 m
-    assert av.step(0.0, walls_at(0.40, 0.0)) == 0.0          # 0.365 m: not entered
-    assert av.step(0.0, walls_at(0.50, 0.0)) == -K           # 0.265 m: enters
-    assert av.step(0.0, walls_at(0.40, 0.0)) == -K           # 0.365 m: still avoiding
-    assert av.step(0.0, walls_at(0.34, 0.0)) == -K           # 0.425 m: still avoiding
-    assert av.step(0.0, walls_at(0.30, 0.0)) == 0.0          # 0.465 m: left the zone
-    assert av.side is None
-
-
-def test_end_wall_turns_the_way_the_path_turns():
-    for k_pd in (+0.8, -0.8):
-        av = WallAvoider(PARAMS)
-        kappa = av.step(k_pd, walls_at(0.0, 0.0, end_x=1.0))
-        assert math.copysign(1, kappa) == math.copysign(1, k_pd) and abs(kappa) >= K
-
-
-def test_rear_guard_limits_swing_into_wall():
-    av = WallAvoider(PARAMS)
-    k = av.step(0.0, WallDist(left=0.3, rear_gap_left=0.03))
-    assert -K < k <= 0.0 and abs(k) <= 0.3 * K
-
-
-def _corners(x, y, th):
+def corners(x, y, th):
     c, s = math.cos(th), math.sin(th)
     for bx, by in ((F["x_front"], F["half_width"]), (F["x_front"], -F["half_width"]),
                    (F["x_rear"], F["half_width"]), (F["x_rear"], -F["half_width"])):
         yield x + c * bx - s * by, y + s * bx + c * by
 
 
-def drive(y0, th0, kappa_pd_fn, avoid=True, t_end=12.0, v=0.5, latency=0.65, dt=0.05):
+def body_hits(segs, x, y, th):
+    """True when a wall crosses the body outline."""
+    cs = list(corners(x, y, th))
+    edges = [(cs[0], cs[1]), (cs[1], cs[3]), (cs[3], cs[2]), (cs[2], cs[0])]
+
+    def cross(p1, p2, p3, p4):
+        def o(a, b, c):
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        return o(p1, p2, p3) * o(p1, p2, p4) < 0 and o(p3, p4, p1) * o(p3, p4, p2) < 0
+    return any(cross(a, b, c, d) for a, b in edges for c, d in segs)
+
+
+def drive(segs, x, y, th, kappa_pd_fn, avoid=True, t_end=14.0, v=0.5, latency=0.65, dt=0.05):
     """Kinematic rear-steer car (base_link = front axle), command delayed by `latency`.
-    Returns (smallest wall clearance of any body corner, number of avoid on/off switches)."""
-    x, y, th = 0.0, y0, th0
+    Returns (hit, final pose, number of times the layer took over)."""
     queue = [0.0] * int(round(latency / dt))
-    worst = math.inf
-    av = WallAvoider(PARAMS)
-    switches, prev = 0, None
-    for _ in range(int(t_end / dt)):
-        k = kappa_pd_fn(y, th)
-        if avoid:
-            k = av.step(k, walls_at(y, th))
-            switches += av.side != prev
-            prev = av.side
-        queue.append(max(-PARAMS.max_curvature, min(PARAMS.max_curvature, k)))
+    av = ArcAvoider(PARAMS)
+    takeovers, was = 0, False
+    for i in range(int(t_end / dt)):
+        k = kappa_pd_fn(x, y, th)
+        if avoid and i % 2 == 0:          # 10 Hz like the node
+            ch = av.step(k, points_at(segs, x, y, th))
+            k = ch.kappa
+            takeovers += ch.overriding and not was
+            was = ch.overriding
+        elif avoid and was:
+            k = av.override_k
+        queue.append(max(-TABLE.max_right_curvature, min(TABLE.max_left_curvature, k)))
         k_now = queue.pop(0)
         x += v * math.cos(th) * dt
         y += v * math.sin(th) * dt
         th += v * k_now * dt
-        worst = min(worst, min(HALF - abs(cy) for _, cy in _corners(x, y, th)))
-    return worst, switches
+        if body_hits(segs, x, y, th):
+            return True, (x, y, th), takeovers
+    return False, (x, y, th), takeovers
+
+
+def left_turn_path():
+    cx = E - BRANCH / 2 - 0.75                 # planner radius 0.75 into the branch centre line
+    pts = [(x * 0.05, 0.0) for x in range(int(cx / 0.05) + 1)]
+    pts += [(cx + 0.75 * math.sin(a), 0.75 - 0.75 * math.cos(a)) for a in np.linspace(0, math.pi / 2, 30)[1:]]
+    pts += [(E - BRANCH / 2, 0.75 + i * 0.05) for i in range(1, 80)]
+    return pts
+
+
+def pd_on(path, offset=(0.0, 0.0)):
+    tracker = PathTracker(path)
+
+    def fn(x, y, th):
+        return pd_curvature(tracker.track(x + offset[0], y + offset[1], th, G), G)
+    return fn
+
+
+def test_free_distance_straight_and_wall_ahead():
+    assert free_distance(points_at(corridor(), 0, 0, 0), 0.0, PARAMS, 1.0) == 1.0
+    end = [((1.0, -2.0), (1.0, 2.0))]
+    f = free_distance(points_at(end, 0, 0, 0), 0.0, PARAMS, 1.0)
+    assert 0.6 <= f <= 0.8          # nose 0.16 + margin 0.05 reaches x = 1.0 after ~0.79 m
+
+
+def test_rear_swing_counts():
+    # wall 0.05 m beside the rear on the right: a hard LEFT turn swings the rear into it
+    wall = [((-1.0, -0.20), (0.0, -0.20))]
+    pts = points_at(wall, 0, 0, 0)
+    assert free_distance(pts, TABLE.max_left_curvature, PARAMS, 1.0) < 0.3
+    assert free_distance(pts, 0.0, PARAMS, 1.0) == 1.0
+
+
+def test_centred_in_corridor_does_nothing():
+    av = ArcAvoider(PARAMS)
+    for k in (0.0, 0.3, -0.3):
+        ch = av.step(k, points_at(corridor(), 0.0, 0.0, 0.0))
+        assert not ch.overriding and ch.kappa == k
+
+
+def test_planned_left_turn_into_narrow_branch_is_not_fought():
+    # sim 2026-11-14 goal 2: the old layer saw the inner corner and forced a right turn
+    path = left_turn_path()
+    hit_free, end_free, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=False, t_end=22)
+    hit, end, takeovers = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=True, t_end=22)
+    assert not hit_free and not hit
+    assert end[1] > 4.0 and abs(end[0] - (E - BRANCH / 2)) < 0.25     # up the branch
+    assert takeovers <= 1          # at most a brief nudge where the arc grazes the margin
+
+
+def test_late_turn_from_lagging_pose_is_saved():
+    # the pose lags 0.8-1.2 m along the corridor (seen in the sim): the PD turns too late.
+    # A 1.0 m horizon was too short for 0.8 m (the escape arc came too late): 1.3 m.
+    path = left_turn_path()
+    for lag in (0.8, 1.2):
+        hit_free, _, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path, offset=(-lag, 0.0)), avoid=False, t_end=22)
+        hit, end, takeovers = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path, offset=(-lag, 0.0)), avoid=True,
+                                    t_end=22)
+        assert hit_free and not hit
+        assert takeovers >= 1 and end[1] > 4.0                   # still got into the branch
 
 
 def test_wrong_pose_drives_into_wall_without_layer_but_not_with_it():
-    # The pose is 0.85 m off sideways: the PD "returns to the path" along a
-    # line 0.05 m from the real left wall, so the body hits it.
-    def pd_on_wrong_pose(y, th):
+    # pose 0.85 m off sideways: the PD returns to a line 5 cm from the left wall
+    def pd_wrong(x, y, th):
         return -0.7 * (y - 0.85) - 1.2 * math.sin(th)
-
-    assert drive(0.0, 0.0, pd_on_wrong_pose, avoid=False)[0] < 0.0
-    clear, switches = drive(0.0, 0.0, pd_on_wrong_pose, avoid=True)
-    assert clear > 0.02
-    assert switches <= 12          # a few slow cycles in 12 s, not on/off every scan
+    assert drive(corridor(), 0, 0, 0, pd_wrong, avoid=False)[0]
+    hit, _, takeovers = drive(corridor(), 0, 0, 0, pd_wrong, avoid=True)
+    assert not hit and takeovers <= 6        # a few slow takeovers in 14 s, no on/off every scan
 
 
 def test_heading_at_wall_recovers():
-    # blind and wrong: PD holds the heading 25 deg towards the left wall
     for deg in (15, 25, 35):
-        assert drive(0.0, math.radians(deg), lambda y, th: 0.0, avoid=False)[0] < 0.0
-        assert drive(0.0, math.radians(deg), lambda y, th: 0.0, avoid=True)[0] > 0.04
-
-
-def test_slightly_angled_in_corridor_does_nothing():
-    av = WallAvoider(PARAMS)
-    for deg in (-8, 8):
-        assert av.step(0.0, walls_at(0.0, math.radians(deg))) == 0.0 and av.side is None
+        assert drive(corridor(), 0, 0, math.radians(deg), lambda x, y, th: 0.0, avoid=False)[0]
+        assert not drive(corridor(), 0, 0, math.radians(deg), lambda x, y, th: 0.0, avoid=True)[0]
