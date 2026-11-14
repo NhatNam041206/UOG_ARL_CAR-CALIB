@@ -297,7 +297,7 @@ collision_monitor:
     state_topic: collision_monitor_state
     transform_tolerance: 0.5
     source_timeout: 1.0
-    base_shift_correction: true
+    base_shift_correction: false  # true needs odom TF at the scan time + now; adaptive_odom lagging 10 ms made "invalid source" stops (sim 2026-11-14)
     stop_pub_timeout: 2.0
     enable_stamped_cmd_vel: false
     # The car has ONE speed, so slowdown cannot happen. Two zones:
