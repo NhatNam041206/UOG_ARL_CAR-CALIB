@@ -29,6 +29,8 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
+import numpy as np
+
 
 def scan_observability(ranges: Sequence[float], angle_min: float, angle_inc: float,
                        max_range: float = 8.0, facing_cos: float = 0.5,
@@ -43,54 +45,68 @@ def scan_observability(ranges: Sequence[float], angle_min: float, angle_inc: flo
     |cos(angle to x)| >= facing_cos and the wall is straight (residual <=
     max_resid). w = 0 below n_low facing points, 1 above n_high (counted
     on every point, i.e. stride x the sampled ones).
+
+    numpy, all sampled points at once (2026-11-16: the per-point Python loop
+    cost ~12 ms per scan on the laptop, several times that on the Pi 5). Same
+    rules as before (tests/_car_nav_reference.py, equivalence test): the window
+    grows one point per side per step; it fails on a missing neighbour, a jump
+    > 0.2 m between neighbours, a span > max_span or more than 80 points.
     """
-    pts: list[tuple[float, float] | None] = []
-    for i, r in enumerate(ranges):
-        if r is None or not math.isfinite(r) or r <= 0.05 or r > max_range:
-            pts.append(None)
-        else:
-            a = angle_min + i * angle_inc
-            pts.append((r * math.cos(a), r * math.sin(a)))
-    n_pts = len(pts)
-    n = 0
-    for i in range(0, n_pts, stride):
-        if pts[i] is None:
-            continue
-        lo = hi = i
-        span = 0.0
-        ok = True
-        while span < min_span:
-            if lo - 1 < 0 or hi + 1 >= n_pts or pts[lo - 1] is None or pts[hi + 1] is None:
-                ok = False
-                break
-            lo, hi = lo - 1, hi + 1
-            # a jump between neighbours = two different objects
-            if math.dist(pts[lo], pts[lo + 1]) > 0.2 or math.dist(pts[hi], pts[hi - 1]) > 0.2:
-                ok = False
-                break
-            span = math.dist(pts[lo], pts[hi])
-            if span > max_span or hi - lo > 80:
-                ok = False
-                break
-        if not ok:
-            continue
-        seg = pts[lo:hi + 1]
-        m = len(seg)
-        mx = sum(p[0] for p in seg) / m
-        my = sum(p[1] for p in seg) / m
-        sxx = sum((p[0] - mx) ** 2 for p in seg) / m
-        syy = sum((p[1] - my) ** 2 for p in seg) / m
-        sxy = sum((p[0] - mx) * (p[1] - my) for p in seg) / m
-        # direction of the line = main axis; residual = smaller eigenvalue
+    r = np.asarray(ranges, dtype=float)
+    n_pts = r.shape[0]
+    if n_pts < 3:
+        return 0.0, 0
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(r) & (r > 0.05) & (r <= max_range)
+    a = angle_min + np.arange(n_pts) * angle_inc
+    rr = np.where(valid, r, 0.0)
+    x, y = rr * np.cos(a), rr * np.sin(a)
+    # jump[j] = distance between points j and j+1
+    jump = np.hypot(np.diff(x), np.diff(y)) if n_pts > 1 else np.zeros(0)
+    idx = np.arange(0, n_pts, stride)
+    idx = idx[valid[idx]]
+    win = np.zeros(idx.shape, dtype=int)            # half width k of the accepted window, 0 = none
+    active = np.ones(idx.shape, dtype=bool)
+    for k in range(1, 41 + 1):
+        if not active.any():
+            break
+        lo, hi = idx - k, idx + k
+        inb = (lo >= 0) & (hi < n_pts)
+        lo_c, hi_c = np.clip(lo, 0, n_pts - 1), np.clip(hi, 0, n_pts - 1)
+        ok = active & inb & valid[lo_c] & valid[hi_c]
+        jl = jump[np.clip(lo, 0, max(n_pts - 2, 0))]   # between lo and lo + 1
+        jh = jump[np.clip(hi - 1, 0, max(n_pts - 2, 0))]  # between hi - 1 and hi
+        ok &= (jl <= 0.2) & (jh <= 0.2)
+        span = np.hypot(x[hi_c] - x[lo_c], y[hi_c] - y[lo_c])
+        ok &= (span <= max_span) & (2 * k <= 80)
+        done = ok & (span >= min_span)
+        win[done] = k
+        active = ok & ~done
+    sel = win > 0
+    if not sel.any():
+        n = 0
+    else:
+        i, k = idx[sel], win[sel]
+        lo, hi = i - k, i + k
+        m = (2 * k + 1).astype(float)
+        cx, cy = np.concatenate(([0.0], np.cumsum(x))), np.concatenate(([0.0], np.cumsum(y)))
+        mx = (cx[hi + 1] - cx[lo]) / m
+        my = (cy[hi + 1] - cy[lo]) / m
+        # second moments about the window mean, summed exactly per window
+        off = np.arange(-40, 41)
+        jj = i[:, None] + off[None, :]
+        inwin = np.abs(off)[None, :] <= k[:, None]
+        jj = np.clip(jj, 0, n_pts - 1)
+        dx = np.where(inwin, x[jj] - mx[:, None], 0.0)
+        dy = np.where(inwin, y[jj] - my[:, None], 0.0)
+        sxx = (dx * dx).sum(axis=1) / m
+        syy = (dy * dy).sum(axis=1) / m
+        sxy = (dx * dy).sum(axis=1) / m
         tr, det = sxx + syy, sxx * syy - sxy * sxy
-        disc = math.sqrt(max(tr * tr / 4 - det, 0.0))
-        lam_min = tr / 2 - disc
-        if lam_min > max_resid ** 2:
-            continue
-        theta = 0.5 * math.atan2(2 * sxy, sxx - syy)      # line direction
-        # normal = direction + 90 deg; |n_x| = |sin(theta)|
-        if abs(math.sin(theta)) >= facing_cos:
-            n += stride
+        lam_min = tr / 2 - np.sqrt(np.maximum(tr * tr / 4 - det, 0.0))
+        theta = 0.5 * np.arctan2(2 * sxy, sxx - syy)
+        facing = (lam_min <= max_resid ** 2) & (np.abs(np.sin(theta)) >= facing_cos)
+        n = int(facing.sum()) * stride
     w = min(max((n - n_low) / float(n_high - n_low), 0.0), 1.0)
     return w, n
 

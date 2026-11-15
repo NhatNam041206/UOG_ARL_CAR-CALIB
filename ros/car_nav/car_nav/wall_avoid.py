@@ -34,6 +34,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class AvoidParams:
@@ -51,15 +53,15 @@ class AvoidParams:
 
 def points_in_base(ranges: Sequence[float], angle_min: float, angle_inc: float,
                    laser_x: float = 0.0, laser_y: float = 0.0, laser_yaw: float = 0.0,
-                   min_range: float = 0.05, max_range: float = 12.0) -> list[tuple[float, float]]:
-    """Valid scan points (x, y) in base_link, for a scan from a laser at (laser_x, laser_y, laser_yaw)."""
-    out = []
-    for i, r in enumerate(ranges):
-        if r is None or not math.isfinite(r) or r < min_range or r > max_range:
-            continue
-        a = angle_min + i * angle_inc + laser_yaw
-        out.append((laser_x + r * math.cos(a), laser_y + r * math.sin(a)))
-    return out
+                   min_range: float = 0.05, max_range: float = 12.0) -> np.ndarray:
+    """Valid scan points as an (N, 2) array (x, y) in base_link, for a scan from a
+    laser at (laser_x, laser_y, laser_yaw)."""
+    r = np.asarray(ranges, dtype=float)
+    a = angle_min + np.arange(r.shape[0]) * angle_inc + laser_yaw
+    with np.errstate(invalid="ignore"):
+        ok = np.isfinite(r) & (r >= min_range) & (r <= max_range)
+    r, a = r[ok], a[ok]
+    return np.stack((laser_x + r * np.cos(a), laser_y + r * np.sin(a)), axis=1)
 
 
 def _arc_pose(k: float, s: float) -> tuple[float, float, float]:
@@ -69,29 +71,48 @@ def _arc_pose(k: float, s: float) -> tuple[float, float, float]:
     return math.sin(th) / k, (1.0 - math.cos(th)) / k, th
 
 
+def _as_array(points) -> np.ndarray:
+    a = np.asarray(points, dtype=float)
+    return a.reshape(-1, 2)
+
+
+def free_distances(points, ks: Sequence[float], p: AvoidParams, horizon: float) -> np.ndarray:
+    """free_distance() for several curvatures at once (numpy: every arc step x
+    every point in one go; the per-point Python loop cost up to ~45 ms per
+    control tick on the laptop, 2026-11-16)."""
+    pts = _as_array(points)
+    ks = np.asarray(ks, dtype=float).reshape(-1)
+    n = max(1, int(round(horizon / p.step_m)))
+    if pts.shape[0] == 0:
+        return np.full(ks.shape, float(horizon))
+    xf, xr, hw = p.x_front + p.margin_m, p.x_rear - p.margin_m, p.half_width + p.margin_m
+    s = np.arange(1, n + 1) * horizon / n                       # (n,)
+    k = ks[:, None]                                             # (K, 1)
+    straight = np.abs(k) < 1e-6
+    th = np.where(straight, 0.0, k * s[None, :])                # (K, n)
+    ksafe = np.where(straight, 1.0, k)
+    px = np.where(straight, s[None, :], np.sin(th) / ksafe)
+    py = np.where(straight, 0.0, (1.0 - np.cos(th)) / ksafe)
+    c, sn = np.cos(th)[..., None], np.sin(th)[..., None]        # (K, n, 1)
+    dx = pts[None, None, :, 0] - px[..., None]                  # (K, n, P)
+    dy = pts[None, None, :, 1] - py[..., None]
+    bx = c * dx + sn * dy
+    hit = ((bx <= xf) & (bx >= xr) & (np.abs(-sn * dx + c * dy) <= hw)).any(axis=2)  # (K, n)
+    first = np.where(hit.any(axis=1), hit.argmax(axis=1), n)    # index of the first hit step (i - 1)
+    return np.where(first < n, first * horizon / n, float(horizon))
+
+
 def free_distance(points: Sequence[tuple[float, float]], k: float, p: AvoidParams, horizon: float) -> float:
     """How far (m along the arc) the car drives on curvature k before its
     body (+ margin) touches a scan point; `horizon` if it never does."""
-    xf, xr, hw = p.x_front + p.margin_m, p.x_rear - p.margin_m, p.half_width + p.margin_m
-    n = max(1, int(round(horizon / p.step_m)))
-    for i in range(1, n + 1):
-        s = i * horizon / n
-        px, py, th = _arc_pose(k, s)
-        c, sn = math.cos(th), math.sin(th)
-        for x, y in points:
-            dx, dy = x - px, y - py
-            bx = c * dx + sn * dy
-            if bx > xf or bx < xr:
-                continue
-            if abs(-sn * dx + c * dy) <= hw:
-                return (i - 1) * horizon / n
-    return horizon
+    return float(free_distances(points, [k], p, horizon)[0])
 
 
-def near_points(points: Iterable[tuple[float, float]], p: AvoidParams, horizon: float) -> list[tuple[float, float]]:
+def near_points(points: Iterable[tuple[float, float]], p: AvoidParams, horizon: float) -> np.ndarray:
     """Only points the body can reach within the horizon."""
+    pts = _as_array(list(points) if not isinstance(points, np.ndarray) else points)
     reach = horizon + max(p.x_front, -p.x_rear) + p.half_width + p.margin_m
-    return [(x, y) for x, y in points if x * x + y * y <= reach * reach]
+    return pts[(pts[:, 0] ** 2 + pts[:, 1] ** 2) <= reach * reach]
 
 
 @dataclass
@@ -132,9 +153,9 @@ class ArcAvoider:
             if free_distance(pts, self.override_k, p, p.horizon_m) >= p.horizon_m:
                 return ArcChoice(self.override_k, True, pd_free, p.horizon_m)
         best = None  # (free, -|k - k_pd|, k)
-        for k in self.candidates():
-            f = free_distance(pts, k, p, p.horizon_m)
-            key = (f, -abs(k - k_pd), k)
+        cands = self.candidates()
+        for k, f in zip(cands, free_distances(pts, cands, p, p.horizon_m)):
+            key = (float(f), -abs(k - k_pd), k)
             if best is None or key > best:
                 best = key
         self.override_k = best[2]
