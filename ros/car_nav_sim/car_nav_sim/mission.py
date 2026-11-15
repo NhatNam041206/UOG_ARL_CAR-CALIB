@@ -189,7 +189,10 @@ def main() -> None:
     car = config_loader.load()
     tracker = Tracker(world, config_loader.footprint(car), car.get("steering") or {})
     tracker.tf = Buffer()
-    _tf_listener = TransformListener(tracker.tf, nav)  # noqa: F841 - keeps the subscription alive
+    # Own thread: the mission loop spins `nav` only between isTaskComplete() polls, so a
+    # listener on it fell seconds behind and the "est" pose / localisation error lagged
+    # (sim 2026-11-16: 1.5-2.5 m "error" while the planner's start pose was 0.1 m off).
+    _tf_listener = TransformListener(tracker.tf, nav, spin_thread=True)  # noqa: F841
     nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
     nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)

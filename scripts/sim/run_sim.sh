@@ -18,6 +18,14 @@ cd "$(dirname "$0")/../.."
 COMPOSE=(docker compose -f docker-compose.sim.yml)
 mkdir -p run_logs/sim
 
+# SIM_CPUS=<n>: limit the sim container to n CPUs (emulates a slower computer such as
+# the Pi 5 or an overloaded laptop). Off by default; only adds a CPU quota.
+if [[ -n "${SIM_CPUS:-}" ]]; then
+  printf 'services:\n  sim:\n    cpus: "%s"\n' "$SIM_CPUS" > run_logs/sim/cpus-override.yml
+  COMPOSE+=(-f run_logs/sim/cpus-override.yml)
+  echo "cpu limit: $SIM_CPUS"
+fi
+
 if ! docker info >/dev/null 2>&1; then
   echo "Docker is not running. Start Docker Desktop, wait for 'Engine running', then retry." >&2
   echo "(check with: docker version  -> it must show a 'Server:' section)" >&2
@@ -68,6 +76,8 @@ apply_stress() {
   [[ -f "$f" ]] || { echo "no stress file $f" >&2; exit 2; }
   run bash -c "python3 /opt/car_nav_sim_tools/apply_overrides.py /opt/car_nav_ws/share/car_nav_sim/config/sim.yaml \
     /ws/src/car_nav_sim/sweeps/stress/${SIM_STRESS}.yaml /data/sim/stress-sim.yaml sim"
+  # Git Bash would rewrite the container path into a Windows one (D:/Git/data/...)
+  export MSYS2_ARG_CONV_EXCL="CAR_NAV_SIM_CONFIG=${MSYS2_ARG_CONV_EXCL:+;$MSYS2_ARG_CONV_EXCL}"
   RUN_EXTRA+=(-e CAR_NAV_SIM_CONFIG=/data/sim/stress-sim.yaml)
   echo "stress: $SIM_STRESS"
 }
