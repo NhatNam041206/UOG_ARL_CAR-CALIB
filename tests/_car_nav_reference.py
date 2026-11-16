@@ -114,3 +114,25 @@ def points_in_base_ref(ranges: Sequence[float], angle_min: float, angle_inc: flo
         a = angle_min + i * angle_inc + laser_yaw
         out.append((laser_x + r * math.cos(a), laser_y + r * math.sin(a)))
     return out
+
+
+def world_clearance_ref(world, polygon):
+    """car_nav_sim.world.World.clearance before the nearest-first speed-up."""
+    import numpy as np
+    from car_nav_sim import world as W
+    poly_segs = np.hstack([polygon, np.roll(polygon, -1, axis=0)])
+    best = math.inf
+    for seg in world.segments():
+        for ps in poly_segs:
+            best = min(best, W._seg_seg_distance(ps, seg))
+            if best == 0.0:
+                return 0.0
+    for c in world.cylinders:
+        if W._point_in_polygon(c.cx, c.cy, polygon):
+            return 0.0
+        for ps in poly_segs:
+            best = min(best, max(0.0, W._point_seg_distance(c.cx, c.cy, ps) - c.r))
+    for b in world.boxes:
+        if W._point_in_polygon(b.cx, b.cy, polygon) or W._point_in_polygon(*polygon[0], b.corners()):
+            return 0.0
+    return best

@@ -82,3 +82,14 @@ def test_points_in_base_same_as_reference():
         assert a.shape == (len(b), 2)
         assert np.allclose(a, np.array(b).reshape(-1, 2), atol=1e-12, rtol=0)
     assert points_in_base([], -math.pi, 0.01).shape == (0, 2)
+
+
+@pytest.mark.parametrize("name,box", [("campus_path", (40, 57, 9, 29)), ("test_floor", (-1, 10, -1, 7))])
+def test_world_clearance_same_as_reference(name, box):
+    from car_nav_sim.world import footprint_polygon
+    w = World.load(str(P.SIM_DIR / "worlds" / f"{name}.yaml"))
+    rng = np.random.default_rng(5)
+    for _ in range(120):
+        poly = footprint_polygon(rng.uniform(box[0], box[1]), rng.uniform(box[2], box[3]),
+                                 rng.uniform(-math.pi, math.pi), 0.16, -0.37, 0.135)
+        assert w.clearance(poly) == ref.world_clearance_ref(w, poly)

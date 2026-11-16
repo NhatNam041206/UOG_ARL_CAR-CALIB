@@ -165,18 +165,47 @@ class World:
         """Smallest distance from a closed polygon (N, 2) to any obstacle; 0 if touching."""
         poly_segs = np.hstack([polygon, np.roll(polygon, -1, axis=0)])
         best = math.inf
-        for seg in self.segments():
-            for ps in poly_segs:
-                best = min(best, _seg_seg_distance(ps, seg))
-                if best == 0.0:
-                    return 0.0
+        # Segments nearest first by a lower bound (gap between bounding boxes); stop once
+        # no remaining segment can be closer. Same result as checking all of them, but
+        # ~1 ms instead of ~25 ms on the campus map (the mission scorer calls this for every
+        # 100 Hz truth message and fell seconds behind, 2026-11-16).
+        segs = getattr(self, "_segs_cache", None)
+        if segs is None:
+            segs = self._segs_cache = self.segments()
+        if len(segs):
+            px0, py0 = polygon[:, 0].min(), polygon[:, 1].min()
+            px1, py1 = polygon[:, 0].max(), polygon[:, 1].max()
+            sx0, sx1 = np.minimum(segs[:, 0], segs[:, 2]), np.maximum(segs[:, 0], segs[:, 2])
+            sy0, sy1 = np.minimum(segs[:, 1], segs[:, 3]), np.maximum(segs[:, 1], segs[:, 3])
+            gx = np.maximum(0.0, np.maximum(sx0 - px1, px0 - sx1))
+            gy = np.maximum(0.0, np.maximum(sy0 - py1, py0 - sy1))
+            lb = np.hypot(gx, gy)
+            for i in np.argsort(lb, kind="stable"):
+                if lb[i] > best:
+                    break
+                for ps in poly_segs:
+                    best = min(best, _seg_seg_distance(ps, segs[i]))
+                    if best == 0.0:
+                        return 0.0
         for c in self.cylinders:
             if _point_in_polygon(c.cx, c.cy, polygon):
                 return 0.0
             for ps in poly_segs:
                 best = min(best, max(0.0, _point_seg_distance(c.cx, c.cy, ps) - c.r))
-        for b in self.boxes:  # car fully inside a box, or a small box fully inside the car
-            if _point_in_polygon(b.cx, b.cy, polygon) or _point_in_polygon(*polygon[0], b.corners()):
+        bb = getattr(self, "_box_cache", None)
+        if bb is None:
+            corners = [b.corners() for b in self.boxes]
+            bb = self._box_cache = (corners, np.array([[c[:, 0].min(), c[:, 1].min(), c[:, 0].max(), c[:, 1].max()]
+                                                       for c in corners]).reshape(-1, 4))
+        corners, boxbb = bb
+        qx, qy = polygon[0]
+        px0, py0 = polygon[:, 0].min(), polygon[:, 1].min()
+        px1, py1 = polygon[:, 0].max(), polygon[:, 1].max()
+        for i, b in enumerate(self.boxes):  # car fully inside a box, or a small box fully inside the car
+            # bounding-box prefilter (exact: a point outside the bounding box is outside the polygon)
+            c_in = px0 <= b.cx <= px1 and py0 <= b.cy <= py1
+            q_in = boxbb[i, 0] <= qx <= boxbb[i, 2] and boxbb[i, 1] <= qy <= boxbb[i, 3]
+            if (c_in and _point_in_polygon(b.cx, b.cy, polygon)) or (q_in and _point_in_polygon(qx, qy, corners[i])):
                 return 0.0
         return best
 
