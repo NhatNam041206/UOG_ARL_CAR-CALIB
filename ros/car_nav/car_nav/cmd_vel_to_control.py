@@ -22,6 +22,7 @@ from std_msgs.msg import String
 
 from . import config_loader
 from .actuation import CmdVelMapper, MapperConfig, format_payload, table_from_cfg
+from .timing import TimingStats
 
 
 class CmdVelToControl(Node):
@@ -46,7 +47,8 @@ class CmdVelToControl(Node):
             f"{table.max_right_curvature:.2f} 1/m -> min turning radius {table.min_turning_radius:.2f} m"
         )
         self._pub = self.create_publisher(String, "control", 10)
-        self.create_subscription(Twist, "cmd_vel", self._on_cmd, 10)
+        self._timing = TimingStats(self.get_logger())
+        self.create_subscription(Twist, "cmd_vel", self._timing.wrap("bridge.cmd_cb", self._on_cmd), 10)
         self._last_cmd: tuple[float, float] | None = None
         self._last_t = 0.0
         self._last_payload = ""

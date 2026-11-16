@@ -18,6 +18,7 @@ from sensor_msgs.msg import LaserScan
 
 from . import config_loader
 from .scan_tools import is_inverted, upright, zero_invalid
+from .timing import TimingStats
 
 
 class ScanUpright(Node):
@@ -32,7 +33,9 @@ class ScanUpright(Node):
         )
         self._pub = self.create_publisher(LaserScan, "scan_nav", qos_profile_sensor_data)
         self._pub_odom = self.create_publisher(LaserScan, "scan_odom", qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "scan_filtered", self._on_scan, qos_profile_sensor_data)
+        self._timing = TimingStats(self.get_logger())
+        self.create_subscription(LaserScan, "scan_filtered", self._timing.wrap("upright.scan_cb", self._on_scan),
+                                 qos_profile_sensor_data)
 
     def _on_scan(self, msg: LaserScan) -> None:
         ranges, intens, amin, amax = upright(

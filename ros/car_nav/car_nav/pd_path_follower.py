@@ -49,6 +49,7 @@ from . import config_loader
 from .pd_follower import PathTracker, PDGains, pd_curvature
 from .actuation import table_from_cfg
 from .wall_avoid import ArcAvoider, AvoidParams, points_in_base
+from .timing import TimingStats
 
 
 def _yaw(q) -> float:
@@ -94,7 +95,10 @@ class PDPathFollower(Node):
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
         # /scan_nav is in laser_upright = base_link shifted to the laser, turned by its yaw
         self._laser = config_loader.laser_pose(cfg)
-        self.create_subscription(LaserScan, "/scan_nav", self._on_scan, qos_profile_sensor_data,
+        self._timing = TimingStats(self.get_logger())
+        self._scan_stamp = None
+        self._last_cmd_t = None
+        self.create_subscription(LaserScan, "/scan_nav", self._timing.wrap("pd.scan_cb", self._on_scan), qos_profile_sensor_data,
                                  callback_group=ReentrantCallbackGroup())
         self._lock = threading.Lock()
         self._active = None  # goal_handle currently driving
@@ -117,6 +121,7 @@ class PDPathFollower(Node):
         self._points = points_in_base(msg.ranges, msg.angle_min, msg.angle_increment, self._laser.x,
                                       self._laser.y, self._laser.yaw, max_range=reach + 0.5)
         self._points_t = time.monotonic()
+        self._scan_stamp = Time.from_msg(msg.header.stamp)
 
     def _avoid_kappa(self, kappa_pd: float) -> float:
         if not self.get_parameter("avoid_enabled").value:
@@ -149,6 +154,7 @@ class PDPathFollower(Node):
             self.get_logger().warn(f"no pose: {exc}", throttle_duration_sec=2.0)
             return None
         age = (self.get_clock().now() - Time.from_msg(t.header.stamp)).nanoseconds * 1e-9
+        self._timing.value("pd.pose_age_s", age)
         if age > self._f("max_pose_age_s"):
             # Steering on an old pose turns the car long after it has turned
             # (seen in the sim: a 6-8 s backlog drove it into a wall). Stop.
@@ -194,8 +200,10 @@ class PDPathFollower(Node):
                 self._stop()
                 goal_handle.canceled()
                 return self._result()
+            t_tick = time.perf_counter()
             pose = self._pose()
             if pose is None:
+                self._timing.count("pd.tick_no_pose")
                 self._stop()
                 time.sleep(period)
                 continue
@@ -215,11 +223,20 @@ class PDPathFollower(Node):
                                         f"{self._f('progress_radius_m')} m in {self._f('progress_time_s')} s")
                 goal_handle.abort()
                 return self._result(105, "failed to make progress")
+            t_arc = time.perf_counter()
             kappa = self._avoid_kappa(pd_curvature(tr, gains))
+            self._timing.duration("pd.arc_check", time.perf_counter() - t_arc)
             cmd = Twist()
             cmd.linear.x = v
             cmd.angular.z = v * kappa
             self._pub.publish(cmd)
+            now_c = self.get_clock().now()
+            self._timing.duration("pd.tick", time.perf_counter() - t_tick)
+            if self._last_cmd_t is not None:
+                self._timing.value("pd.cmd_period_s", (now_c - self._last_cmd_t).nanoseconds * 1e-9)
+            self._last_cmd_t = now_c
+            if self._scan_stamp is not None:
+                self._timing.value("pd.scan_to_cmd_s", (now_c - self._scan_stamp).nanoseconds * 1e-9)
             fb = FollowPath.Feedback()
             fb.distance_to_goal = float(dist_goal)
             fb.speed = float(v)

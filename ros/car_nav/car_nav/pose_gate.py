@@ -32,6 +32,7 @@ from std_msgs.msg import Float32
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
 from .localization_gate import gate_correction, reseed_covariance
+from .timing import TimingStats
 
 
 def _yaw(q) -> float:
@@ -68,10 +69,11 @@ class PoseGate(Node):
         self._last_log = 0.0
         self._pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/localized_pose", 10)
         self._seed_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
-        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl, 10)
+        self._timing = TimingStats(self.get_logger())
+        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._timing.wrap("gate.amcl_cb", self._on_amcl), 10)
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initialpose, 10)
         self.create_subscription(Float32, "/scan_observability", self._on_obs, 10)
-        self.create_timer(1.0 / float(g("publish_rate_hz")), self._publish_tf)
+        self.create_timer(1.0 / float(g("publish_rate_hz")), self._timing.wrap("gate.tf_timer", self._publish_tf))
         self.get_logger().info(
             f"pose gate: AMCL along-corridor corrections scaled by observability / {g('obs_full')}")
 
@@ -105,6 +107,7 @@ class PoseGate(Node):
         return None
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        self._timing.value("gate.amcl_age_s", (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds * 1e-9)
         odom = self._odom_pose(msg.header.stamp)
         if odom is None:
             self.get_logger().warn("no odom -> base_link for the AMCL pose", throttle_duration_sec=2.0)

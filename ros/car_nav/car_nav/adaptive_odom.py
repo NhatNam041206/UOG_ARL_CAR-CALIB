@@ -34,6 +34,7 @@ from tf2_ros import TransformBroadcaster
 from . import config_loader
 from .actuation import parse_payload
 from .speed_filter import MotionModel, SpeedKF, fuse_forward, scan_observability
+from .timing import TimingStats
 
 
 def _yaw(q) -> float:
@@ -96,10 +97,12 @@ class AdaptiveOdom(Node):
         self._speed_pub = self.create_publisher(Float32, "/odom_speed_estimate", 10)
         self._obs_pub = self.create_publisher(Float32, "/scan_observability", 10)
         self._tf = TransformBroadcaster(self) if g("publish_tf") else None
-        self.create_subscription(Odometry, "/odom_rf2o", self._on_rf2o, 20)
-        self.create_subscription(LaserScan, "/scan_nav", self._on_scan, qos_profile_sensor_data)
+        self._timing = TimingStats(self.get_logger())
+        tw = self._timing.wrap
+        self.create_subscription(Odometry, "/odom_rf2o", tw("odom.rf2o_cb", self._on_rf2o), 20)
+        self.create_subscription(LaserScan, "/scan_nav", tw("odom.scan_cb", self._on_scan), qos_profile_sensor_data)
         self.create_subscription(String, "/car/raspi5/control", self._on_control, 20)
-        self.create_subscription(PoseWithCovarianceStamped, str(g("localized_pose_topic")), self._on_amcl, 10)
+        self.create_subscription(PoseWithCovarianceStamped, str(g("localized_pose_topic")), tw("odom.amcl_cb", self._on_amcl), 10)
         self.get_logger().info(
             f"adaptive odometry: start speed {self._kf.v:.2f} m/s (learned online), "
             f"command latency {self._motion.latency_s:.2f} s")
@@ -114,12 +117,14 @@ class AdaptiveOdom(Node):
             self._motion.command(self._now(), parsed[1] == 1)
 
     def _on_scan(self, msg: LaserScan) -> None:
+        self._timing.value("odom.scan_age_s", self._now() - _stamp(msg))
         self._w, self._n_facing = scan_observability(
             msg.ranges, msg.angle_min + self._laser_yaw, msg.angle_increment, **self._obs_args)
         self._obs_pub.publish(Float32(data=float(self._w)))
 
     def _on_rf2o(self, msg: Odometry) -> None:
         t = _stamp(msg)
+        self._timing.value("odom.rf2o_age_s", self._now() - t)
         px, py = msg.pose.pose.position.x, msg.pose.pose.position.y
         pth = _yaw(msg.pose.pose.orientation)
         prev, self._prev_rf2o = self._prev_rf2o, (t, px, py, pth)
@@ -127,7 +132,9 @@ class AdaptiveOdom(Node):
             self._publish(t, 0.0, 0.0, 0.0)
             return
         dt = t - prev[0]
+        self._timing.value("odom.rf2o_period_s", dt)
         if dt <= 0.0 or dt > 1.0:
+            self._timing.count("odom.rf2o_gap_skipped")
             return
         # rf2o motion in its previous body frame
         c, s = math.cos(prev[3]), math.sin(prev[3])
