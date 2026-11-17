@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car NAV2</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #182028; --line: #2a3440; --text: #e6edf3; --muted: #8b98a5;
+    --accent: #4aa3ff; --stop: #ff4d4f; --slow: #f5a623; --ok: #3fb950; --map-free: #e9edf1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { display: flex; height: 100%; }
+  #view { flex: 1; position: relative; min-width: 0; }
+  canvas { width: 100%; height: 100%; display: block; touch-action: none; background: #3a4450; }
+  #side { width: 320px; background: var(--panel); border-left: 1px solid var(--line);
+    overflow-y: auto; padding: 12px 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    margin: 18px 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .tools { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { background: #22303c; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 10px; font: inherit; cursor: pointer; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #estop { width: 100%; padding: 14px; font-size: 18px; font-weight: 700; background: var(--stop);
+    border-color: var(--stop); color: #fff; margin-top: 4px; }
+  #estop.active { background: #fff; color: var(--stop); }
+  .badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; background: #2b3540; }
+  .badge.stop, .badge.estop, .badge.no_scan, .badge.hold { background: var(--stop); color: #fff; }
+  .badge.slow { background: var(--slow); color: #111; }
+  .badge.clear { background: var(--ok); color: #111; }
+  label.slider { display: block; margin: 10px 0; }
+  label.slider span { display: flex; justify-content: space-between; color: var(--muted); }
+  label.slider b { color: var(--text); font-weight: 600; }
+  input[type=range] { width: 100%; }
+  #hint { position: absolute; left: 12px; top: 12px; background: rgba(16,20,24,.85); padding: 6px 10px;
+    border-radius: 6px; color: var(--muted); max-width: calc(100% - 24px); }
+  #legend { position: absolute; left: 12px; bottom: 12px; background: rgba(16,20,24,.85); padding: 6px 10px;
+    border-radius: 6px; font-size: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 4px 0 10px; }
+  .muted { color: var(--muted); }
+  @media (max-width: 760px) {
+    #app { flex-direction: column; }
+    #view { height: 58vh; flex: none; }
+    #side { width: 100%; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view">
+    <canvas id="c"></canvas>
+    <div id="hint">Connecting…</div>
+    <div id="legend">
+      <span class="dot" style="background:#5b6b7a;margin-left:0"></span>LiDAR
+      <span class="dot" style="background:var(--stop)"></span>not on map (person)
+      <span class="dot" style="background:var(--accent)"></span>path
+    </div>
+  </div>
+  <div id="side">
+    <div class="row"><b>Car NAV2</b><span id="conn" class="badge">offline</span></div>
+    <button id="estop">EMERGENCY STOP</button>
+    <h2>Tool</h2>
+    <div class="tools">
+      <button data-tool="pan" class="on">Pan / zoom</button>
+      <button data-tool="init">Initial pose</button>
+      <button data-tool="goal">Nav goal</button>
+      <button id="follow">Follow car</button>
+      <button id="fit">Fit map</button>
+      <button id="zin" aria-label="Zoom in">+</button>
+      <button id="zout" aria-label="Zoom out">−</button>
+    </div>
+    <h2>Safety guard</h2>
+    <div class="row">State <span id="gstate" class="badge">?</span>
+      <span class="muted">nearest <b id="gnear">–</b></span></div>
+    <label class="row"><input type="checkbox" id="p_enabled"> enabled</label>
+    <div id="sliders"></div>
+    <div class="row"><button id="apply">Apply</button><span id="applied" class="muted"></span></div>
+    <h2>Car</h2>
+    <div class="muted" id="pose">pose –</div>
+    <p class="muted" style="margin-top:16px">Only points in <b>front</b> of the car (within the field of
+      view, past the nose) and <b>not on the map</b> count for the guard; walls are handled by the
+      collision monitor's bumper.</p>
+  </div>
+</div>
+<script>
+"use strict";
+const SLIDERS = [
+  ["danger_range_m", "Stop distance past the nose", 0.1, 2.0, 0.05, "m"],
+  ["half_width_m", "Stop zone half width", 0.14, 1.0, 0.01, "m"],
+  ["slow_range_m", "Slow-down distance", 0.2, 4.0, 0.05, "m"],
+  ["slow_half_width_m", "Slow zone half width", 0.14, 1.5, 0.01, "m"],
+  ["slow_ratio", "Speed in the slow zone", 0.0, 1.0, 0.05, "×"],
+  ["fov_deg", "Field of view (front)", 20, 360, 5, "°"],
+  ["turn_clear_m", "Turning on the spot: clearance", 0.0, 0.8, 0.05, "m"],
+  ["resume_delay_s", "Drive on after clear for", 0.0, 5.0, 0.1, "s"],
+];
+const $ = (id) => document.getElementById(id);
+const cv = $("c"), ctx = cv.getContext("2d");
+let ws = null, connected = false, mapImg = null, map = null, state = null;
+let tool = "pan", follow = false, estop = false, edited = false;
+let view = { cx: 0, cy: 0, scale: 60 };   // metres at canvas centre, px per metre
+let drag = null, needFit = false;
+
+// ------------------------------------------------------------- rosbridge
+function wsUrl() {
+  const q = new URLSearchParams(location.search).get("ws");
+  return q || `ws://${location.hostname || "localhost"}:9090`;
+}
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function connect() {
+  ws = new WebSocket(wsUrl());
+  ws.onopen = () => {
+    connected = true; setConn();
+    send({ op: "subscribe", topic: "/ui/map", type: "std_msgs/msg/String" });
+    send({ op: "subscribe", topic: "/ui/state", type: "std_msgs/msg/String", throttle_rate: 150 });
+    send({ op: "advertise", topic: "/initialpose", type: "geometry_msgs/msg/PoseWithCovarianceStamped" });
+    send({ op: "advertise", topic: "/goal_pose", type: "geometry_msgs/msg/PoseStamped" });
+    send({ op: "advertise", topic: "/ui/estop", type: "std_msgs/msg/Bool" });
+    send({ op: "advertise", topic: "/ui/safety_params", type: "std_msgs/msg/String" });
+  };
+  ws.onclose = () => { connected = false; setConn(); setTimeout(connect, 2000); };
+  ws.onerror = () => {};
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.op !== "publish") return;
+    if (m.topic === "/ui/map") onMap(JSON.parse(m.msg.data));
+    else if (m.topic === "/ui/state") onState(JSON.parse(m.msg.data));
+  };
+}
+function setConn() {
+  $("conn").textContent = connected ? "online" : "offline";
+  $("conn").className = "badge " + (connected ? "clear" : "stop");
+  $("hint").textContent = connected ? hintText() : `Connecting to ${wsUrl()} …`;
+}
+function hintText() {
+  return { pan: "Drag to move; mouse wheel or + / − to zoom.",
+           init: "Click where the car is and drag the way it faces.",
+           goal: "Click the goal and drag the direction to arrive in." }[tool];
+}
+
+// ------------------------------------------------------------------ data
+function onMap(m) {
+  const first = !map;
+  map = m;
+  const img = new ImageData(m.w, m.h);
+  let i = 0;
+  for (let k = 0; k < m.rle.length; k += 2) {
+    const v = m.rle[k], n = m.rle[k + 1];
+    const c = v < 0 ? [58, 68, 80] : v >= 50 ? [20, 24, 28] : [233, 237, 241];
+    for (let j = 0; j < n; j++, i++) {
+      // map rows go up (y), image rows go down
+      const row = m.h - 1 - Math.floor(i / m.w), col = i % m.w, p = 4 * (row * m.w + col);
+      img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+    }
+  }
+  const off = document.createElement("canvas");
+  off.width = m.w; off.height = m.h;
+  off.getContext("2d").putImageData(img, 0, 0);
+  mapImg = off;
+  if (first) fitMap();
+}
+function onState(s) {
+  state = s;
+  const g = s.guard || {};
+  $("gstate").textContent = g.state || "?";
+  $("gstate").className = "badge " + (g.state || "");
+  $("gnear").textContent = g.nearest_m == null ? "–" : g.nearest_m.toFixed(2) + " m";
+  if (g.params && !edited) loadParams(g.params);
+  if (g.estop !== undefined && g.estop !== estop) { estop = g.estop; showEstop(); }
+  $("pose").textContent = s.pose ? `x ${s.pose[0].toFixed(2)} m, y ${s.pose[1].toFixed(2)} m, ` +
+    `heading ${(s.pose[2] * 180 / Math.PI).toFixed(0)}°` : "pose – (set the initial pose)";
+  if (follow && s.pose) { view.cx = s.pose[0]; view.cy = s.pose[1]; }
+}
+
+// ---------------------------------------------------------------- params
+function buildSliders() {
+  $("sliders").innerHTML = SLIDERS.map(([k, label, lo, hi, st, unit]) =>
+    `<label class="slider"><span>${label}<b><output id="o_${k}"></output> ${unit}</b></span>
+     <input type="range" id="p_${k}" min="${lo}" max="${hi}" step="${st}"></label>`).join("");
+  for (const [k] of SLIDERS) {
+    $("p_" + k).addEventListener("input", () => { edited = true; $("o_" + k).textContent = $("p_" + k).value;
+      $("applied").textContent = "not applied"; });
+  }
+  $("p_enabled").addEventListener("change", () => { edited = true; $("applied").textContent = "not applied"; });
+}
+function loadParams(p) {
+  for (const [k] of SLIDERS) if (k in p) { $("p_" + k).value = p[k]; $("o_" + k).textContent = p[k]; }
+  $("p_enabled").checked = !!p.enabled;
+}
+$("apply").onclick = () => {
+  const d = { enabled: $("p_enabled").checked };
+  for (const [k] of SLIDERS) d[k] = parseFloat($("p_" + k).value);
+  send({ op: "publish", topic: "/ui/safety_params", msg: { data: JSON.stringify(d) } });
+  edited = false; $("applied").textContent = "applied";
+};
+function showEstop() {
+  $("estop").classList.toggle("active", estop);
+  $("estop").textContent = estop ? "RELEASE STOP" : "EMERGENCY STOP";
+}
+$("estop").onclick = () => {
+  estop = !estop; showEstop();
+  send({ op: "publish", topic: "/ui/estop", msg: { data: estop } });
+};
+
+// ----------------------------------------------------------------- tools
+document.querySelectorAll("[data-tool]").forEach((b) => b.onclick = () => {
+  tool = b.dataset.tool;
+  document.querySelectorAll("[data-tool]").forEach((x) => x.classList.toggle("on", x === b));
+  setConn();
+});
+$("follow").onclick = () => { follow = !follow; $("follow").classList.toggle("on", follow); };
+$("fit").onclick = () => fitMap();
+$("zin").onclick = () => { view.scale = Math.min(400, view.scale * 1.4); };
+$("zout").onclick = () => { view.scale = Math.max(4, view.scale / 1.4); };
+function fitMap() {
+  if (!map) return;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (W < 10 || H < 10) { needFit = true; return; }   // not laid out yet: fit on the next frame
+  needFit = false;
+  const mw = map.w * map.res, mh = map.h * map.res;
+  view.scale = 0.92 * Math.min(W / mw, H / mh);
+  view.cx = map.ox + mw / 2; view.cy = map.oy + mh / 2;
+}
+const toPx = (x, y) => [cv.width / 2 + (x - view.cx) * view.scale * dpr(),
+                        cv.height / 2 - (y - view.cy) * view.scale * dpr()];
+const toM = (px, py) => [view.cx + (px - cv.clientWidth / 2) / view.scale,
+                         view.cy - (py - cv.clientHeight / 2) / view.scale];
+const dpr = () => window.devicePixelRatio || 1;
+
+function stamp() { return { sec: 0, nanosec: 0 }; }
+function quat(th) { return { x: 0, y: 0, z: Math.sin(th / 2), w: Math.cos(th / 2) }; }
+function sendPose(kind, x, y, th) {
+  const pose = { position: { x, y, z: 0 }, orientation: quat(th) };
+  if (kind === "init") {
+    const cov = new Array(36).fill(0); cov[0] = cov[7] = 0.25 * 0.25; cov[35] = 0.07 * 0.07;
+    send({ op: "publish", topic: "/initialpose",
+      msg: { header: { frame_id: "map", stamp: stamp() }, pose: { pose, covariance: cov } } });
+  } else {
+    send({ op: "publish", topic: "/goal_pose", msg: { header: { frame_id: "map", stamp: stamp() }, pose } });
+  }
+}
+cv.addEventListener("pointerdown", (e) => {
+  cv.setPointerCapture(e.pointerId);
+  const [x, y] = toM(e.offsetX, e.offsetY);
+  drag = { tool, sx: e.offsetX, sy: e.offsetY, x, y, cx: view.cx, cy: view.cy, ex: x, ey: y };
+});
+cv.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  if (drag.tool === "pan") {
+    follow = false; $("follow").classList.remove("on");
+    view.cx = drag.cx - (e.offsetX - drag.sx) / view.scale;
+    view.cy = drag.cy + (e.offsetY - drag.sy) / view.scale;
+  } else { [drag.ex, drag.ey] = toM(e.offsetX, e.offsetY); }
+});
+cv.addEventListener("pointerup", () => {
+  if (drag && drag.tool !== "pan") {
+    const th = Math.hypot(drag.ex - drag.x, drag.ey - drag.y) > 0.05
+      ? Math.atan2(drag.ey - drag.y, drag.ex - drag.x) : (state && state.pose ? state.pose[2] : 0);
+    sendPose(drag.tool, drag.x, drag.y, th);
+    $("hint").textContent = drag.tool === "init" ? "Initial pose sent." : "Goal sent.";
+  }
+  drag = null;
+});
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const [mx, my] = toM(e.offsetX, e.offsetY);
+  const k = Math.exp(-e.deltaY * 0.0015);
+  view.scale = Math.min(400, Math.max(4, view.scale * k));
+  const [nx, ny] = toM(e.offsetX, e.offsetY);
+  view.cx += mx - nx; view.cy += my - ny;
+}, { passive: false });
+
+// ------------------------------------------------------------------ draw
+function carPoly(p, pts) {
+  const c = Math.cos(p[2]), s = Math.sin(p[2]);
+  return pts.map(([bx, by]) => toPx(p[0] + c * bx - s * by, p[1] + s * bx + c * by));
+}
+function fillPoly(pts, fill, stroke) {
+  ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
+}
+function draw() {
+  const r = dpr();
+  if (cv.width !== cv.clientWidth * r || cv.height !== cv.clientHeight * r) {
+    cv.width = cv.clientWidth * r; cv.height = cv.clientHeight * r;
+  }
+  if (needFit || !(view.scale > 0)) fitMap();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#3a4450"; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (mapImg) {
+    const [x0, y1] = toPx(map.ox, map.oy + map.h * map.res);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(mapImg, x0, y1, map.w * map.res * view.scale * r, map.h * map.res * view.scale * r);
+  }
+  // grid 1 m
+  ctx.lineWidth = 1; ctx.strokeStyle = "rgba(74,163,255,0.08)";
+  if (view.scale > 15) {
+    const [ax, ay] = toM(0, 0), [bx, by] = toM(cv.clientWidth, cv.clientHeight);
+    ctx.beginPath();
+    for (let x = Math.floor(ax); x <= bx; x++) { const [px] = toPx(x, 0); ctx.moveTo(px, 0); ctx.lineTo(px, cv.height); }
+    for (let y = Math.floor(by); y <= ay; y++) { const [, py] = toPx(0, y); ctx.moveTo(0, py); ctx.lineTo(cv.width, py); }
+    ctx.stroke();
+  }
+  if (state) {
+    if (state.plan && state.plan.length > 1) {
+      ctx.lineWidth = 2.5 * r; ctx.strokeStyle = "#4aa3ff";
+      ctx.beginPath(); state.plan.forEach(([x, y], i) => { const [px, py] = toPx(x, y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+      ctx.stroke();
+    }
+    const dotsz = Math.max(2, Math.min(5, view.scale * 0.04)) * r;
+    ctx.fillStyle = "#5b6b7a";
+    for (const [x, y] of state.scan || []) { const [px, py] = toPx(x, y); ctx.fillRect(px - dotsz / 2, py - dotsz / 2, dotsz, dotsz); }
+    ctx.fillStyle = "#ff4d4f";
+    for (const [x, y] of state.dyn || []) { const [px, py] = toPx(x, y); ctx.fillRect(px - dotsz, py - dotsz, 2 * dotsz, 2 * dotsz); }
+    const p = state.pose, g = state.guard || {}, gp = g.params;
+    if (p) {
+      const [xf, xr, hw] = state.footprint;
+      if (gp && gp.enabled) {
+        const f = (gp.fov_deg / 2) * Math.PI / 180;
+        fillPoly(carPoly(p, [[xf, -gp.slow_half_width_m], [xf + gp.slow_range_m, -gp.slow_half_width_m],
+          [xf + gp.slow_range_m, gp.slow_half_width_m], [xf, gp.slow_half_width_m]]),
+          g.state === "slow" ? "rgba(245,166,35,0.35)" : "rgba(245,166,35,0.12)", "rgba(245,166,35,0.7)");
+        fillPoly(carPoly(p, [[xf, -gp.half_width_m], [xf + gp.danger_range_m, -gp.half_width_m],
+          [xf + gp.danger_range_m, gp.half_width_m], [xf, gp.half_width_m]]),
+          ["stop", "hold", "estop"].includes(g.state) ? "rgba(255,77,79,0.45)" : "rgba(255,77,79,0.15)",
+          "rgba(255,77,79,0.9)");
+        if (gp.fov_deg < 360) {   // field of view edges from the nose
+          const L = gp.slow_range_m + 0.3;
+          ctx.setLineDash([4 * r, 4 * r]); ctx.lineWidth = 1 * r;
+          fillPoly(carPoly(p, [[xf, 0], [xf + L * Math.cos(f), L * Math.sin(f)]]), null, "rgba(255,255,255,0.5)");
+          fillPoly(carPoly(p, [[xf, 0], [xf + L * Math.cos(f), -L * Math.sin(f)]]), null, "rgba(255,255,255,0.5)");
+          ctx.setLineDash([]);
+        }
+      }
+      ctx.lineWidth = 2 * r;
+      fillPoly(carPoly(p, [[xf, hw], [xf, -hw], [xr, -hw], [xr, hw]]), "rgba(74,163,255,0.85)", "#fff");
+      fillPoly(carPoly(p, [[xf + 0.12, 0], [xf - 0.02, 0.08], [xf - 0.02, -0.08]]), "#fff");
+    }
+  }
+  if (drag && drag.tool !== "pan") {   // arrow being dragged
+    const [ax, ay] = toPx(drag.x, drag.y), [bx, by] = toPx(drag.ex, drag.ey);
+    ctx.strokeStyle = drag.tool === "init" ? "#3fb950" : "#f5a623"; ctx.lineWidth = 3 * r;
+    ctx.beginPath(); ctx.arc(ax, ay, 6 * r, 0, 2 * Math.PI); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+  requestAnimationFrame(draw);
+}
+buildSliders(); setConn(); connect(); requestAnimationFrame(draw);
+</script>
+</body>
+</html>

@@ -57,16 +57,50 @@ def test_person_missions_load(name):
     assert len(acts) == 1 and acts[0].radius == pytest.approx(0.2)
 
 
-def test_person_zones_reach_further_than_the_wall_bumper():
-    stop = ast.literal_eval(CM["PersonStop"]["forward"]["points"])
-    bumper = ast.literal_eval(CM["VelocityStop"]["forward"]["points"])
-    nose = CAR["footprint"]["x_front"]
-    assert max(x for x, _ in stop) - nose >= 0.5                     # danger range >= 0.5 m
-    assert max(x for x, _ in stop) > max(x for x, _ in bumper)
-    assert CM["PersonStop"]["sources_names"] == ["dynamic"] == CM["PersonSlow"]["sources_names"]
-    assert CM["VelocityStop"]["sources_names"] == ["scan"]
-    assert CM["dynamic"]["topic"] == "/scan_dynamic"
-    assert 0.0 < CM["PersonSlow"]["slowdown_ratio"] < 1.0
+def _guard():
+    from car_nav.safety_zone import GuardParams
+    g = NAV["safety_guard"]["ros__parameters"]
+    p = GuardParams()
+    p.update(g)
+    return p
+
+
+def test_guard_params_from_nav2_params():
+    p = _guard()
+    assert p.danger_range_m >= 0.5 and p.slow_range_m > p.danger_range_m
+    assert p.fov_deg <= 180.0                       # front only
+    assert NAV["collision_monitor"]["ros__parameters"]["cmd_vel_out_topic"] == "cmd_vel_guarded"
+
+
+def test_guard_stops_slows_and_ignores_what_is_behind():
+    from car_nav.safety_zone import decide
+    p = _guard()
+    xf, hb = CAR["footprint"]["x_front"], CAR["footprint"]["half_width"]
+    blob = lambda x, y: np.array([[x + dx, y + dy] for dx in (-0.03, 0, 0.03) for dy in (-0.03, 0.03)])  # noqa: E731
+    assert decide(blob(xf + 0.4, 0.0), p, xf, hb).state == "stop"
+    assert decide(blob(xf + 1.0, 0.1), p, xf, hb).state == "slow"
+    assert decide(blob(xf + 3.0, 0.0), p, xf, hb).state == "clear"
+    assert decide(blob(-0.4, 0.0), p, xf, hb).state == "clear"          # behind the LiDAR / car
+    assert decide(blob(xf + 0.1, 0.6), p, xf, hb).state == "clear"      # beside the nose, outside fov
+    assert decide(blob(xf + 0.15, 0.25), p, xf, hb, turning_on_spot=True).state == "stop"
+    assert decide(np.zeros((0, 2)), p, xf, hb).state == "clear"
+    p.update({"enabled": False})
+    assert decide(blob(xf + 0.4, 0.0), p, xf, hb).state == "off"
+
+
+def test_ui_params_are_clamped():
+    from car_nav.safety_zone import GuardParams
+    p = GuardParams()
+    changed = p.update({"danger_range_m": 9.0, "slow_range_m": 0.1, "unknown": 1})
+    assert p.danger_range_m == 3.0 and p.slow_range_m == 3.0 and "danger_range_m" in changed
+
+
+def test_ui_map_rle_round_trip():
+    from car_nav.ui_pack import rle
+    v = np.array([0, 0, 100, 100, 100, -1, 0])
+    r = rle(v)
+    assert r == [0, 2, 100, 3, -1, 1, 0, 1]
+    assert sum(r[1::2]) == v.size
 
 
 def test_alignment_keeps_walls_static_with_a_bad_pose():

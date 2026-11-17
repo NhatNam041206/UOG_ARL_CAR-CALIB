@@ -155,6 +155,9 @@ def _setup(context, *args, **kwargs):
             "pose_gate": arg("pose_gate"),
             # the laptop's odometry often runs ~1.1 s behind (log 2026-11-12): do not stop for that
             "max_pose_age_s": arg("max_pose_age_s"),
+            "ui": arg("ui"),
+            # the mounted source: edits to web/index.html show on reload, no rebuild
+            "ui_web_dir": "/ws/src/car_nav/web",
         }.items(),
     ))
 
@@ -195,6 +198,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("max_pose_age_s", default_value="1.5"),
         DeclareLaunchArgument("slam", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="false"),
+        DeclareLaunchArgument("ui", default_value="false", description="web UI (run_sim.sh ui)"),
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("report_dir", default_value="/data/sim"),
         DeclareLaunchArgument("exit_after_mission", default_value="true"),

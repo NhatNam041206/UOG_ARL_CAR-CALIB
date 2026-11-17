@@ -80,6 +80,7 @@ RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
          --skip-keys "cmake_modules" \
     && apt-get install -y --no-install-recommends libusb-1.0-0 libjpeg8 libgoogle-glog0v6t64 libgflags2.2 \
         ros-${ROS_DISTRO}-navigation2 ros-${ROS_DISTRO}-slam-toolbox python3-serial \
+        ros-${ROS_DISTRO}-rosbridge-server \
     && rm -rf /var/lib/apt/lists/* /tmp/src /root/.ros/rosdep \
     && ldconfig
 

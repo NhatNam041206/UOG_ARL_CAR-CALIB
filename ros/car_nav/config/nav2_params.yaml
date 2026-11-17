@@ -276,7 +276,7 @@ collision_monitor:
     base_frame_id: base_link
     odom_frame_id: odom
     cmd_vel_in_topic: cmd_vel_nav
-    cmd_vel_out_topic: cmd_vel
+    cmd_vel_out_topic: cmd_vel_guarded   # -> safety_guard -> cmd_vel
     state_topic: collision_monitor_state
     transform_tolerance: 0.5
     source_timeout: 1.0
@@ -295,46 +295,10 @@ collision_monitor:
     #   down so the footprint never reaches an obstacle within
     #   time_before_collision; unlike the old one-speed car this really slows
     #   the car down.
-    # Safety guard for PEOPLE (nam 2026-11-17): /scan_dynamic holds only scan
-    # points that are not on the map (car_nav/dynamic_scan.py), so these
-    # zones can reach further than the wall bumper without stopping the car
-    # at every corner:
-    # * PersonStop: someone within the danger range -> stop, drive on when
-    #   they have left it. Driving: 0.6 m past the nose (x 0.785), +-0.35 m;
-    #   turning on the spot: anyone within 0.25 m of the body.
-    # * PersonSlow: someone within 1.5 m ahead, +-0.5 m -> 40 % speed.
-    polygons: ["PersonStop", "PersonSlow", "VelocityStop", "FootprintApproach"]
-    PersonStop:
-      type: velocity_polygon
-      action_type: stop
-      min_points: 3
-      visualize: true
-      polygon_pub_topic: polygon_person_stop
-      enabled: true
-      holonomic: false
-      sources_names: ["dynamic"]
-      velocity_polygons: ["rotation", "forward"]
-      rotation:
-        points: "[[0.435, 0.385], [0.435, -0.385], [-0.435, -0.385], [-0.435, 0.385]]"
-        linear_min: -0.05
-        linear_max: 0.05
-        theta_min: -3.0
-        theta_max: 3.0
-      forward:
-        points: "[[0.785, 0.35], [0.785, -0.35], [0.0, -0.35], [0.0, 0.35]]"
-        linear_min: 0.05
-        linear_max: 2.0
-        theta_min: -3.0
-        theta_max: 3.0
-    PersonSlow:
-      type: polygon
-      action_type: slowdown
-      slowdown_ratio: 0.4
-      points: "[[1.685, 0.5], [1.685, -0.5], [0.0, -0.5], [0.0, 0.5]]"
-      min_points: 3
-      visualize: false
-      enabled: true
-      sources_names: ["dynamic"]
+    # People are handled after this node by car_nav/safety_guard.py
+    # (cmd_vel_guarded -> cmd_vel, section safety_guard below): front-only,
+    # tunable live from the web UI.
+    polygons: ["VelocityStop", "FootprintApproach"]
     VelocityStop:
       type: velocity_polygon
       action_type: stop
@@ -367,19 +331,33 @@ collision_monitor:
       sources_names: ["scan"]
       visualize: false
       enabled: true
-    observation_sources: ["scan", "dynamic"]
+    observation_sources: ["scan"]
     scan:
       type: scan
       topic: /scan_nav
       min_height: 0.05
       max_height: 2.0
       enabled: true
-    dynamic:
-      type: scan
-      topic: /scan_dynamic
-      min_height: 0.05
-      max_height: 2.0
-      enabled: true
+
+safety_guard:
+  # car_nav/safety_guard.py + safety_zone.py, people in FRONT of the car
+  # (nam 2026-11-17: something is mounted behind the LiDAR). Reads
+  # /scan_dynamic (points not on the map). Only points past the nose within
+  # +-fov_deg/2 of straight ahead count. All of these can be changed live in
+  # the web UI (they are not saved: put the values you like here).
+  ros__parameters:
+    use_sim_time: false
+    enabled: true
+    danger_range_m: 0.6       # stop: someone this far past the nose ...
+    half_width_m: 0.35        # ... within +- this of the centre line
+    slow_range_m: 1.5         # slow down: this far ...
+    slow_half_width_m: 0.5    # ... +- this
+    slow_ratio: 0.4
+    fov_deg: 120.0
+    turn_clear_m: 0.25        # turning on the spot: stop for anyone this close in front
+    resume_delay_s: 0.5       # drive on when the zone has been clear this long
+    min_points: 3
+    scan_timeout_s: 1.0       # /scan_dynamic older than this: stop (fail safe)
 
 dynamic_scan:
   # car_nav/dynamic_scan.py: /scan_nav -> /scan_dynamic (points not on the map)

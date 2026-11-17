@@ -14,6 +14,7 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/behavior_trees", glob("behavior_trees/*.xml")),
+        ("share/" + package_name + "/web", glob("web/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -31,6 +32,8 @@ setup(
             "pose_gate = car_nav.pose_gate:main",
             "ugv_serial_bridge = car_nav.ugv_serial_bridge:main",
             "dynamic_scan = car_nav.dynamic_scan:main",
+            "safety_guard = car_nav.safety_guard:main",
+            "ui_bridge = car_nav.ui_bridge:main",
         ],
     },
 )

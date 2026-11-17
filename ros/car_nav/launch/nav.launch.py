@@ -19,8 +19,10 @@ car, sim.launch.py in the simulator). Starts:
   planner (Smac 2D A*, the skid-steer car turns on the spot), controller (RPP),
   behavior server (wait + spin), bt_navigator (spin recovery, no backup),
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
-  dynamic_scan      /scan_nav -> /scan_dynamic: points not on the map (people), for the
-                    collision monitor's safety guard zones PersonStop / PersonSlow
+  dynamic_scan      /scan_nav -> /scan_dynamic: points not on the map (people)
+  safety_guard      cmd_vel_guarded -> cmd_vel: stop / slow for people in FRONT (web UI tunable)
+  ui:=true          rosbridge (ws :9090) + ui_bridge (web page http :8080): map, LiDAR, pose,
+                    initial pose / goal, safety guard parameters, emergency stop
   pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
                      pd_follow_path -> cmd_vel_nav, plus LiDAR wall avoidance.
                      controller:=rpp uses Pure Pursuit.
@@ -146,6 +148,8 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[params], remappings=remap_tf, **common),
         Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
              parameters=[params], remappings=remap_tf, **common),
+        Node(package="car_nav", executable="safety_guard", name="safety_guard",
+             parameters=[params], **common),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
              name="lifecycle_manager_navigation", output="screen",
              parameters=[{"use_sim_time": use_sim_time, "autostart": autostart, "node_names": NAV_NODES}]),
@@ -170,6 +174,21 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("max_pose_age_s", default_value="1.0",
                               description="pd_path_follower stops while the pose is older than this (s)"),
         DeclareLaunchArgument("autostart", default_value="true"),
+        DeclareLaunchArgument("ui", default_value="true", description="web UI: rosbridge + ui_bridge"),
+        DeclareLaunchArgument("ui_http_port", default_value="8080"),
+        DeclareLaunchArgument("ui_ws_port", default_value="9090"),
+        DeclareLaunchArgument("ui_web_dir", default_value="", description="'' = <car_nav share>/web"),
+        Node(package="rosbridge_server", executable="rosbridge_websocket", name="rosbridge_websocket",
+             output="screen", condition=IfCondition(LaunchConfiguration("ui")),
+             parameters=[{"port": ParameterValue(LaunchConfiguration("ui_ws_port"), value_type=int),
+                          "use_sim_time": use_sim_time}],
+             arguments=["--ros-args", "--log-level", "warn"]),
+        Node(package="car_nav", executable="ui_bridge", name="ui_bridge", output="screen",
+             condition=IfCondition(LaunchConfiguration("ui")), remappings=remap_tf,
+             parameters=[{"use_sim_time": use_sim_time,
+                          "http_port": ParameterValue(LaunchConfiguration("ui_http_port"), value_type=int),
+                          "rosbridge_port": ParameterValue(LaunchConfiguration("ui_ws_port"), value_type=int),
+                          "web_dir": LaunchConfiguration("ui_web_dir")}]),
         DeclareLaunchArgument("log_level", default_value="info"),
         OpaqueFunction(function=_upright_tf),
         Node(package="car_nav", executable="scan_upright", name="scan_upright", output="screen",

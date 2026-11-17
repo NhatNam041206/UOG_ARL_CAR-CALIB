@@ -83,26 +83,52 @@ adds a 0.5 s timeout to `main/main.c` if the firmware can ever be reflashed.
    `car.launch.py map:=/data/nav/maps/<name>.yaml` and set the initial pose
    in RViz.
 
-## Safety guard (people in the way)
+## How the parts talk
 
-Three layers, all from the LiDAR, none needs the pose to be right:
+Everything runs on the mini-PC, in the `ros-nav` container:
+
+* RPLIDAR (USB) → `sllidar_ros2` → `/scan` → self-mask, `scan_upright` → `/scan_nav`
+* Nav2 + PD follower → collision monitor (wall bumper) → `/cmd_vel_guarded` →
+  **safety_guard** (people) → `/cmd_vel` → `cmd_vel_to_control` → `/car/wheels/cmd`
+  → `ugv_serial_bridge` → USB serial → ESP32 `ugv-controller` → ESCs
+* ROS nodes talk over DDS on the mini-PC only (`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`).
+* A laptop or phone on the same Wi-Fi opens the **web UI** at `http://<mini-PC IP>:8080`;
+  the page talks to ROS through rosbridge (WebSocket, port 9090).
+
+## Web UI (like RViz, in a browser)
+
+`nav.launch.py ui:=true` (default) starts rosbridge and `ui_bridge`. The page shows the map,
+the LiDAR points (red = not on the map, i.e. what the safety guard treats as a person),
+the car, the path and the guard zones. You can:
+
+* **Initial pose**: click where the car is, drag the way it faces (→ `/initialpose`).
+* **Nav goal**: click the goal, drag the arrival direction (→ `/goal_pose`).
+* Change the guard's stop / slow distances, widths, field of view, slow speed and resume
+  delay live (**Apply**). Changes are not saved: copy good values into
+  `nav2_params.yaml` (`safety_guard:`).
+* **EMERGENCY STOP**: the guard sends zero until you press RELEASE STOP. This is a
+  software stop over Wi-Fi: it does not replace the motor power switch.
+
+The ports are open to the whole network the mini-PC is on: use it on the lab's own Wi-Fi.
+In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open
+`http://localhost:8080`.
+
+## Safety guard (people in front)
 
 | Layer | Reads | Does |
 |---|---|---|
-| `PersonStop` (collision monitor) | `/scan_dynamic` | stop while a point that is **not on the map** is within 0.6 m ahead of the nose (±0.35 m), or within 0.25 m of the body while turning on the spot; drives on by itself when it has gone |
-| `PersonSlow` | `/scan_dynamic` | 40 % speed while it is within 1.5 m ahead (±0.5 m) |
-| `VelocityStop` + `FootprintApproach` | `/scan_nav` (everything) | bumper 0.22 m past the nose, and slow down so the footprint never reaches anything within 1.2 s |
+| `safety_guard` | `/scan_dynamic` | **stop** while a point that is **not on the map** is in front of the car within `danger_range_m` (0.6 m past the nose, ±0.35 m); **slow** to 40 % within 1.5 m (±0.5 m); turning on the spot: stop for anything within 0.25 m in front. Only points past the nose and within ±`fov_deg`/2 (120°) count, so what is mounted behind the LiDAR, or someone behind the car, never stops it. Drives on by itself 0.5 s after the zone is clear. Stops if `/scan_dynamic` is older than 1 s. |
+| collision monitor `VelocityStop` + `FootprintApproach` | `/scan_nav` (everything) | bumper 0.22 m past the nose, slow down so the footprint never reaches anything within 1.2 s |
 
-`/scan_dynamic` comes from `car_nav/dynamic_scan.py`: scan points more than
-0.3 m from any wall of the map (within 2 m of the car). Without a map or a
-fresh pose it passes every point (the car may then stop near walls: safe
-side). The collision monitor also stops the car when a scan source goes
-silent for 1 s.
+`/scan_dynamic` comes from `car_nav/dynamic_scan.py`: the scan is first slid onto the
+map walls (±0.45 m, ±7°) to absorb pose error, then the points more than 0.35 m from any
+wall (within 2 m) are "not on the map". Without a map or a fresh pose it passes every
+point (the car may then stop near walls: safe side). Something mounted on the car that the
+LiDAR sees all the time should also go into `car.yaml self_mask.sectors_deg`.
 
-Tested in the sim with moving people (`missions/person_*.yaml`,
-`car_nav_sim/actors.py`): someone crossing at 1 m/s, someone stepping in
-and standing 5 s, someone running across at 1.5 m/s when the car is 1 m
-away. Results are in the PR.
+Tested in the sim with moving people (`missions/person_*.yaml`, `car_nav_sim/actors.py`):
+someone crossing at 1 m/s, someone stepping in and standing 5 s, someone running across
+at 1.5 m/s when the car is 1 m away.
 
 ## Geometry (`ros/car_nav/config/car.yaml`)
 
