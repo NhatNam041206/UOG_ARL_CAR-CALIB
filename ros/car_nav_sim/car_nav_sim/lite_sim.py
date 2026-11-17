@@ -7,6 +7,8 @@
   the car, by ray casting the world shapes
 * publishes /odom_wheel: what wheel encoders would report (no slip), for
   adaptive_odom wheel_odom_topic:=/odom_wheel
+* moves the mission's actors (people, actors.py): in the scan, not in the
+  map; their positions on /sim/actors (PoseArray, z = radius) for the scorer
 * publishes /clock (all other nodes run with use_sim_time) and the true
   pose on /sim/ground_truth (frame `world` = map)
 """
@@ -17,6 +19,8 @@ import time
 
 import numpy as np
 import rclpy
+import yaml
+from geometry_msgs.msg import Pose, PoseArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
@@ -28,6 +32,7 @@ from car_nav import config_loader
 from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
 
 from . import sim_config
+from .actors import load_actors
 from .actuator_model import ActuatorModel, Pose2D, TruthParams, integrate
 from .scan_model import laser_scan_ranges
 from .world import World
@@ -46,12 +51,22 @@ class LiteSim(Node):
         self.declare_parameter("world", "test_floor")
         self.declare_parameter("start", [0.0])  # [x, y, yaw]; [0.0] = world start
         self.declare_parameter("seed", 1)
+        self.declare_parameter("mission", "")   # its actors: list walks in the scan
         car = config_loader.load()
         sim = sim_config.load_sim()
         self.world = World.load(sim_config.resolve("worlds", self.get_parameter("world").value))
         start = list(self.get_parameter("start").value)
         x, y, th = start if len(start) == 3 else self.world.start
         self.pose = Pose2D(x, y, th)
+        mission = self.get_parameter("mission").value
+        mdata = {}
+        if mission:
+            with open(sim_config.resolve("missions", mission), "r", encoding="utf-8") as fh:
+                mdata = yaml.safe_load(fh) or {}
+        self.actors = load_actors(mdata)
+        self._static_cyl = list(self.world.cylinders)
+        self.actors_pub = self.create_publisher(PoseArray, "/sim/actors", 10)
+        self._next_actors = 0.0
         self.laser = config_loader.laser_pose(car)
         self.model = ActuatorModel(drive_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
         self.enc = Pose2D(0.0, 0.0, 0.0)
@@ -92,6 +107,11 @@ class LiteSim(Node):
             ev, ew = self.model.encoder_twist()
             self.enc = integrate(self.enc, ev, ew, self.dt)
             self.t += self.dt
+            for a in self.actors:
+                a.update(self.t, (self.pose.x, self.pose.y))
+            if self.actors and self.t >= self._next_actors:
+                self._next_actors += 0.05
+                self._publish_actors()
             if self.t >= self._next_wheel:
                 self._next_wheel += 0.05   # 20 Hz like a typical controller feedback
                 self._publish_wheel(ev, ew)
@@ -102,7 +122,20 @@ class LiteSim(Node):
         self.clock_pub.publish(Clock(clock=_stamp(self.t)))
         self._publish_truth()
 
+    def _publish_actors(self) -> None:
+        msg = PoseArray()
+        msg.header.stamp = _stamp(self.t)
+        msg.header.frame_id = "world"
+        for a in self.actors:
+            x, y = a.position(self.t)
+            p = Pose()
+            p.position.x, p.position.y, p.position.z = x, y, a.radius
+            p.orientation.w = 1.0
+            msg.poses.append(p)
+        self.actors_pub.publish(msg)
+
     def _publish_scan(self) -> None:
+        self.world.cylinders = self._static_cyl + [a.cylinder(self.t) for a in self.actors]
         r = laser_scan_ranges(self.world, self.pose, self.laser, self.angles, self.lidar, self.rng)
         msg = LaserScan()
         msg.header.stamp = _stamp(self.t)

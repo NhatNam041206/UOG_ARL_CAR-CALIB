@@ -20,7 +20,7 @@ import time
 import rclpy
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseArray, PoseStamped, PoseWithCovarianceStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import Odometry, Path
 
@@ -35,7 +35,7 @@ from car_nav import config_loader
 from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 
 from . import sim_config
-from .world import World, footprint_polygon
+from .world import World, _point_in_polygon, _point_seg_distance, footprint_polygon
 
 
 TRACE_DT = 0.5
@@ -69,6 +69,17 @@ def _pose(nav: BasicNavigator, x: float, y: float, yaw: float) -> PoseStamped:
     return p
 
 
+def person_clearance(poly, actors) -> float:
+    """Smallest gap between the car outline and any actor circle (0 = touching, inf = none)."""
+    best = math.inf
+    segs = [(*poly[i], *poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+    for x, y, r in actors:
+        if _point_in_polygon(x, y, poly):
+            return 0.0
+        best = min(best, max(0.0, min(_point_seg_distance(x, y, sg) for sg in segs) - r))
+    return best
+
+
 class Tracker:
     def __init__(self, world: World, footprint, drive) -> None:
         self.world = world
@@ -79,6 +90,7 @@ class Tracker:
         self.tf = None  # tf2 Buffer, set in main(): map -> base_link is what Nav2 drives by
         self._loc_t = -math.inf
         self.start = None  # true pose when the odom frame was born (first truth msg)
+        self.actors = []   # [(x, y, r), ...] from /sim/actors
         self.reset()
 
     def reset(self) -> None:
@@ -98,6 +110,7 @@ class Tracker:
         self.last_cmd = None
         self.cm_state = ""
         self.plan = []  # latest global plan [(x, y), ...] (every 5th pose)
+        self.min_person = math.inf  # smallest gap car outline <-> any actor (person), 0 = hit
 
     def on_truth(self, msg: Odometry) -> None:
         p = msg.pose.pose
@@ -111,6 +124,8 @@ class Tracker:
         poly = footprint_polygon(x, y, th, self.fp.x_front, self.fp.x_rear, self.fp.half_width)
         clear = self.world.clearance(poly)
         self.min_clear = min(self.min_clear, clear)
+        person = person_clearance(poly, self.actors)
+        self.min_person = min(self.min_person, person)
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if t - self._loc_t >= 0.1:
             self._loc_t = t
@@ -127,6 +142,7 @@ class Tracker:
                 "est": est, "cmd": self.last_cmd, "cm": self.cm_state, "clear": round(clear, 2),
                 # distance from the TRUE pose to the latest global plan
                 "plan_d": None if plan_d is None else round(plan_d, 2),
+                "person": None if math.isinf(person) else round(person, 2),
             })
 
     def estimate(self):
@@ -140,6 +156,9 @@ class Tracker:
             except Exception:  # noqa: BLE001 - TF not ready yet
                 pass
         return self.amcl
+
+    def on_actors(self, msg: PoseArray) -> None:
+        self.actors = [(p.position.x, p.position.y, p.position.z) for p in msg.poses]
 
     def on_plan(self, msg: Path) -> None:
         pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
@@ -209,6 +228,7 @@ def main() -> None:
     nav.create_subscription(String, WHEELS_TOPIC, tracker.on_control, 50)
     nav.create_subscription(Odometry, "/odom", tracker.on_odom, 20)
     nav.create_subscription(Path, "/plan", tracker.on_plan, 5)
+    nav.create_subscription(PoseArray, "/sim/actors", tracker.on_actors, 10)
     if CollisionMonitorState is not None:
         nav.create_subscription(CollisionMonitorState, "/collision_monitor_state", tracker.on_cm, 20)
 
@@ -260,7 +280,9 @@ def main() -> None:
             "time_s": round(sim_dt, 2),
             "distance_m": round(tracker.dist, 2),
             "min_clearance_m": round(tracker.min_clear, 3),
-            "collision": tracker.min_clear <= 0.0,
+            "collision": tracker.min_clear <= 0.0 or tracker.min_person <= 0.0,
+            # smallest gap to a moving person (actors in the mission file); null = no actors
+            "min_person_clearance_m": None if math.isinf(tracker.min_person) else round(tracker.min_person, 3),
             "final_xy_error_m": round(math.hypot(tx - gx, ty - gy), 3),
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
             "max_localization_error_m": round(tracker.max_loc_err, 3),

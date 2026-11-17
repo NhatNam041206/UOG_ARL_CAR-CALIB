@@ -140,3 +140,17 @@ def test_diff_drive_slows_in_tight_curves_and_near_the_goal():
     assert v == pytest.approx(0.2)
     v, _, _ = diff_drive_command(tr, 0.0, p, False, 0.0)
     assert v == pytest.approx(0.08)
+
+
+def test_slows_down_before_a_tight_corner():
+    from car_nav.pd_follower import DiffDriveParams, Tracking, diff_drive_command
+    path = [(x * 0.05, 0.0) for x in range(41)]
+    path += [(2.0 + 0.4 * math.sin(a), 0.4 - 0.4 * math.cos(a)) for a in [i * math.pi / 2 / 20 for i in range(1, 21)]]
+    t = PathTracker(path)
+    assert t.max_curvature_ahead(1.0, 0.8) < 0.2            # corner still > 0.8 m away
+    k = t.max_curvature_ahead(1.6, 0.8)
+    assert k > 2.0                                          # 0.4 m radius ahead
+    p = DiffDriveParams(speed_mps=0.4, lat_accel_mps2=0.25)
+    tr = Tracking(index=0, e=0.0, psi_e=0.0, kappa_path=0.0, s=1.6, remaining=3.0)
+    v, _, _ = diff_drive_command(tr, 0.0, p, False, 3.0, kappa_ahead=k)
+    assert v < 0.36

@@ -62,8 +62,11 @@ bridge sends `0 0` whenever Nav2 stops commanding (0.5 s watchdog) and
 power switch within reach. [ugv-controller-failsafe.patch](ugv-controller-failsafe.patch)
 adds a 0.5 s timeout to `main/main.c` if the firmware can ever be reflashed.
 
-1. Build the image with Nav2 (GitHub Actions **ros-nav image (arm64)**, or
-   `docker build -f docker/ros/Dockerfile -t car-calib-ros-nav:latest .`).
+1. Build the image with Nav2. The new car runs it on a **mini-PC** (x86):
+   build it there or on any amd64 laptop with internet,
+   `docker build -f docker/ros/Dockerfile -t car-calib-ros-nav:latest .`
+   (the GitHub Actions workflow builds arm64 for the Pi 5). On the mini-PC
+   raise `ROS_NAV_CPU_LIMIT` (default 1.5 CPUs, sized for the Pi).
 2. `.env`: `UGV_DEVICE=/dev/serial/by-id/usb-Espressif_...` (see
    `ls -l /dev/serial/by-id/`), `LIDAR_DEVICE` as before.
 3. First run with the wheels off the ground and motors off:
@@ -79,6 +82,27 @@ adds a 0.5 s timeout to `main/main.c` if the firmware can ever be reflashed.
    `ros2 run nav2_map_server map_saver_cli -f /data/nav/maps/<name>`; then
    `car.launch.py map:=/data/nav/maps/<name>.yaml` and set the initial pose
    in RViz.
+
+## Safety guard (people in the way)
+
+Three layers, all from the LiDAR, none needs the pose to be right:
+
+| Layer | Reads | Does |
+|---|---|---|
+| `PersonStop` (collision monitor) | `/scan_dynamic` | stop while a point that is **not on the map** is within 0.6 m ahead of the nose (±0.35 m), or within 0.25 m of the body while turning on the spot; drives on by itself when it has gone |
+| `PersonSlow` | `/scan_dynamic` | 40 % speed while it is within 1.5 m ahead (±0.5 m) |
+| `VelocityStop` + `FootprintApproach` | `/scan_nav` (everything) | bumper 0.22 m past the nose, and slow down so the footprint never reaches anything within 1.2 s |
+
+`/scan_dynamic` comes from `car_nav/dynamic_scan.py`: scan points more than
+0.3 m from any wall of the map (within 2 m of the car). Without a map or a
+fresh pose it passes every point (the car may then stop near walls: safe
+side). The collision monitor also stops the car when a scan source goes
+silent for 1 s.
+
+Tested in the sim with moving people (`missions/person_*.yaml`,
+`car_nav_sim/actors.py`): someone crossing at 1 m/s, someone stepping in
+and standing 5 s, someone running across at 1.5 m/s when the car is 1 m
+away. Results are in the PR.
 
 ## Geometry (`ros/car_nav/config/car.yaml`)
 

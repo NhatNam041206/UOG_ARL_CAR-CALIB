@@ -30,6 +30,7 @@ setup(
             "adaptive_odom = car_nav.adaptive_odom:main",
             "pose_gate = car_nav.pose_gate:main",
             "ugv_serial_bridge = car_nav.ugv_serial_bridge:main",
+            "dynamic_scan = car_nav.dynamic_scan:main",
         ],
     },
 )

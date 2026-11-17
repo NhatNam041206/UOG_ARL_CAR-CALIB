@@ -1,0 +1,15 @@
+# Safety guard test: a person steps into the aisle in front of the car,
+# stands there 5 s, then walks on. Pass = the car stops before them, waits,
+# and drives on to the goal once they have left.
+world: test_floor
+goal_timeout_s: 60
+start: [1.0, 1.1, 0.0]
+goals:
+  - [7.6, 1.4, 0.0]
+actors:
+  - name: standing
+    radius: 0.2
+    path: [[4.5, 2.1], [4.5, 1.15], [4.5, 0.1]]
+    speed_mps: 0.8
+    wait_s: 5.0
+    trigger: {x: 4.5, y: 1.1, dist: 2.4}

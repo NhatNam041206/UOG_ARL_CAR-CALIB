@@ -75,6 +75,8 @@ class PDPathFollower(Node):
         p("rotate_gain", 2.0)
         p("min_rotate_rps", 0.5)
         p("goal_slow_m", 0.6)
+        p("lat_accel_mps2", 0.25)
+        p("curve_preview_m", 0.8)
         p("yaw_goal_tolerance", 0.25)   # rad; >= pi = position-only goals
         p("avoid_max_curvature", 2.5)
         p("rate_hz", 10.0)
@@ -206,7 +208,7 @@ class PDPathFollower(Node):
             rotate_enter_rad=math.radians(self._f("rotate_enter_deg")),
             rotate_exit_rad=math.radians(self._f("rotate_exit_deg")),
             rotate_gain=self._f("rotate_gain"), min_rotate_rps=self._f("min_rotate_rps"),
-            goal_slow_m=self._f("goal_slow_m"))
+            goal_slow_m=self._f("goal_slow_m"), lat_accel_mps2=self._f("lat_accel_mps2"))
         yaw_tol = self._f("yaw_goal_tolerance")
         rotating = False
         at_goal = False
@@ -263,7 +265,8 @@ class PDPathFollower(Node):
                 kappa = self._avoid_kappa(kappa)
             self._timing.duration("pd.arc_check", time.perf_counter() - t_arc)
             was_rotating = rotating
-            v, omega, rotating = diff_drive_command(tr, kappa, dd, rotating, dist_goal)
+            k_ahead = tracker.max_curvature_ahead(tr.s, self._f("curve_preview_m"))
+            v, omega, rotating = diff_drive_command(tr, kappa, dd, rotating, dist_goal, k_ahead)
             if rotating != was_rotating:
                 self.get_logger().info(
                     f"heading error {math.degrees(tr.psi_e):+.0f} deg: "

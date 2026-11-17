@@ -295,11 +295,51 @@ collision_monitor:
     #   down so the footprint never reaches an obstacle within
     #   time_before_collision; unlike the old one-speed car this really slows
     #   the car down.
-    polygons: ["VelocityStop", "FootprintApproach"]
+    # Safety guard for PEOPLE (nam 2026-11-17): /scan_dynamic holds only scan
+    # points that are not on the map (car_nav/dynamic_scan.py), so these
+    # zones can reach further than the wall bumper without stopping the car
+    # at every corner:
+    # * PersonStop: someone within the danger range -> stop, drive on when
+    #   they have left it. Driving: 0.6 m past the nose (x 0.785), +-0.35 m;
+    #   turning on the spot: anyone within 0.25 m of the body.
+    # * PersonSlow: someone within 1.5 m ahead, +-0.5 m -> 40 % speed.
+    polygons: ["PersonStop", "PersonSlow", "VelocityStop", "FootprintApproach"]
+    PersonStop:
+      type: velocity_polygon
+      action_type: stop
+      min_points: 3
+      visualize: true
+      polygon_pub_topic: polygon_person_stop
+      enabled: true
+      holonomic: false
+      sources_names: ["dynamic"]
+      velocity_polygons: ["rotation", "forward"]
+      rotation:
+        points: "[[0.435, 0.385], [0.435, -0.385], [-0.435, -0.385], [-0.435, 0.385]]"
+        linear_min: -0.05
+        linear_max: 0.05
+        theta_min: -3.0
+        theta_max: 3.0
+      forward:
+        points: "[[0.785, 0.35], [0.785, -0.35], [0.0, -0.35], [0.0, 0.35]]"
+        linear_min: 0.05
+        linear_max: 2.0
+        theta_min: -3.0
+        theta_max: 3.0
+    PersonSlow:
+      type: polygon
+      action_type: slowdown
+      slowdown_ratio: 0.4
+      points: "[[1.685, 0.5], [1.685, -0.5], [0.0, -0.5], [0.0, 0.5]]"
+      min_points: 3
+      visualize: false
+      enabled: true
+      sources_names: ["dynamic"]
     VelocityStop:
       type: velocity_polygon
       action_type: stop
       min_points: 3
+      sources_names: ["scan"]
       visualize: true
       polygon_pub_topic: polygon_stop
       enabled: true
@@ -324,15 +364,31 @@ collision_monitor:
       time_before_collision: 1.2
       simulation_time_step: 0.05
       min_points: 3
+      sources_names: ["scan"]
       visualize: false
       enabled: true
-    observation_sources: ["scan"]
+    observation_sources: ["scan", "dynamic"]
     scan:
       type: scan
       topic: /scan_nav
       min_height: 0.05
       max_height: 2.0
       enabled: true
+    dynamic:
+      type: scan
+      topic: /scan_dynamic
+      min_height: 0.05
+      max_height: 2.0
+      enabled: true
+
+dynamic_scan:
+  # car_nav/dynamic_scan.py: /scan_nav -> /scan_dynamic (points not on the map)
+  ros__parameters:
+    use_sim_time: false
+    tol_m: 0.35         # a point this close to a map wall is the wall (covers pose error; 0.3 saw walls as people)
+    max_range_m: 2.0    # zones reach 1.7 m; a 5 deg heading error moves a 2 m point 0.17 m
+    max_tf_age_s: 0.5   # no pose this fresh -> fallback
+    fallback: "all"     # no map or no pose: every beam counts (safe; may stop near walls)
 
 rf2o_laser_odometry:
   ros__parameters:
@@ -390,6 +446,12 @@ pose_gate:
     # last initial pose every initialpose_retry_s until an AMCL pose arrives after it.
     initialpose_retry_s: 2.0      # 0 = off
     initialpose_retry_max: 10
+    # Skid-steer: while the car turns on the spot (odometry |omega| > 0.3 rad/s,
+    # |v| < 0.08 m/s) and 1 s after, only AMCL's heading is taken: AMCL slid
+    # 1.2 m along a corridor during one turn (campus sim 2026-11-17).
+    spin_hold_rate_rps: 0.3
+    spin_hold_speed_mps: 0.08
+    spin_hold_after_s: 1.0
 
 pd_path_follower:
   # PD path follower (car_nav/pd_follower.py), used with controller:=pd
@@ -416,6 +478,11 @@ pd_path_follower:
     rotate_gain: 2.0
     min_rotate_rps: 0.8      # skid-steer wheels stick below a minimum turn rate (0.5 stalled at 0.04 m/s wheels)
     goal_slow_m: 0.6
+    # Slow down BEFORE curves: v <= sqrt(lat_accel / max path curvature in the
+    # next curve_preview_m). Smac 2D corners are tight (1/kappa ~0.4 m); at
+    # 0.4 m/s the car reached a campus corner too fast and touched the wall.
+    lat_accel_mps2: 0.25
+    curve_preview_m: 0.8
     rate_hz: 10.0
     xy_goal_tolerance: 0.2   # = general_goal_checker
     yaw_goal_tolerance: 0.25

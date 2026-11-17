@@ -19,6 +19,8 @@ car, sim.launch.py in the simulator). Starts:
   planner (Smac 2D A*, the skid-steer car turns on the spot), controller (RPP),
   behavior server (wait + spin), bt_navigator (spin recovery, no backup),
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
+  dynamic_scan      /scan_nav -> /scan_dynamic: points not on the map (people), for the
+                    collision monitor's safety guard zones PersonStop / PersonSlow
   pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
                      pd_follow_path -> cmd_vel_nav, plus LiDAR wall avoidance.
                      controller:=rpp uses Pure Pursuit.
@@ -141,6 +143,8 @@ def generate_launch_description() -> LaunchDescription:
                  LaunchConfiguration("max_pose_age_s"), value_type=float)}], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")],
              condition=IfCondition(PythonExpression(["'", controller, "' == 'pd'"])), **common),
         Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
+             parameters=[params], remappings=remap_tf, **common),
+        Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
              name="lifecycle_manager_navigation", output="screen",

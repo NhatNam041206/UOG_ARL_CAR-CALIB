@@ -44,6 +44,9 @@ class DriveConfig:
     max_yaw_rate_rps: float = 1.5
     # Wheel speeds below this are sent as 0 (motor dead band).
     min_wheel_speed_mps: float = 0.0
+    # Turning on the spot: wheels slower than this do not turn a skid-steer
+    # car (the tracks/wheels stick); a slower spin is sent at this speed.
+    min_spin_wheel_mps: float = 0.0
     allow_reverse: bool = False
     # True when track_width_m came from car.yaml, False when it is the placeholder.
     measured: bool = False
@@ -61,6 +64,7 @@ class DriveConfig:
             cruise_speed_mps=float(d.get("cruise_speed_mps", cls.cruise_speed_mps)),
             max_yaw_rate_rps=float(d.get("max_yaw_rate_rps", cls.max_yaw_rate_rps)),
             min_wheel_speed_mps=float(d.get("min_wheel_speed_mps", cls.min_wheel_speed_mps)),
+            min_spin_wheel_mps=float(d.get("min_spin_wheel_mps", cls.min_spin_wheel_mps)),
             allow_reverse=bool(d.get("allow_reverse", cls.allow_reverse)),
             measured=measured,
         )
@@ -103,6 +107,9 @@ class CmdVelMapper:
         peak = max(abs(left), abs(right))
         if peak > c.max_wheel_speed_mps:
             k = c.max_wheel_speed_mps / peak   # same curvature, lower speed
+            left, right = left * k, right * k
+        if abs(v) < 1e-3 and abs(omega) > 1e-3 and 0.0 < abs(right) < c.min_spin_wheel_mps:
+            k = c.min_spin_wheel_mps / abs(right)   # spin on the spot: at least the stiction speed
             left, right = left * k, right * k
         if abs(left) < c.min_wheel_speed_mps and abs(right) < c.min_wheel_speed_mps:
             return self.stop_payload

@@ -60,6 +60,10 @@ drive:
   cruise_speed_mps: 0.4        # Nav2 driving speed (pd_path_follower.speed_mps)
   max_yaw_rate_rps: 1.5        # fastest turn Nav2 asks for
   min_wheel_speed_mps: 0.0     # motor dead band: both wheels below -> 0,0
+  # Turning on the spot slower than this does not turn the car (wheels stick,
+  # sim.yaml truth.min_spin_wheel_mps 0.05): a slow spin (collision monitor
+  # slowdown) is sent at this wheel speed. Measure: smallest "-n n" that turns it.
+  min_spin_wheel_mps: 0.08
   # NAV2 drives forward and turns on the spot; reversing stays off until the
   # rear is checked by a sensor (the LiDAR sees it, but nothing is tuned for it).
   allow_reverse: false

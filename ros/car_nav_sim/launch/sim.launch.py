@@ -117,7 +117,7 @@ def _setup(context, *args, **kwargs):
     if backend == "lite":
         actions.append(Node(package="car_nav_sim", executable="lite_sim", name="lite_sim", output="screen",
                             parameters=[{"world": world_name, "start": start_param,
-                                         "seed": int(arg("seed"))}]))
+                                         "seed": int(arg("seed")), "mission": mission}]))
     elif backend == "gazebo":
         gz_args = ["gz", "sim", "-r", sdf_path]
         if arg("gui").lower() != "true":

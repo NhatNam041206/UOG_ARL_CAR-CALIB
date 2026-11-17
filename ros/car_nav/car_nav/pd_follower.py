@@ -97,6 +97,14 @@ class PathTracker:
             return 0.0
         return wrap(self._heading_at(b) - self._heading_at(a)) / (b - a)
 
+    def max_curvature_ahead(self, s: float, dist: float, window: float = 0.3, step: float = 0.1) -> float:
+        """Largest |curvature| on the next `dist` metres of path after s."""
+        best, d = 0.0, 0.0
+        while d <= dist and s + d <= self.length:
+            best = max(best, abs(self.curvature_at(s + d, window)))
+            d += step
+        return best
+
     def track(self, x: float, y: float, th: float, gains: PDGains) -> Tracking:
         best = None
         i = self.index
@@ -177,6 +185,7 @@ class DiffDriveParams:
     rotate_gain: float = 2.0        # omega = gain * heading error while turning on the spot
     min_rotate_rps: float = 0.5     # slowest turn on the spot (skid-steer wheels stick below this)
     goal_slow_m: float = 0.6        # slow down linearly over this last stretch
+    lat_accel_mps2: float = 0.25    # slow down BEFORE a curve: v <= sqrt(lat_accel / curvature ahead)
 
 
 def rotate_command(err: float, p: DiffDriveParams) -> float:
@@ -186,7 +195,7 @@ def rotate_command(err: float, p: DiffDriveParams) -> float:
 
 
 def diff_drive_command(tr: Tracking, kappa: float, p: DiffDriveParams, rotating: bool,
-                       dist_goal: float) -> tuple[float, float, bool]:
+                       dist_goal: float, kappa_ahead: float = 0.0) -> tuple[float, float, bool]:
     """(v, omega, rotating) for PD curvature `kappa`; `rotating` is the turn-on-the-spot state."""
     err = tr.psi_e
     if rotating and abs(err) < p.rotate_exit_rad:
@@ -198,6 +207,8 @@ def diff_drive_command(tr: Tracking, kappa: float, p: DiffDriveParams, rotating:
     v = p.speed_mps
     if p.goal_slow_m > 0.0:
         v = min(v, p.speed_mps * max(dist_goal, 0.0) / p.goal_slow_m)
+    if kappa_ahead > 1e-6 and p.lat_accel_mps2 > 0.0:
+        v = min(v, math.sqrt(p.lat_accel_mps2 / kappa_ahead))
     if abs(kappa) * v > p.max_yaw_rate_rps:
         v = p.max_yaw_rate_rps / abs(kappa)
     v = max(v, p.min_speed_mps)

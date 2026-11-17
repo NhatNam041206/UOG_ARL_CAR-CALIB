@@ -75,3 +75,11 @@ def test_unmeasured_track_uses_the_assumed_value():
     assert cfg.track_width_m == 0.25 and not cfg.measured
     assert drive_from_cfg({"drive": {"track_width_m": 0.19}}).measured
     assert math.isclose(DriveConfig(track_width_m=0.2, max_wheel_speed_mps=0.5).spin_yaw_rate_rps, 5.0)
+
+
+def test_slow_spin_is_raised_to_the_stiction_speed():
+    m = CmdVelMapper(DriveConfig(track_width_m=0.2, min_spin_wheel_mps=0.08))
+    left, right = m.map(0.0, 0.3)            # 0.03 m/s wheels: would not turn
+    assert right == pytest.approx(0.08) and left == pytest.approx(-0.08)
+    assert m.map(0.0, 0.0) == (0.0, 0.0)
+    assert m.map(0.3, 0.1) == pytest.approx((0.29, 0.31))   # driving: unchanged

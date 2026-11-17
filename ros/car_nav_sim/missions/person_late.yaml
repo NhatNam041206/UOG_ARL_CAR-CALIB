@@ -1,0 +1,13 @@
+# Safety guard stress test: a person runs (1.5 m/s) across the aisle when
+# the car is only 1.0 m away. Shows the limit of what the guard can do.
+world: test_floor
+goal_timeout_s: 60
+start: [1.0, 1.1, 0.0]
+goals:
+  - [7.6, 1.4, 0.0]
+actors:
+  - name: running
+    radius: 0.2
+    path: [[4.0, 2.1], [4.0, 0.1]]
+    speed_mps: 1.5
+    trigger: {x: 4.0, y: 1.1, dist: 1.0}

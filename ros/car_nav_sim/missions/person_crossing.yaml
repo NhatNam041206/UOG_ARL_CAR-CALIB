@@ -1,0 +1,14 @@
+# Safety guard test: a person (0.2 m radius) walks across the aisle at
+# 1.0 m/s just in front of the car. Pass = the car never touches them
+# (min_person_clearance_m > 0) and still reaches the goal afterwards.
+world: test_floor
+goal_timeout_s: 60
+start: [1.0, 1.1, 0.0]
+goals:
+  - [7.6, 1.4, 0.0]
+actors:
+  - name: crossing
+    radius: 0.2
+    path: [[4.0, 2.1], [4.0, 0.1]]
+    speed_mps: 1.0
+    trigger: {x: 4.0, y: 1.1, dist: 1.4}
