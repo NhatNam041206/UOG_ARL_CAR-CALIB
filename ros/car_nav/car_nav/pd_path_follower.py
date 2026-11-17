@@ -43,12 +43,13 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from tf2_ros import Buffer, TransformListener
+from tf2_msgs.msg import TFMessage
 
 from . import config_loader
 from .pd_follower import PathTracker, PDGains, pd_curvature
 from .actuation import table_from_cfg
 from .wall_avoid import ArcAvoider, AvoidParams, points_in_base
+from .tf_chain import PlanarTfChain
 from .timing import TimingStats
 
 
@@ -90,8 +91,12 @@ class PDPathFollower(Node):
         self._avoider = ArcAvoider(self._avoid)
         self._points: list = []
         self._points_t = 0.0
-        self._tf = Buffer()
-        TransformListener(self._tf, self)
+        # map -> base_link straight from /tf (tf_chain.py: same answer as tf2's latest
+        # lookup, without the tf2 Python buffer, which cost most of this node's CPU)
+        self._chain = PlanarTfChain(self.get_parameter("global_frame").value, "odom",
+                                    self.get_parameter("robot_frame").value)
+        self._chain_lock = threading.Lock()
+        self.create_subscription(TFMessage, "/tf", self._on_tf, 100, callback_group=ReentrantCallbackGroup())
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
         # /scan_nav is in laser_upright = base_link shifted to the laser, turned by its yaw
         self._laser = config_loader.laser_pose(cfg)
@@ -145,15 +150,23 @@ class PDPathFollower(Node):
             self._active = goal_handle
         goal_handle.execute()
 
+    def _on_tf(self, msg: TFMessage) -> None:
+        with self._chain_lock:
+            for t in msg.transforms:
+                st = t.header.stamp
+                q = t.transform.rotation
+                self._chain.add(t.header.frame_id, t.child_frame_id, st.sec * 1_000_000_000 + st.nanosec,
+                                t.transform.translation.x, t.transform.translation.y, _yaw(q))
+
     def _pose(self):
-        try:
-            t = self._tf.lookup_transform(self.get_parameter("global_frame").value,
-                                          self.get_parameter("robot_frame").value, Time(),
-                                          timeout=Duration(seconds=0.1))
-        except Exception as exc:  # noqa: BLE001 - tf2 raises several types
-            self.get_logger().warn(f"no pose: {exc}", throttle_duration_sec=2.0)
+        with self._chain_lock:
+            latest = self._chain.latest()
+        if latest is None:
+            self.get_logger().warn("no pose: map -> odom -> base_link not available yet",
+                                   throttle_duration_sec=2.0)
             return None
-        age = (self.get_clock().now() - Time.from_msg(t.header.stamp)).nanoseconds * 1e-9
+        t_ns, px, py, pth = latest
+        age = (self.get_clock().now().nanoseconds - t_ns) * 1e-9
         self._timing.value("pd.pose_age_s", age)
         if age > self._f("max_pose_age_s"):
             # Steering on an old pose turns the car long after it has turned
@@ -161,8 +174,7 @@ class PDPathFollower(Node):
             self.get_logger().warn(f"pose is {age:.2f} s old (> {self._f('max_pose_age_s')} s): stopping",
                                    throttle_duration_sec=1.0)
             return None
-        tr = t.transform.translation
-        return tr.x, tr.y, _yaw(t.transform.rotation)
+        return px, py, pth
 
     def _stop(self) -> None:
         self._pub.publish(Twist())
@@ -250,7 +262,8 @@ class PDPathFollower(Node):
 def main() -> None:
     rclpy.init()
     node = PDPathFollower()
-    ex = MultiThreadedExecutor(num_threads=4)
+    # 2 threads: one runs the FollowPath loop, one serves scan / tf / odom callbacks
+    ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:
         ex.spin()

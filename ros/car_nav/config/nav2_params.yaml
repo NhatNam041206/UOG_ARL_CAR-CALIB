@@ -382,7 +382,7 @@ pose_gate:
   ros__parameters:
     use_sim_time: false
     obs_full: 0.5                 # observability at which the along correction is taken fully
-    publish_rate_hz: 20.0
+    publish_rate_hz: 10.0         # also sent on every AMCL update; 20 Hz doubled /tf traffic for every TF listener (sim 2026-11-17)
     transform_tolerance: 0.5
     observability_timeout_s: 2.0  # no observability (odom_source rf2o): pass AMCL through
     reseed_enabled: true          # put AMCL back on the gated pose when its cloud wanders
