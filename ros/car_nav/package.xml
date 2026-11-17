@@ -3,7 +3,7 @@
 <package format="3">
   <name>car_nav</name>
   <version>0.1.0</version>
-  <description>NAV2 mode for the car-calib rear-steer car: sensor bring-up (RPLIDAR A1 + Astra Pro), self-mask, wall-approach speed logger.</description>
+  <description>NAV2 mode for the car-calib skid-steer car: sensor bring-up (RPLIDAR A1 + Astra Pro), self-mask, wall-approach speed logger.</description>
   <maintainer email="noreply@example.com">car-calib</maintainer>
   <license>MIT</license>
 

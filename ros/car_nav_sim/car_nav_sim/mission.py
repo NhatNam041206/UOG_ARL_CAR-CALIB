@@ -5,8 +5,8 @@
 For every goal it records: Nav2 result, time, distance driven, smallest
 clearance between the car's footprint and any obstacle (0 = collision),
 final position / heading error, and the worst localisation error (AMCL
-pose vs. true pose). It also counts how often the steering command sat at
-a servo limit. The report is written as JSON and summarised in the log;
+pose vs. true pose). It also counts how often a wheel command sat at the
+wheel speed limit and how often the car turned on the spot. The report is written as JSON and summarised in the log;
 the process exits 0 only if every goal succeeded without a collision.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from std_msgs.msg import String
 import yaml
 
 from car_nav import config_loader
-from car_nav.actuation import parse_payload
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 
 from . import sim_config
 from .world import World, footprint_polygon
@@ -70,11 +70,10 @@ def _pose(nav: BasicNavigator, x: float, y: float, yaw: float) -> PoseStamped:
 
 
 class Tracker:
-    def __init__(self, world: World, footprint, steer_cfg: dict) -> None:
+    def __init__(self, world: World, footprint, drive) -> None:
         self.world = world
         self.fp = footprint
-        self.servo_min = float(steer_cfg.get("servo_min", 35))
-        self.servo_max = float(steer_cfg.get("servo_max", 140))
+        self.wheel_max = float(drive.max_wheel_speed_mps)
         self.truth = None
         self.amcl = None
         self.tf = None  # tf2 Buffer, set in main(): map -> base_link is what Nav2 drives by
@@ -89,6 +88,7 @@ class Tracker:
         self.n_cmd = 0
         self.n_sat = 0
         self.n_forward = 0
+        self.n_spin = 0
         self.max_odom_drift = 0.0
         self.cm = {}  # collision monitor action -> number of state messages
         self.n_cm = 0
@@ -163,13 +163,16 @@ class Tracker:
         parsed = parse_payload(msg.data)
         if parsed is None:
             return
-        angle, code = parsed
+        left, right = parsed
         self.last_cmd = msg.data
         self.n_cmd += 1
-        if code == 1:
+        v = 0.5 * (left + right)
+        if v > 0.01:
             self.n_forward += 1
-            if angle <= self.servo_min or angle >= self.servo_max:
+            if max(abs(left), abs(right)) >= self.wheel_max - 1e-3:
                 self.n_sat += 1
+        elif abs(right - left) > 0.01:
+            self.n_spin += 1
 
 
 def main() -> None:
@@ -187,7 +190,7 @@ def main() -> None:
     start_param = list(nav.get_parameter("start").value)
     start = start_param if len(start_param) == 3 else (mission.get("start") or world.start)
     car = config_loader.load()
-    tracker = Tracker(world, config_loader.footprint(car), car.get("steering") or {})
+    tracker = Tracker(world, config_loader.footprint(car), drive_from_cfg(car))
     tracker.tf = Buffer()
     # Own thread: the mission loop spins `nav` only between isTaskComplete() polls, so a
     # listener on it fell seconds behind and the "est" pose / localisation error lagged
@@ -195,7 +198,7 @@ def main() -> None:
     _tf_listener = TransformListener(tracker.tf, nav, spin_thread=True)  # noqa: F841
     nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
-    nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)
+    nav.create_subscription(String, WHEELS_TOPIC, tracker.on_control, 50)
     nav.create_subscription(Odometry, "/odom", tracker.on_odom, 20)
     if CollisionMonitorState is not None:
         nav.create_subscription(CollisionMonitorState, "/collision_monitor_state", tracker.on_cm, 20)
@@ -252,8 +255,9 @@ def main() -> None:
             "final_xy_error_m": round(math.hypot(tx - gx, ty - gy), 3),
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
             "max_localization_error_m": round(tracker.max_loc_err, 3),
-            "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
+            "wheel_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
             "forward_share": round(tracker.n_forward / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
+            "spin_share": round(tracker.n_spin / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
             "max_odom_drift_m": round(tracker.max_odom_drift, 3),
             "collision_monitor": tracker.cm,
             "true_end_pose": [round(tx, 3), round(ty, 3), round(math.degrees(tth), 1)],

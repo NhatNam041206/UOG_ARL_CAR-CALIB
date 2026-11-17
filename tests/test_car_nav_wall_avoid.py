@@ -5,7 +5,6 @@ import numpy as np
 import yaml
 
 from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
-from car_nav.actuation import table_from_cfg
 from car_nav.pd_follower import PathTracker, PDGains, pd_curvature
 from car_nav.wall_avoid import ArcAvoider, AvoidParams, free_distance, points_in_base
 
@@ -13,11 +12,11 @@ NAV = yaml.safe_load(P.NAV2_YAML.read_text())
 PD = NAV["pd_path_follower"]["ros__parameters"]
 CAR = yaml.safe_load(P.CAR_YAML.read_text())
 F = CAR["footprint"]
-TABLE = table_from_cfg(CAR)
+KMAX = PD["avoid_max_curvature"]
 PARAMS = AvoidParams(x_front=F["x_front"], x_rear=F["x_rear"], half_width=F["half_width"],
                      margin_m=PD["avoid_margin_m"], horizon_m=PD["avoid_horizon_m"],
                      release_factor=PD["avoid_release_factor"], n_candidates=PD["avoid_candidates"],
-                     max_left=TABLE.max_left_curvature, max_right=TABLE.max_right_curvature)
+                     max_left=KMAX, max_right=KMAX)
 G = PDGains(kp=PD["kp"], kd=PD["kd"], ff=PD["ff"], ff_ahead_m=PD["ff_ahead_m"])
 ANG = np.linspace(-math.pi, math.pi, 720, endpoint=False)
 HALF = 0.9   # campus 3-tile corridor: 1.8 m between the walls
@@ -74,8 +73,8 @@ def body_hits(segs, x, y, th):
     return any(cross(a, b, c, d) for a, b in edges for c, d in segs)
 
 
-def drive(segs, x, y, th, kappa_pd_fn, avoid=True, t_end=14.0, v=0.5, latency=0.65, dt=0.05):
-    """Kinematic rear-steer car (base_link = front axle), command delayed by `latency`.
+def drive(segs, x, y, th, kappa_pd_fn, avoid=True, t_end=14.0, v=0.4, latency=0.25, dt=0.05):
+    """Kinematic diff-drive car (base_link = centre) on curvature commands, delayed by `latency`.
     Returns (hit, final pose, number of times the layer took over)."""
     queue = [0.0] * int(round(latency / dt))
     av = ArcAvoider(PARAMS)
@@ -89,7 +88,7 @@ def drive(segs, x, y, th, kappa_pd_fn, avoid=True, t_end=14.0, v=0.5, latency=0.
             was = ch.overriding
         elif avoid and was:
             k = av.override_k
-        queue.append(max(-TABLE.max_right_curvature, min(TABLE.max_left_curvature, k)))
+        queue.append(max(-KMAX, min(KMAX, k)))
         k_now = queue.pop(0)
         x += v * math.cos(th) * dt
         y += v * math.sin(th) * dt
@@ -119,14 +118,15 @@ def test_free_distance_straight_and_wall_ahead():
     assert free_distance(points_at(corridor(), 0, 0, 0), 0.0, PARAMS, 1.0) == 1.0
     end = [((1.0, -2.0), (1.0, 2.0))]
     f = free_distance(points_at(end, 0, 0, 0), 0.0, PARAMS, 1.0)
-    assert 0.6 <= f <= 0.8          # nose 0.16 + margin 0.05 reaches x = 1.0 after ~0.79 m
+    assert 0.6 <= f <= 0.8          # nose 0.185 + margin 0.05 reaches x = 1.0 after ~0.77 m
 
 
 def test_rear_swing_counts():
     # wall 0.05 m beside the rear on the right: a hard LEFT turn swings the rear into it
-    wall = [((-1.0, -0.20), (0.0, -0.20))]
+    # (diff drive turns about the centre, so the rear still swings out)
+    wall = [((-0.3, -0.20), (0.0, -0.20))]
     pts = points_at(wall, 0, 0, 0)
-    assert free_distance(pts, TABLE.max_left_curvature, PARAMS, 1.0) < 0.3
+    assert free_distance(pts, KMAX, PARAMS, 1.0) < 0.3
     assert free_distance(pts, 0.0, PARAMS, 1.0) == 1.0
 
 
@@ -140,8 +140,8 @@ def test_centred_in_corridor_does_nothing():
 def test_planned_left_turn_into_narrow_branch_is_not_fought():
     # sim 2026-11-14 goal 2: the old layer saw the inner corner and forced a right turn
     path = left_turn_path()
-    hit_free, end_free, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=False, t_end=22)
-    hit, end, takeovers = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=True, t_end=22)
+    hit_free, end_free, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=False, t_end=28)
+    hit, end, takeovers = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path), avoid=True, t_end=28)
     assert not hit_free and not hit
     assert end[1] > 4.0 and abs(end[0] - (E - BRANCH / 2)) < 0.25     # up the branch
     assert takeovers <= 1          # at most a brief nudge where the arc grazes the margin
@@ -152,9 +152,9 @@ def test_late_turn_from_lagging_pose_is_saved():
     # A 1.0 m horizon was too short for 0.8 m (the escape arc came too late): 1.3 m.
     path = left_turn_path()
     for lag in (0.8, 1.2):
-        hit_free, _, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path, offset=(-lag, 0.0)), avoid=False, t_end=22)
+        hit_free, _, _ = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path, offset=(-lag, 0.0)), avoid=False, t_end=28)
         hit, end, takeovers = drive(l_junction(), 0.0, 0.0, 0.0, pd_on(path, offset=(-lag, 0.0)), avoid=True,
-                                    t_end=22)
+                                    t_end=28)
         assert hit_free and not hit
         assert takeovers >= 1 and end[1] > 4.0                   # still got into the branch
 

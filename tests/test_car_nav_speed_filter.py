@@ -31,21 +31,26 @@ def test_plain_corridor_is_blind_ends_are_not():
 
 
 def test_motion_model_follows_delayed_commands():
-    m = MotionModel(latency_s=0.65, accel_mps2=1.0, decel_mps2=2.0, nominal_speed=0.5)
-    m.command(0.0, True)
+    m = MotionModel(latency_s=0.25, accel_mps2=1.0, decel_mps2=2.0, nominal_speed=0.4)
+    m.command(0.0, 0.4, 0.0)
     t = 0.0
-    while t < 0.6:
-        t += 0.1
-        m.step(t, 0.1)
+    while t < 0.2:
+        t += 0.05
+        m.step(t, 0.05)
     assert m.standing                      # command not yet acting
+    for _ in range(20):
+        t += 0.05
+        m.step(t, 0.05)
+    assert m.cruising and m.speed == pytest.approx(0.4)
+    m.command(t, 0.0, 1.0)                 # turn on the spot: no forward speed, but not standing
+    for _ in range(20):
+        t += 0.05
+        m.step(t, 0.05)
+    assert m.speed == 0.0 and not m.standing and not m.cruising
+    m.command(t, 0.0, 0.0)
     for _ in range(10):
-        t += 0.1
-        m.step(t, 0.1)
-    assert m.cruising
-    m.command(t, False)
-    for _ in range(10):
-        t += 0.1
-        m.step(t, 0.1)
+        t += 0.05
+        m.step(t, 0.05)
     assert m.standing
 
 

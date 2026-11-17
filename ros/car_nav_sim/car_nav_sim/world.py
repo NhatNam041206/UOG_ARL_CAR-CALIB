@@ -6,7 +6,7 @@ A world file (worlds/*.yaml) lists boxes and cylinders on a flat floor:
     bounds: [x_min, y_min, x_max, y_max]   # map extent (m)
     boxes:      [{center: [x, y], size: [sx, sy], yaw: 0.0, height: 1.0}, ...]
     cylinders:  [{center: [x, y], radius: r, height: 1.0}, ...]
-    start: [x, y, yaw]                     # car base_link (front axle) start
+    start: [x, y, yaw]                     # car base_link (car centre) start
 
 The world frame is the map frame: the map Nav2 loads is rasterised from
 the same shapes, so localisation error = AMCL pose - true pose directly.

@@ -1,81 +1,77 @@
-"""cmd_vel -> "<angle>,<drive_code>" mapping (ros/car_nav/car_nav/actuation.py)."""
+"""cmd_vel -> wheel speed mapping for the skid-steer car (ros/car_nav/car_nav/actuation.py)."""
 import math
 
 import pytest
 import yaml
 
-from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
-from car_nav.actuation import (
-    DRIVE_FORWARD, DRIVE_STOP, CmdVelMapper, SteeringConfig, SteeringTable,
-    format_payload, parse_payload, table_from_cfg,
-)
+from tests import _car_nav_paths as P
+from car_nav.actuation import CmdVelMapper, DriveConfig, drive_from_cfg, format_payload, parse_payload
+
+CAR = yaml.safe_load(P.CAR_YAML.read_text())
+DRIVE = drive_from_cfg(CAR)
+M = CmdVelMapper(DRIVE)
 
 
-@pytest.fixture(scope="module")
-def table():
-    return table_from_cfg(yaml.safe_load(P.CAR_YAML.read_text()))
+def test_car_yaml_is_diff_drive():
+    assert CAR["drive"]["type"] == "diff_drive"
+    assert "steering" not in CAR
+    assert DRIVE.track_width_m > 0.1
+    assert DRIVE.cruise_speed_mps <= DRIVE.max_wheel_speed_mps
 
 
-def test_car_yaml_steering_facts(table):
-    c = table.cfg
-    assert (c.wheelbase_m, c.servo_center, c.servo_min, c.servo_max) == (0.28, 62, 35, 140)
-    assert not table.measured
+def test_straight_and_spin():
+    assert M.map(0.4, 0.0) == pytest.approx((0.4, 0.4))
+    left, right = M.map(0.0, 1.0)
+    assert left == pytest.approx(-right) and right == pytest.approx(DRIVE.track_width_m / 2)
+    v, w = DRIVE.body(left, right)
+    assert v == pytest.approx(0.0) and w == pytest.approx(1.0)
 
 
-def test_placeholder_limits_per_side(table):
-    # right side: 27 servo deg -> tan(27)/0.28 ; left side capped at 30 deg wheel angle
-    assert table.max_right_curvature == pytest.approx(math.tan(math.radians(27)) / 0.28)
-    assert table.max_left_curvature == pytest.approx(math.tan(math.radians(30)) / 0.28)
-    assert table.min_turning_radius == pytest.approx(0.28 / math.tan(math.radians(27)), rel=1e-6)
-    assert 0.54 < table.min_turning_radius < 0.56
+def test_left_turn_speeds_up_the_right_wheel():
+    left, right = M.map(0.3, 0.5)
+    assert right > left
+    assert DRIVE.body(left, right) == pytest.approx((0.3, 0.5))
 
 
-def test_servo_above_centre_turns_left(table):
-    assert table.curvature(70) > 0 and table.curvature(50) < 0 and table.curvature(62) == 0
+def test_saturation_keeps_curvature():
+    cfg = DriveConfig(track_width_m=0.2, max_wheel_speed_mps=0.5, max_yaw_rate_rps=10.0)
+    m = CmdVelMapper(cfg)
+    left, right = m.map(0.5, 2.0)          # ideal right 0.7 > 0.5
+    assert max(abs(left), abs(right)) == pytest.approx(0.5)
+    v, w = cfg.body(left, right)
+    assert w / v == pytest.approx(2.0 / 0.5)
 
 
-def test_inverse_round_trip(table):
-    for k in (-1.5, -0.8, -0.1, 0.1, 0.8, 1.9):
-        assert table.curvature(table.servo_for(k)) == pytest.approx(k, abs=1e-9)
+def test_yaw_rate_is_capped():
+    left, right = M.map(0.0, 50.0)
+    assert DRIVE.body(left, right)[1] <= DRIVE.max_yaw_rate_rps + 1e-9
 
 
-def test_inverse_saturates_on_each_side(table):
-    assert table.servo_for(-10.0) == 35
-    # left saturates where the wheel-angle cap is reached (62 + 30), not at 140
-    assert table.servo_for(10.0) == pytest.approx(92)
+def test_no_reverse_unless_allowed():
+    assert not DRIVE.allow_reverse
+    assert M.map(-0.3, 0.0) == pytest.approx((0.0, 0.0))
+    left, right = M.map(-0.3, 1.0)        # reverse dropped, the turn kept
+    assert DRIVE.body(left, right)[0] == pytest.approx(0.0)
+    rev = CmdVelMapper(DriveConfig(allow_reverse=True))
+    assert rev.map(-0.3, 0.0) == pytest.approx((-0.3, -0.3))
 
 
-def test_mapper_forward_and_stop(table):
-    m = CmdVelMapper(table)
-    assert m.map(0.5, 0.0) == (62, DRIVE_FORWARD)
-    a, d = m.map(0.5, 0.5 * 1.0)  # 1 m radius left turn
-    assert d == DRIVE_FORWARD and a > 62
-    a, d = m.map(0.5, -0.5 * 1.0)
-    assert d == DRIVE_FORWARD and a < 62
-    assert m.map(0.5, -5.0) == (35, DRIVE_FORWARD)
-    assert m.map(0.01, 0.3) == (62, DRIVE_STOP)
-    assert m.map(-0.3, 0.0) == (62, DRIVE_STOP)  # forward only: never reverse
-    assert m.map(float("nan"), 0.0) == (62, DRIVE_STOP)
+def test_dead_band_and_bad_input():
+    m = CmdVelMapper(DriveConfig(min_wheel_speed_mps=0.05))
+    assert m.map(0.02, 0.0) == (0.0, 0.0)
+    assert M.map(float("nan"), 0.0) == (0.0, 0.0)
 
 
 def test_payload_round_trip():
-    assert format_payload(48, 1) == "48,1"
-    assert parse_payload("48,1") == (48, 1)
-    assert parse_payload(" 62.0,0 ") == (62, 0)
+    s = format_payload(0.3456, -0.1)
+    assert s == "0.346,-0.100"
+    assert parse_payload(s) == pytest.approx((0.346, -0.1))
+    assert parse_payload("62,1x") is None and parse_payload("nan,0") is None
     assert parse_payload("garbage") is None
 
 
-def test_measured_table_is_used_and_validated():
-    cfg = SteeringConfig(curvature_table=((35, -1.6), (50, -0.6), (75, 0.7), (110, 2.0)))
-    t = SteeringTable(cfg)
-    assert t.measured and t.curvature(62) == 0.0
-    assert t.min_turning_radius == pytest.approx(1 / 1.6)
-    with pytest.raises(ValueError):
-        SteeringTable(SteeringConfig(curvature_table=((35, 1.0), (110, 2.0))))  # wrong sign
-    with pytest.raises(ValueError):
-        SteeringTable(SteeringConfig(curvature_table=((20, -1.0), (110, 2.0))))  # outside limits
-
-
-def test_servo_up_turns_right_flips_sign():
-    t = SteeringTable(SteeringConfig(servo_up_turns="right"))
-    assert t.curvature(70) < 0 and t.servo_for(1.0) < 62
+def test_unmeasured_track_uses_the_assumed_value():
+    cfg = drive_from_cfg({"drive": {"track_width_m": None, "assumed_track_width_m": 0.25}})
+    assert cfg.track_width_m == 0.25 and not cfg.measured
+    assert drive_from_cfg({"drive": {"track_width_m": 0.19}}).measured
+    assert math.isclose(DriveConfig(track_width_m=0.2, max_wheel_speed_mps=0.5).spin_yaw_rate_rps, 5.0)

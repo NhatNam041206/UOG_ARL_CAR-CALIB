@@ -1,6 +1,8 @@
-description: the real car is worse than car.yaml guesses - slower reaction, faster, steers less
+description: the real skid-steer car is worse than car.yaml guesses - slower reaction, slips more in turns, weaker right side
 sim:
   truth:
-    latency_s: 0.9
-    speed_mps: 0.6
-    understeer_factor: 0.85
+    latency_s: 0.5
+    speed_scale: 0.85
+    yaw_efficiency: 0.6
+    right_gain: 0.92
+    min_spin_wheel_mps: 0.12

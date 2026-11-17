@@ -36,18 +36,29 @@ If a device is replaced, set `LANE_CAMERA_DEVICE` / `LIDAR_DEVICE` in `.env`
 unplugged. That is intended: before this change, VISION could silently open
 the Astra colour camera as its lane camera.
 
+## Skid-steer car (this branch)
+
+This branch targets the **skid-steer (differential drive) car**: same
+size as the rear-steer car, LiDAR mounted the normal way up. Nav2 sends
+`"<left m/s>,<right m/s>"` on the ROS topic `/car/wheels/cmd`; an adapter
+for the car's `ugv-controller` turns that into its own command (see
+[simulation.md](simulation.md), "Car model"). The rear-steer version
+(`"<angle>,<drive_code>"` on `/car/raspi5/control`) stays on
+`claude/project-thread-t304ze`.
+
 ## Geometry (`ros/car_nav/config/car.yaml`)
 
-`base_link` is the floor point under the centre of the **front** (fixed)
-axle; the car steers with its rear wheels. The LiDAR is upside down: this is
-handled only by `roll = pi` in its transform, and the driver's `inverted` stays false.
+`base_link` is the floor point at the **centre** of the car, midway between
+the left and right wheels; the car turns about it and can turn on the spot.
+The LiDAR is upright (`roll: 0`, the driver's `inverted` stays false).
 Values left as `null` are not measured yet; the launch prints a warning and
-uses 0. The file is mounted into the container, so editing it on the Pi
-(`/opt/car-calib-pi5/current/ros/car_nav/config/car.yaml`) and restarting
-`car-calib-ros-nav` is enough. No rebuild is needed.
+uses 0 (or the `assumed_*` value). The file is mounted into the container,
+so editing it on the Pi and restarting `car-calib-ros-nav` is enough. No
+rebuild is needed.
 
-Still to measure with a tape: `laser.x`, `laser.yaw` (where the A1's 0° mark
-points), `camera.x`.
+Still to measure: `drive.track_width_m` (0.22 m assumed), `laser.x`,
+`laser.yaw` (where the A1's 0° mark points), `camera.x`,
+`speed.command_latency_s` (0.25 s assumed).
 
 ## Build and deploy (the Pi has no internet)
 
@@ -84,28 +95,13 @@ sudo docker stats --no-stream; vcgencmd get_throttled  # with VISION driving, wh
 
 `scan_self_mask` logs the masked bearings every 10 s; report them.
 
-## Baseline speed and stopping distance
+## Speed and stopping distance
 
-The car reports no speed and accepts no speed value (drive_code is only
-STOP / FORWARD). NAV2 therefore starts from a **measured baseline** in
-`car.yaml` (`speed.baseline_speed_mps`, conservative 0.5 m/s until measured),
-and an adaptive estimate from LiDAR odometry comes later.
-
-Measure it with the LiDAR (power switch within reach, nobody near the car):
-
-1. Put the car about 4 m from a flat wall, pointing at it.
-2. Start the logger:
-   ```bash
-   sudo docker exec -it car-calib-ros-nav /entrypoint.sh \
-     ros2 run car_nav front_range_logger --ros-args -p run_name:=wall1
-   ```
-3. Drive straight at the wall in VISION (dashboard joystick or a `forward`
-   script), send STOP at about 1.5 m. Note the STOP time if you can
-   (VISION's run log has the command timestamps; same clock).
-4. Ctrl-C the logger. Repeat for `wall2` … `wall5`.
-5. Copy `/opt/car-calib-pi5/data/nav/wall_runs/*.csv` to the laptop, then:
-   ```bash
-   python scripts/analyze_wall_approach.py wall*.csv [--stop-time t1 t2 t3 t4 t5]
-   ```
-6. Put the mean into `car.yaml`: `baseline_speed_mps`, `stopping_distance_m`,
-   `measured: true`.
+The skid-steer car takes a speed per wheel, so Nav2 commands the speed
+(cruise 0.4 m/s, `drive.cruise_speed_mps`) and slows down itself. Whether
+the car really drives at the commanded speed is learned online by
+`adaptive_odom` (ratio real/commanded). The old wall-approach logger
+(`front_range_logger`, `scripts/analyze_wall_approach.py`) still works to
+measure the stopping distance: drive straight at a wall at 0.4 m/s, send
+0,0 at about 1.5 m, and compare with the 0.22 m bumper reach in
+`nav2_params.yaml` (`collision_monitor.VelocityStop.forward`).

@@ -1,11 +1,11 @@
 <!--
-  NAV2 behaviour tree for the forward-only rear-steer car, PD controller
-  variant: identical to navigate_forward_only.xml except that FollowPath goes
-  to car_nav's PD path follower (action pd_follow_path) instead of
-  controller_server's Pure Pursuit. Selected by nav.launch.py controller:=pd.
-  Same shape as Nav2's default navigate_to_pose tree, minus Spin and
-  BackUp (the car cannot turn in place and NAV2 never reverses: drive
-  code 2 is unconfirmed). Recovery = clear costmaps, wait, replan.
+  NAV2 behaviour tree for the skid-steer car (file name kept from the
+  rear-steer car so launch files and mounts stay the same). PD controller variant: FollowPath goes to car_nav's PD path follower
+  (action pd_follow_path) instead of controller_server. 
+  Same shape as Nav2's default navigate_to_pose tree minus BackUp: NAV2
+  drives forward and turns on the spot, it does not reverse
+  (car.yaml drive.allow_reverse false). Recovery (round robin) = clear
+  costmaps, spin 90 deg, wait; then replan.
 -->
 <root BTCPP_format="4" main_tree_to_execute="NavigateForwardOnly">
   <BehaviorTree ID="NavigateForwardOnly">
@@ -24,11 +24,14 @@
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
-      <Sequence name="RecoveryActions">
-        <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
-        <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+      <RoundRobin name="RecoveryActions">
+        <Sequence name="ClearingActions">
+          <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+        </Sequence>
+        <Spin spin_dist="1.57"/>
         <Wait wait_duration="2.0"/>
-      </Sequence>
+      </RoundRobin>
     </RecoveryNode>
   </BehaviorTree>
 </root>

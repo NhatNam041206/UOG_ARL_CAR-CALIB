@@ -1,4 +1,4 @@
-"""/scan_filtered (laser, maybe upside down) -> /scan_nav (laser_upright).
+"""/scan_filtered -> /scan_nav (laser_upright); a pass-through for the upright-mounted LiDAR.
 
 Every Nav2 consumer (rf2o, AMCL, slam_toolbox, costmaps, collision
 monitor) reads /scan_nav. The matching static TF base_link -> laser_upright

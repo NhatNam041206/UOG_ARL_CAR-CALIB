@@ -17,7 +17,7 @@ setup(
     ],
     install_requires=["setuptools"],
     zip_safe=True,
-    description="NAV2 mode sensor bring-up for the car-calib rear-steer car",
+    description="NAV2 mode sensor bring-up for the car-calib skid-steer car",
     license="MIT",
     entry_points={
         "console_scripts": [

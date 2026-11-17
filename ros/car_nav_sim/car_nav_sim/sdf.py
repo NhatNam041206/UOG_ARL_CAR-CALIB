@@ -1,11 +1,11 @@
 """World + car geometry -> Gazebo Harmonic SDF (no ROS imports).
 
 The car is a kinematic body moved by the VelocityControl system at its
-origin, and its origin IS base_link (front-axle centre). Commanding
-(v, omega) there is exactly rear-steer kinematics: the front axle never
-slips sideways and the rear swings out. The LiDAR link is rolled by pi,
-like the real upside-down A1, so Gazebo produces scans in the same frame
-convention as the car.
+origin, and its origin IS base_link (the centre of the skid-steer car,
+midway between the left and right wheels). Commanding (v, omega) there is
+exactly differential-drive kinematics, turning on the spot included. The
+LiDAR link takes car.yaml's roll (0: mounted upright), so Gazebo produces
+scans in the same frame convention as the car.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _cyl(name: str, x: float, y: float, r: float, h: float) -> str:
 def car_sdf(car_cfg: dict, sim_cfg: dict, start: tuple[float, float, float]) -> str:
     fp = car_cfg["footprint"]
     laser = car_cfg.get("laser") or {}
-    steer = car_cfg.get("steering") or {}
+    drive = car_cfg.get("drive") or {}
     lidar = sim_cfg.get("lidar") or {}
     lx = float(laser.get("x") or 0.0)
     lyaw = float(laser.get("yaw") or 0.0)
@@ -41,11 +41,13 @@ def car_sdf(car_cfg: dict, sim_cfg: dict, start: tuple[float, float, float]) -> 
     lroll = float(laser.get("roll") or 0.0)
     xf, xr, hw = float(fp["x_front"]), float(fp["x_rear"]), float(fp["half_width"])
     length, xc = xf - xr, (xf + xr) / 2.0
-    wb = float(steer.get("wheelbase_m") or 0.28)
+    track = float(drive.get("track_width_m") or drive.get("assumed_track_width_m") or 0.22)
+    axle = 0.5 * (xf - xr) - 0.07          # front / rear axle x, wheels near the body corners
     samples = int(lidar.get("samples", 720))
     inc = 2 * math.pi / samples
     wheels = ""
-    for i, (wx, wy) in enumerate([(0.0, hw - 0.03), (0.0, -hw + 0.03), (-wb, hw - 0.03), (-wb, -hw + 0.03)]):
+    for i, (wx, wy) in enumerate([(xc + axle, track / 2), (xc + axle, -track / 2),
+                                  (xc - axle, track / 2), (xc - axle, -track / 2)]):
         wheels += f"""
         <visual name="wheel{i}"><pose>{wx} {wy} 0.05 1.5708 0 0</pose>
           <geometry><cylinder><radius>0.05</radius><length>0.04</length></cylinder></geometry>
@@ -63,7 +65,7 @@ def car_sdf(car_cfg: dict, sim_cfg: dict, start: tuple[float, float, float]) -> 
         <visual name="body"><pose>{xc} 0 0.13 0 0 0</pose>
           <geometry><box><size>{length} {2 * hw} 0.14</size></box></geometry>
           <material><diffuse>0.1 0.4 0.9 1</diffuse><ambient>0.1 0.4 0.9 1</ambient></material></visual>
-        <visual name="front_axle_marker"><pose>0 0 0.21 0 0 0</pose>
+        <visual name="centre_marker"><pose>0 0 0.21 0 0 0</pose>
           <geometry><box><size>0.03 {2 * hw} 0.01</size></box></geometry>
           <material><diffuse>1 0.9 0 1</diffuse></material></visual>{wheels}
       </link>

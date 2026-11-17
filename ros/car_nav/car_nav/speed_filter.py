@@ -8,9 +8,11 @@ Idea (a 1-state Kalman filter on the real forward speed v):
 * scan_observability(): how well this scan shows forward motion, 0..1,
   from how many wall points face the driving direction (an end wall, a
   corner, a pillar) instead of running parallel to it (corridor sides).
-* MotionModel: the commanded drive state (FORWARD/STOP) delayed by the
-  command latency and ramped with the accel/decel limits: 0 = standing,
-  1 = cruising. Standing means forward speed is exactly 0.
+* MotionModel: the commanded forward speed (from the wheel command)
+  delayed by the command latency and ramped with the accel/decel limits.
+  Standing (no speed and no turn commanded) means forward speed is exactly 0.
+  On the skid-steer car SpeedKF estimates the RATIO real / commanded speed
+  (start 1.0), see adaptive_odom.py.
 * SpeedKF: v is a slow random walk. While cruising AND the scan is
   observable, rf2o's forward speed is a measurement (noise grows as the
   observability drops; outliers beyond 3 sigma are ignored). An AMCL correction along the heading after a
@@ -113,38 +115,57 @@ def scan_observability(ranges: Sequence[float], angle_min: float, angle_inc: flo
 
 @dataclass
 class MotionModel:
-    """Fraction of cruising speed the car has now, from the commands only."""
-    latency_s: float = 0.65
+    """Forward speed the car should have now, from the wheel commands only.
+
+    command(t, v, omega): the commanded body speed (m/s) and turn rate
+    (rad/s), i.e. (left + right) / 2 and (right - left) / track of the wheel
+    command. They act latency_s later and the speed follows with the
+    accel/decel limits. `speed` is that model speed (m/s, >= 0 when the car
+    does not reverse); adaptive_odom multiplies it by the learned ratio
+    real/commanded speed.
+    """
+    latency_s: float = 0.25
     accel_mps2: float = 1.0
     decel_mps2: float = 2.0
-    nominal_speed: float = 0.5
+    nominal_speed: float = 0.4
+    steady_tol_mps: float = 0.02
 
     def __post_init__(self) -> None:
-        self._queue: list[tuple[float, bool]] = []
-        self._drive = False
-        self.fraction = 0.0
+        self._queue: list[tuple[float, float, float]] = []
+        self._last: tuple[float, float] | None = None
+        self.target = 0.0          # delayed commanded speed (m/s)
+        self.target_omega = 0.0    # delayed commanded turn rate (rad/s)
+        self.speed = 0.0           # model speed after the ramp (m/s)
 
-    def command(self, t: float, forward: bool) -> None:
-        if not self._queue or self._queue[-1][1] != forward:
-            self._queue.append((t + self.latency_s, forward))
+    def command(self, t: float, v: float, omega: float = 0.0) -> None:
+        cmd = (float(v), float(omega))
+        if self._last is None or abs(cmd[0] - self._last[0]) > 1e-4 or abs(cmd[1] - self._last[1]) > 1e-4:
+            self._queue.append((t + self.latency_s, cmd[0], cmd[1]))
+            self._last = cmd
 
     def step(self, t: float, dt: float) -> float:
         while self._queue and self._queue[0][0] <= t:
-            self._drive = self._queue.pop(0)[1]
-        v = max(self.nominal_speed, 0.05)
-        if self._drive:
-            self.fraction = min(1.0, self.fraction + self.accel_mps2 / v * dt)
+            _, self.target, self.target_omega = self._queue.pop(0)
+        if self.target > self.speed:
+            self.speed = min(self.target, self.speed + self.accel_mps2 * dt)
         else:
-            self.fraction = max(0.0, self.fraction - self.decel_mps2 / v * dt)
-        return self.fraction
+            self.speed = max(self.target, self.speed - self.decel_mps2 * dt)
+        return self.speed
+
+    @property
+    def fraction(self) -> float:
+        """Model speed as a share of the nominal cruise speed."""
+        return self.speed / max(self.nominal_speed, 0.05)
 
     @property
     def cruising(self) -> bool:
-        return self._drive and self.fraction >= 1.0
+        """Driving forward at a steady commanded speed (good time to learn the ratio)."""
+        return self.target >= 0.1 and abs(self.speed - self.target) <= self.steady_tol_mps
 
     @property
     def standing(self) -> bool:
-        return not self._drive and self.fraction <= 0.0
+        """Commanded to stand still (no speed, no turn) and the speed has ramped down."""
+        return abs(self.target) < 1e-3 and abs(self.target_omega) < 1e-3 and abs(self.speed) < 1e-3
 
 
 @dataclass
@@ -165,7 +186,7 @@ class SpeedKF:
         self.var *= (1.0 - k)
         return k
 
-    def update_rf2o(self, v_meas: float, w: float, gate_sigma: float = 3.0) -> bool:
+    def update_rf2o(self, v_meas: float, w: float, gate_sigma: float = 3.0, r_scale: float = 1.0) -> bool:
         """rf2o forward speed while cruising; w = scan observability (0..1).
 
         Returns False (and ignores it) when it is an outlier: further than
@@ -174,7 +195,7 @@ class SpeedKF:
         the filter that the car stands still."""
         if w <= 0.0:
             return False
-        r = self.r_rf2o / w
+        r = self.r_rf2o * r_scale / w
         if (v_meas - self.v) ** 2 > gate_sigma ** 2 * (self.var + r):
             return False
         self.update(v_meas, r)

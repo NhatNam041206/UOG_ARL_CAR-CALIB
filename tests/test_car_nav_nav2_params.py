@@ -1,17 +1,18 @@
-"""nav2_params.yaml must agree with car.yaml (footprint, speed, steering, latency)."""
+"""nav2_params.yaml must agree with car.yaml (footprint, speed, diff drive, latency)."""
 import ast
 import xml.etree.ElementTree as ET
 
 import yaml
 
 from tests import _car_nav_paths as P
-from car_nav.actuation import table_from_cfg
+from car_nav.actuation import drive_from_cfg
 
 CAR = yaml.safe_load(P.CAR_YAML.read_text())
 NAV = yaml.safe_load(P.NAV2_YAML.read_text())
-LATENCY_S = 0.65  # lidar-nav thread estimate; also config/sim.yaml truth.latency_s
+DRIVE = drive_from_cfg(CAR)
+LATENCY_S = 0.25  # assumed (car.yaml speed.command_latency_s null); also config/sim.yaml truth.latency_s
 SCAN_HZ = 7.0     # RPLIDAR A1
-DECEL_MPS2 = 2.0  # config/sim.yaml truth.decel_mps2 (unmeasured)
+DECEL_MPS2 = 2.5  # config/sim.yaml truth.decel_mps2 (unmeasured)
 
 
 def rp(node):
@@ -27,39 +28,46 @@ def test_footprint_matches_car_yaml():
         assert got == want, cm
 
 
-def test_forward_only_single_speed():
+def test_diff_drive_controllers_and_planner():
     fp = rp("controller_server")["FollowPath"]
-    assert fp["desired_linear_vel"] == CAR["speed"]["baseline_speed_mps"]
-    assert fp["allow_reversing"] is False and fp["use_rotate_to_heading"] is False
-    assert fp["use_regulated_linear_velocity_scaling"] is False
-    assert rp("planner_server")["GridBased"]["motion_model_for_search"] == "DUBIN"
-    assert rp("behavior_server")["behavior_plugins"] == ["wait"]
+    assert fp["desired_linear_vel"] == DRIVE.cruise_speed_mps
+    assert fp["allow_reversing"] is DRIVE.allow_reverse is False
+    assert fp["use_rotate_to_heading"] is True            # turns on the spot
+    assert fp["rotate_to_heading_angular_vel"] <= DRIVE.max_yaw_rate_rps
+    assert rp("planner_server")["GridBased"]["plugin"] == "nav2_smac_planner::SmacPlanner2D"
+    assert set(rp("behavior_server")["behavior_plugins"]) == {"spin", "wait"}
 
 
-def test_planner_radius_respects_weak_side():
-    table = table_from_cfg(CAR)
-    r = rp("planner_server")["GridBased"]["minimum_turning_radius"]
-    assert r >= 1.2 * table.min_turning_radius
+def test_speeds_fit_the_wheel_limit():
+    # driving at cruise speed must leave the wheels room to turn
+    assert DRIVE.cruise_speed_mps < DRIVE.max_wheel_speed_mps
+    pd = rp("pd_path_follower")
+    assert pd["max_yaw_rate_rps"] == DRIVE.max_yaw_rate_rps
+    assert pd["max_yaw_rate_rps"] <= DRIVE.spin_yaw_rate_rps
 
 
 def test_latency_margins():
-    v = CAR["speed"]["baseline_speed_mps"]
+    v = DRIVE.cruise_speed_mps
     dead = v * LATENCY_S
-    fp = rp("controller_server")["FollowPath"]
-    assert fp["lookahead_dist"] >= 2 * dead
     cm = rp("collision_monitor")
-    stop = ast.literal_eval(cm["PolygonStop"]["points"])
+    vs = cm["VelocityStop"]
+    assert vs["type"] == "velocity_polygon"
+    fwd = ast.literal_eval(vs["forward"]["points"])
     # bumper: reach past the nose by the distance the car covers before a
-    # STOP acts (one scan period + latency + braking at the sim's 2 m/s^2)
+    # stop acts (one scan period + latency + braking)
     stop_dist = v / SCAN_HZ + dead + v * v / (2 * DECEL_MPS2)
-    assert max(x for x, _ in stop) >= CAR["footprint"]["x_front"] + stop_dist
-    assert max(abs(y) for _, y in stop) <= CAR["footprint"]["half_width"] + 0.03  # not wider than needed
-    # approach scales v to d / T; the bridge stops below the threshold, so
-    # the car stops for a blocked path within threshold * T metres.
-    thr = rp("cmd_vel_to_control")["forward_threshold_mps"]
-    assert thr < v
-    assert thr * cm["FootprintApproach"]["time_before_collision"] >= dead + 0.15
-    assert rp("controller_server")["general_goal_checker"]["xy_goal_tolerance"] >= dead
+    assert max(x for x, _ in fwd) >= CAR["footprint"]["x_front"] + stop_dist
+    assert max(abs(y) for _, y in fwd) <= CAR["footprint"]["half_width"] + 0.03  # not wider than needed
+    # turning on the spot: only the footprint + a few cm, so a wall ahead does not block the turn
+    rot = ast.literal_eval(vs["rotation"]["points"])
+    assert max(x for x, _ in rot) <= CAR["footprint"]["x_front"] + 0.05
+    # every commanded (v, omega) falls into one of the sub-polygons
+    lo = min(vs[n]["linear_min"] for n in vs["velocity_polygons"])
+    hi = max(vs[n]["linear_max"] for n in vs["velocity_polygons"])
+    assert lo <= -0.05 and hi >= DRIVE.max_wheel_speed_mps
+    assert all(vs[n]["theta_max"] >= DRIVE.max_yaw_rate_rps for n in vs["velocity_polygons"])
+    assert cm["FootprintApproach"]["time_before_collision"] * v >= dead + 0.15
+    assert rp("pd_path_follower")["avoid_horizon_m"] >= dead + 0.5
 
 
 def test_every_scan_consumer_uses_the_upright_scan():
@@ -70,9 +78,10 @@ def test_every_scan_consumer_uses_the_upright_scan():
         assert NAV[cm][cm]["ros__parameters"]["obstacle_layer"]["scan"]["topic"] == "/scan_nav"
 
 
-def test_behavior_tree_has_no_spin_or_backup():
+def test_behavior_tree_spins_but_never_backs_up():
     tags = {e.tag for e in ET.parse(P.BT_XML).iter()}
-    assert not tags & {"Spin", "BackUp", "DriveOnHeading"}
+    assert "Spin" in tags                       # skid-steer: turning on the spot is a recovery
+    assert not tags & {"BackUp", "DriveOnHeading"}
     assert "ComputePathToPose" in tags and "FollowPath" in tags
 
 
@@ -85,6 +94,7 @@ def test_pd_follower_matches_rpp_and_goal_checker():
     pd = rp("pd_path_follower")
     assert pd["speed_mps"] == rp("controller_server")["FollowPath"]["desired_linear_vel"]
     assert pd["xy_goal_tolerance"] == rp("controller_server")["general_goal_checker"]["xy_goal_tolerance"]
+    assert pd["yaw_goal_tolerance"] == rp("controller_server")["general_goal_checker"]["yaw_goal_tolerance"]
     assert all(isinstance(pd[k], float) for k in ("kp", "kd", "ff", "speed_mps", "xy_goal_tolerance"))
 
 

@@ -2,17 +2,17 @@
 
 Test the NAV2 mode before any real run. The simulator replaces only the
 **car and the LiDAR**; everything from `/scan_filtered` to the
-`"<angle>,<drive_code>"` command is the same code and the same config files
+`"<left m/s>,<right m/s>"` wheel command is the same code and the same config files
 the car uses.
 
 ```
            simulator (car_nav_sim)                 same as the car (car_nav)
   ┌──────────────────────────────────┐   ┌───────────────────────────────────────────┐
   │ lite_sim (2D)  or  Gazebo        │   │ scan_self_mask → scan_upright → /scan_nav  │
-  │  • LiDAR upside down, frame laser├──►│ rf2o (odom) · AMCL or slam_toolbox (map)   │
-  │  • actuator model: latency,      │   │ Smac Hybrid-A* (DUBIN, forward only)       │
-  │    fixed speed, understeer       │◄──┤ PD  → collision_monitor → cmd_vel_to_control│
-  └──────────────────────────────────┘   └───────────── "/car/raspi5/control" ────────┘
+  │  • LiDAR upright, frame laser    ├──►│ rf2o (odom) · AMCL or slam_toolbox (map)   │
+  │  • skid-steer model: latency,    │   │ Smac 2D A* (turns on the spot)             │
+  │    wheel limits, yaw slip        │◄──┤ PD  → collision_monitor → cmd_vel_to_control│
+  └──────────────────────────────────┘   └────────────── "/car/wheels/cmd" ───────────┘
          ▲ truth pose → mission scorer (clearance, end error, localisation error)
 ```
 
@@ -39,7 +39,7 @@ Reports go to `run_logs/sim/report-<mission>-<time>.json`. Per goal: result,
 time, distance, **smallest clearance** between the car outline and any
 obstacle (0 = collision), **end position/heading error** after the car has
 coasted to a stop, **worst localisation error** (AMCL vs. truth), and the
-share of commands at a servo limit, plus a 0.5 s trace (true pose, AMCL
+share of commands at the wheel speed limit and turning on the spot, plus a 0.5 s trace (true pose, AMCL
 pose, command, collision-monitor state, clearance) that CI prints for any
 failed goal.
 
@@ -99,133 +99,106 @@ cylinders). The map AMCL uses is rasterised from it, so map frame = world frame.
 
 | File | Used by | Notes |
 |---|---|---|
-| `ros/car_nav/config/car.yaml` | car + sim | geometry, LiDAR pose, baseline speed, **`steering:`** (new) |
+| `ros/car_nav/config/car.yaml` | car + sim | geometry, LiDAR pose, **`drive:`** (diff drive) |
 | `ros/car_nav/config/nav2_params.yaml` | car + sim | the whole Nav2 stack |
-| `ros/car_nav/behavior_trees/navigate_forward_only.xml` | car + sim | no Spin/BackUp |
+| `ros/car_nav/behavior_trees/navigate_forward_only.xml` | car + sim | spin recovery, no BackUp |
 | `ros/car_nav/launch/nav.launch.py` | car + sim | the nav stack launch |
-| `ros/car_nav/car_nav/actuation.py` | car + sim | `cmd_vel` → `"<angle>,<drive_code>"` |
-| `ros/car_nav_sim/config/sim.yaml` | sim only | the **true** car: latency, speed, understeer… |
+| `ros/car_nav/car_nav/actuation.py` | car + sim | `cmd_vel` → `"<left m/s>,<right m/s>"` |
+| `ros/car_nav_sim/config/sim.yaml` | sim only | the **true** car: latency, speed scale, yaw efficiency… |
 
 Make `sim.yaml` worse than `car.yaml` to find the margin, e.g.
-`understeer_factor: 0.8`, `latency_s: 0.9`, `speed_mps: 0.6`.
+`yaw_efficiency: 0.6`, `latency_s: 0.5`, `speed_scale: 0.8` (or `SIM_STRESS=hard`).
 
 The compose file mounts these folders, so edits apply on the next run
 without rebuilding.
 
-## Car model
+## Car model (skid-steer)
 
-* `base_link` = floor point under the **front (fixed) axle**. The car steers
-  with the **rear** wheels, so the front axle never slips sideways: the car
-  moves like a point that drives along its heading and yaws about it
-  (`x' = v cosθ, y' = v sinθ, θ' = v·κ`), and the tail swings out in turns.
-* Commands are what Pi4/ESP32 accept: absolute servo angle 35..140
-  (62 = straight) and drive code 1 = FORWARD / 0 = STOP. NAV2 never sends 2.
-* Servo → curvature comes from `steering.curvature_table` in `car.yaml`.
-  Until it is measured, a placeholder assumes rear wheel angle = servo offset
-  (1:1), capped at 30°, wheelbase 0.28 m: right max ≈ 27° → radius ≈ 0.55 m,
-  left ≈ 0.49 m. The planner uses 0.75 m.
-* `steering.servo_up_turns: left` assumes angles above 62 turn the car left
-  (as the VISION `left` presets do). **Confirm on the floor.**
-* Speed is fixed (no speed command, no feedback): `sim.yaml truth.speed_mps`
-  vs. `car.yaml speed.baseline_speed_mps` (both 0.5, unmeasured).
-* Latency 0.65 s: at 0.5 m/s the car drives 0.33 m before a command acts.
-  This is why lookahead is 1.1 m and the goal tolerance is 0.5 m
-  (position only: the car cannot fix its heading without driving on).
-* Odometry (`odom_source:=adaptive`, default): between two long parallel
-  walls the LiDAR cannot see forward motion, so rf2o alone reports the car
-  standing still and AMCL fell up to 5 m behind on the school map.
-  `car_nav/adaptive_odom.py` keeps rf2o for rotation and sideways motion and
-  takes forward motion from rf2o only where the scan shows it (points facing
-  the driving direction: end walls, corners, pillars); in blind stretches it
-  uses a learned speed (Kalman filter, `speed_filter.py`) that rf2o and
-  AMCL's corrections keep updating, starting from car.yaml's
-  `baseline_speed_mps`. STOP commands (delayed by the command latency) mean
-  speed 0. A speed change in the middle of a blind corridor is only fixed at
-  the next observable place. Try it against a car that is slower than
-  car.yaml says: `SIM_STRESS=speed_drift scripts/sim/run_sim.sh campus-mission`
-  (0.42 m/s, +-15 % drift). `odom_source:=rf2o` is the old behaviour.
-* Steering controller (`controller:=pd`, default): a classical PD on the
-  planned path, like the VISION lane PID, in `car_nav/pd_follower.py`:
-  curvature = path curvature − kp·sideways offset − kd·sin(heading error).
-  The heading error is the rate of change of the offset along the path, so
-  kd is the D term that stops the rocking Pure Pursuit (a pure P: gain =
-  1/lookahead) showed after turns. Gains `pd_path_follower.kp/kd` in
-  nav2_params.yaml (0.7 / 1.2), tunable without a rebuild. Too much kd reacts
-  to AMCL heading noise and, with the 0.65 s delay, rocks again; too little
-  kp leaves the car off the path in turns when it understeers.
-  `controller:=rpp` brings back Nav2's Regulated Pure Pursuit.
-* Wall avoidance (reactive layer, `car_nav/wall_avoid.py`, inside the PD
-  follower), arc check like DWA: before each command the car's footprint
-  (rear swing included) is swept 1.3 m along the PD's arc on the latest
-  scan. Clear -> the PD drives, however close a wall is, so the inner corner
-  of a planned turn is not "avoided" (the earlier distance-based layer forced
-  a right turn there, sim 2026-11-14). Hits -> of 13 arcs from full right to
-  full left (steering table limits) it drives the one that goes furthest,
-  closest to the PD's among the clear ones, until the PD's arc is clear over
-  1.3 x the horizon ("wall avoid: PD arc ... hits a wall" / "back to the
-  path" in the log). Needs no pose. In tests it gets a car whose pose lags
-  0.8-1.2 m into a 1.2 m side corridor that it otherwise hits. Params
-  `pd_path_follower.avoid_*`; `avoid_enabled: false` switches it off.
-* Reading the path curvature further ahead (`ff_ahead_m` 0.65 instead of
-  0.3) was checked 2026-11-13 and NOT adopted: with a true pose and the
-  0.65 s delay the PD follows a 1 m-radius corner within ~2 cm at 0.3 m,
-  while 0.65 m cuts it by ~20 cm. A turn that starts late in the sim means
-  the pose estimate lags along the corridor.
-* Global costmap = static map only (2026-11-15): the planner no longer
-  marks scans into its map. With a pose that lags in blind corridors, scans
-  marked at the wrong place closed the 1.2 m corridor ("no valid path
-  found"). Live obstacles: local costmap, collision monitor, wall avoidance.
-* Pose gate (`car_nav/pose_gate.py`, `pose_gate:=true` default): AMCL no
-  longer publishes map -> odom itself. The gate takes AMCL's sideways and
-  heading corrections, but its correction along the heading only as far as
-  the scan can see forward motion (`/scan_observability` from
-  adaptive_odom). In a blind corridor AMCL's particles slide along it (log
-  2026-11-12: AMCL 4.2 m off, odometry alone 1.35 m); when the cloud is more
-  than 0.3 m away along the corridor the gate reseeds AMCL at the gated pose.
-  `pose_gate:=false` is the old behaviour. The sim stops for a stale pose
-  only above 1.5 s (`max_pose_age_s`, 1.0 on the car).
-* One speed means the collision monitor cannot slow down. Its "approach"
-  zone follows the current curvature and the bridge turns any speed it
-  scales below 0.3 m/s into STOP, so the car stops when the path ahead is
-  blocked within ~0.54 m. A narrow bumper zone reaching 0.64 m ahead of
-  the front axle (0.48 m past the nose = scan period + latency + braking)
-  is the backstop when that prediction is wrong, because the wheels follow
-  a new curvature only ~0.65 s later. A shorter 0.30 m bumper fired too
-  late and the car hit a shelf; a wider 0.75 m box froze the car before
-  turns next to pillars.
+This branch is for the **skid-steer (differential drive) car**: same
+0.37 x 0.27 m body as the old rear-steer car, LiDAR mounted the normal way
+up. The rear-steer version stays on `claude/project-thread-t304ze`.
 
-## Upside-down LiDAR: why `/scan_nav`
+* `base_link` = floor point at the **centre of the car**, midway between the
+  left and right wheels: the point a skid-steer car turns about. The car can
+  turn on the spot; `x' = v cosθ, y' = v sinθ, θ' = ω`.
+* Command: `"<left m/s>,<right m/s>"` on the ROS topic `/car/wheels/cmd`
+  (`car_nav/actuation.py`): `left = v − ω·b/2`, `right = v + ω·b/2`, b =
+  `drive.track_width_m`. A wheel over `drive.max_wheel_speed_mps` scales both
+  wheels down together, so the curvature is kept and only the speed drops.
+  Reverse is never sent (`drive.allow_reverse: false`). On the car an
+  adapter turns this into the ugv-controller's own command.
+* `drive.track_width_m` is **not measured yet**: 0.22 m is assumed
+  (`assumed_track_width_m`), the launch warns about it.
+* Truth in `sim.yaml`: latency 0.25 s, wheel accel/decel limits,
+  `speed_scale` (real/commanded forward speed), `left_gain`/`right_gain`
+  (one side weaker), **`yaw_efficiency` 0.8**: a skid-steer car turns slower
+  than `(right − left)/b` because the wheels slide sideways, and
+  `min_spin_wheel_mps` (too-slow wheels do not get it to turn on the spot).
+  `SIM_STRESS=hard` = latency 0.5 s, speed 0.85x, yaw efficiency 0.6, right
+  side 8 % weaker, stiction 0.12 m/s.
+* The lite backend also publishes `/odom_wheel`: what wheel encoders would
+  report (no slip). It is only used with `adaptive_odom wheel_odom_topic`.
+* Odometry (`odom_source:=adaptive`, default): rf2o for rotation and
+  sideways motion (it measures the real, slipping turn), forward motion from
+  rf2o where the scan shows it and otherwise from the commanded forward
+  speed `(left + right)/2` (delayed, ramped) times a learned ratio
+  real/commanded (Kalman filter, starts at 1.0). With encoders on the car,
+  set `adaptive_odom.wheel_odom_topic` and the encoder speed replaces the
+  command; the ratio then absorbs slip.
+* Planner: **Smac 2D** (grid A*, no turning radius); `cost_travel_multiplier`
+  keeps paths in the middle of corridors.
+* Controller (`controller:=pd`, default), `car_nav/pd_follower.py`: the same
+  PD on the path (curvature = ff·path curvature − kp·offset − kd·sin(heading
+  error), kp 1.5 / kd 2.0, `ff_ahead_m` 0.1 = distance driven in the
+  latency), then `diff_drive_command()`: speed 0.4 m/s, lower in tight
+  curves (yaw ≤ 1.5 rad/s) and over the last 0.6 m; above 52° heading error
+  it **turns on the spot** until below 14°. At the goal it turns on the spot
+  to the goal heading (`yaw_goal_tolerance` 0.25 rad; xy tolerance 0.2 m).
+  `controller:=rpp` = Regulated Pure Pursuit with rotate-to-heading.
+* Wall avoidance (`car_nav/wall_avoid.py`) unchanged in idea: the footprint
+  is swept along the PD's arc on the latest scan, candidate arcs span
+  ±`avoid_max_curvature` (2.5 1/m), horizon 0.9 m. Not used while turning
+  on the spot.
+* Collision monitor: `VelocityStop` (velocity polygon) is a bumper reaching
+  0.22 m past the nose when driving forward, and only the footprint + 3 cm
+  when turning on the spot (a box ahead would block the turn away from a
+  wall). `FootprintApproach` now really slows the car (variable speed).
+* Behaviour tree recovery: clear costmaps / spin 90° / wait (round robin);
+  no BackUp.
+* Pose gate, static-map-only global costmap, AMCL settings: unchanged from
+  the rear-steer branch.
 
-rf2o laser odometry only uses the **yaw** of the laser → base transform, so
-with the A1 upside down (roll = π) it would see every turn mirrored.
-`scan_upright` re-publishes the masked scan in a virtual frame
-`laser_upright` (same position and yaw, no roll): ranges reversed, angles
-mirrored. Every Nav2 consumer reads `/scan_nav`. The raw `/scan` and the
-`laser` frame stay exactly as on the car.
+## LiDAR mounted upright: `/scan_nav`
+
+The A1 is now mounted the normal way up (`laser.roll: 0`). `scan_upright`
+stays in the chain as a pass-through: it re-publishes `/scan_filtered` as
+`/scan_nav` (frame `laser_upright`, identical to `laser` now) and
+`/scan_odom` (invalid beams set to 0 for rf2o). If the LiDAR is ever
+mounted upside down again, `roll: pi` in car.yaml is all it takes.
 
 ## Safety: the simulator cannot drive the car
 
-* Nothing in `car_nav` or `car_nav_sim` imports an MQTT client.
+* Nothing in `car_nav` or `car_nav_sim` imports an MQTT client or opens a
+  serial port.
 * The sim container runs on its own Docker network (no host network), ROS
-  domain 77 and DDS discovery limited to localhost, so its
-  `/car/raspi5/control` topic is not visible to the car's `ros-nav` container
-  even on the same Wi-Fi.
+  domain 77 (or `SIM_ROS_DOMAIN_ID`) and DDS discovery limited to
+  localhost, so its `/car/wheels/cmd` topic is not visible to the car.
 
-## Measuring the curvature table (replaces the placeholder)
+## Measuring the car (replaces the assumed values)
 
-On an open floor, wheels on the ground, E-stop in hand, VISION dashboard
-joystick or script with a fixed servo angle:
-
-1. For each servo angle 35, 45, 52, 72, 85, 100, 120, 140: drive FORWARD
-   one full circle.
-2. Mark the floor under the **front-axle centre** at the points farthest
-   apart; that distance is the diameter D. Curvature = 2/D (+ for a left
-   turn, − for right).
-3. Put the pairs into `car.yaml`:
-   `curvature_table: [[35, -1.7], [45, -1.1], …, [62, 0.0], …, [140, 2.0]]`
-4. Re-run `scripts/sim/run_sim.sh all`; the planner radius test
-   (`tests/test_car_nav_nav2_params.py`) fails if
-   `minimum_turning_radius` is now below 1.2 × the weak side's radius.
+1. **Track width**: tape, centre of the left wheel (or track) to centre of
+   the right one -> `drive.track_width_m`.
+2. **Effective track / yaw efficiency**: on the real floor, command a turn
+   on the spot, e.g. `left = -0.2, right = +0.2` m/s, for 10 s and measure
+   the angle turned (LiDAR: `ros2 topic echo /odom_rf2o`, or tape on the
+   floor). Ideal rate = 0.4 / b rad/s; real / ideal = yaw efficiency. Put it
+   in `sim.yaml truth.yaw_efficiency` and re-run the sim (Nav2 does not need
+   it: rf2o measures the real turn).
+3. **Latency**: from command to wheels moving (video at 60 fps, or the
+   controller's feedback) -> `speed.command_latency_s`.
+4. **Speed scale**: drive 3 m straight at 0.3 m/s; real / commanded ->
+   `sim.yaml truth.speed_scale` (adaptive_odom learns it online anyway).
+5. Re-run `scripts/sim/run_sim.sh all` and `SIM_STRESS=hard ...`.
 
 ## School map (campus tile map)
 

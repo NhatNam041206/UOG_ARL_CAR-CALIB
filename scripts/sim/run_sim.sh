@@ -110,7 +110,7 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 for i, g in enumerate(r["goals"], 1):
     print(f"  goal {i}: {g['result']:9s} t={g['time_s']:6.1f}s clear={g['min_clearance_m']:.2f}m "
-          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['steer_saturated_share']}"
+          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['wheel_saturated_share']}"
           + (f"  nav2: {g['nav2_error']}" if g.get("nav2_error") else ""))
 if not any(g.get("trace") for g in r["goals"]):
     print("  (no trace in this report: the image is older than the code -> scripts/sim/run_sim.sh build)")

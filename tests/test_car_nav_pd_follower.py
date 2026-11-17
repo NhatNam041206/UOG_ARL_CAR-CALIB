@@ -40,14 +40,14 @@ def test_tracker_does_not_jump_to_a_later_pass():
     assert tr.e == pytest.approx(0.25) and tr.s < 1.0
 
 
-def _drive(path, x, y, th, latency=0.65, v=0.5, steps=600):
+def _drive(path, x, y, th, latency=0.25, v=0.4, steps=600):
     y0 = y
     t = PathTracker(path)
     queue = [0.0] * int(round(latency / 0.1))
     overshoot = 0.0   # how far it swings past the path to the other side
     for _ in range(steps):
         tr = t.track(x, y, th, G)
-        queue.append(max(-1 / 0.55, min(1 / 0.49, pd_curvature(tr, G))))
+        queue.append(max(-2.5, min(2.5, pd_curvature(tr, G))))
         k = queue.pop(0)
         for _ in range(5):
             x += v * math.cos(th) * 0.02
@@ -65,7 +65,7 @@ def test_returns_to_path_with_the_cars_delay():
     assert abs(tr.e) < 0.02 and overshoot < 0.08
 
 
-def _corner_error(ff_ahead, latency=0.65, v=0.5):
+def _corner_error(ff_ahead, latency=0.25, v=0.4):
     # straight 2 m, 90 deg left arc of radius 1.0 m, straight 2 m
     path = [(x * 0.05, 0.0) for x in range(41)]
     path += [(2.0 + math.sin(a), 1.0 - math.cos(a)) for a in [i * math.pi / 2 / 30 for i in range(1, 31)]]
@@ -77,7 +77,7 @@ def _corner_error(ff_ahead, latency=0.65, v=0.5):
     worst = 0.0
     for _ in range(400):
         tr = t.track(x, y, th, g)
-        queue.append(max(-1.33, min(1.33, pd_curvature(tr, g))))
+        queue.append(max(-2.5, min(2.5, pd_curvature(tr, g))))
         k = queue.pop(0)
         for _ in range(5):
             x += v * math.cos(th) * 0.02
@@ -90,12 +90,11 @@ def _corner_error(ff_ahead, latency=0.65, v=0.5):
 
 
 def test_corner_with_the_cars_delay_and_a_true_pose():
-    # 2026-11-13 check: with a TRUE pose the 0.65 s delay does not make the
-    # PD turn late (0.3 m: ~2 cm off). Reading the curvature further ahead
-    # makes it cut the corner instead (0.65 m: ~20 cm inside). So a late turn
-    # in the sim comes from the pose estimate lagging, not from the delay.
-    assert _corner_error(NAV_FF_AHEAD) < 0.05
-    assert _corner_error(0.65) > 3 * _corner_error(0.3)
+    # Skid-steer car, 0.25 s delay at 0.4 m/s: reading the path curvature
+    # about the delay distance ahead (0.1 m) follows a 1 m-radius corner
+    # within ~1 cm; reading it further ahead cuts the corner (0.4 m: ~15 cm).
+    assert _corner_error(NAV_FF_AHEAD) < 0.03
+    assert _corner_error(0.4) > 3 * _corner_error(0.1)
 
 
 def test_extrapolate_pose_straight_arc_cap_and_standstill():
@@ -117,3 +116,27 @@ def test_extrapolate_pose_straight_arc_cap_and_standstill():
     for _ in range(3000):
         xi += 0.5 * math.cos(ti) * 1e-4; yi += 0.5 * math.sin(ti) * 1e-4; ti += -0.8 * 1e-4
     assert extrapolate_pose(0.0, 0.0, 0.2, 0.5, -0.8, 0.3) == pytest.approx((xi, yi, ti), abs=1e-4)
+
+
+def test_diff_drive_turns_on_the_spot_then_follows():
+    from car_nav.pd_follower import DiffDriveParams, Tracking, diff_drive_command
+    p = DiffDriveParams()
+    tr = lambda psi: Tracking(index=0, e=0.0, psi_e=psi, kappa_path=0.0, s=0.0, remaining=5.0)  # noqa: E731
+    v, w, rot = diff_drive_command(tr(math.radians(120)), 0.0, p, False, 5.0)   # path behind-left
+    assert rot and v == 0.0 and w < 0                                          # car points left: turn right
+    v, w, rot = diff_drive_command(tr(math.radians(30)), 0.0, p, True, 5.0)     # hysteresis: keep turning
+    assert rot and v == 0.0
+    v, w, rot = diff_drive_command(tr(math.radians(5)), 0.5, p, True, 5.0)
+    assert not rot and v == p.speed_mps and w == pytest.approx(p.speed_mps * 0.5)
+
+
+def test_diff_drive_slows_in_tight_curves_and_near_the_goal():
+    from car_nav.pd_follower import DiffDriveParams, Tracking, diff_drive_command
+    p = DiffDriveParams(speed_mps=0.4, max_yaw_rate_rps=1.0, goal_slow_m=0.6, min_speed_mps=0.08)
+    tr = Tracking(index=0, e=0.0, psi_e=0.0, kappa_path=0.0, s=0.0, remaining=5.0)
+    v, w, _ = diff_drive_command(tr, 5.0, p, False, 5.0)       # 0.2 m radius
+    assert v == pytest.approx(0.2) and w == pytest.approx(1.0)
+    v, _, _ = diff_drive_command(tr, 0.0, p, False, 0.3)
+    assert v == pytest.approx(0.2)
+    v, _, _ = diff_drive_command(tr, 0.0, p, False, 0.0)
+    assert v == pytest.approx(0.08)

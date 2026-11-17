@@ -1,8 +1,8 @@
-"""Gazebo backend: "<angle>,<drive_code>" -> actuator model -> body twist.
+"""Gazebo backend: "<left m/s>,<right m/s>" -> actuator model -> body twist.
 
 Gazebo's VelocityControl moves the car at its origin (= base_link, the
-front-axle centre), so the (v, omega) from the actuator model are sent
-as-is on /model/car/cmd_vel (bridged to Gazebo).
+centre of the skid-steer car), so the (v, omega) from the actuator model
+are sent as-is on /model/car/cmd_vel (bridged to Gazebo).
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from car_nav import config_loader
-from car_nav.actuation import table_from_cfg
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
 
 from . import sim_config
 from .actuator_model import ActuatorModel, TruthParams
@@ -23,9 +23,9 @@ class GzActuator(Node):
         super().__init__("gz_actuator")
         car = config_loader.load()
         sim = sim_config.load_sim()
-        self.model = ActuatorModel(table_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
+        self.model = ActuatorModel(drive_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
         self.pub = self.create_publisher(Twist, "/model/car/cmd_vel", 10)
-        self.create_subscription(String, "/car/raspi5/control", self._on_control, 50)
+        self.create_subscription(String, WHEELS_TOPIC, self._on_control, 50)
         self.dt = 0.02
         self.create_timer(self.dt, self._tick)  # sim time (use_sim_time:=true)
         self.get_logger().info(f"gazebo actuator: truth {self.model.params}")

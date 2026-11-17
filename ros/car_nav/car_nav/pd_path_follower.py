@@ -5,9 +5,12 @@ planned path to the action `pd_follow_path` (nav2_msgs/action/FollowPath)
 instead of controller_server. Every 1/rate_hz this node looks up the car pose
 (map -> base_link, from AMCL), projects it onto the path and sends
 
-    cmd_vel_nav:  linear.x = speed_mps,  angular.z = speed_mps * kappa_cmd
+    cmd_vel_nav:  (v, omega) from pd_follower.diff_drive_command()
 
-with kappa_cmd from the PD law in pd_follower.py. The collision monitor and
+with kappa_cmd from the PD law in pd_follower.py: v = speed_mps, lower in
+tight curves and near the goal, omega = v * kappa_cmd; far off heading it
+turns on the spot first. At the goal it turns on the spot to the goal
+heading when yaw_goal_tolerance < pi. The collision monitor and
 cmd_vel_to_control downstream are unchanged. Gains are ROS parameters
 (nav2_params.yaml, section pd_path_follower) so they can be tuned without a
 rebuild.
@@ -46,8 +49,8 @@ from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
-from .pd_follower import PathTracker, PDGains, pd_curvature
-from .actuation import table_from_cfg
+from .pd_follower import DiffDriveParams, PathTracker, PDGains, diff_drive_command, pd_curvature, rotate_command, wrap
+from .actuation import drive_from_cfg
 from .wall_avoid import ArcAvoider, AvoidParams, points_in_base
 from .timing import TimingStats
 
@@ -64,7 +67,16 @@ class PDPathFollower(Node):
         p("kd", 1.2)
         p("ff", 1.0)
         p("ff_ahead_m", 0.3)
-        p("speed_mps", 0.5)
+        p("speed_mps", 0.4)
+        p("min_speed_mps", 0.08)
+        p("max_yaw_rate_rps", 1.5)
+        p("rotate_enter_deg", 52.0)
+        p("rotate_exit_deg", 14.0)
+        p("rotate_gain", 2.0)
+        p("min_rotate_rps", 0.5)
+        p("goal_slow_m", 0.6)
+        p("yaw_goal_tolerance", 0.25)   # rad; >= pi = position-only goals
+        p("avoid_max_curvature", 2.5)
         p("rate_hz", 10.0)
         p("xy_goal_tolerance", 0.5)
         p("progress_radius_m", 0.3)
@@ -80,12 +92,13 @@ class PDPathFollower(Node):
         p("avoid_max_scan_age_s", 0.5)
         cfg = config_loader.load()
         fp = config_loader.footprint(cfg)
-        table = table_from_cfg(cfg)
+        drive = drive_from_cfg(cfg)
+        kmax = self._f("avoid_max_curvature")
         self._avoid = AvoidParams(
             x_front=fp.x_front, x_rear=fp.x_rear, half_width=fp.half_width,
             margin_m=self._f("avoid_margin_m"), horizon_m=self._f("avoid_horizon_m"),
             release_factor=self._f("avoid_release_factor"),
-            max_left=abs(table.max_left_curvature), max_right=abs(table.max_right_curvature),
+            max_left=kmax, max_right=kmax,
             n_candidates=int(self.get_parameter("avoid_candidates").value))
         self._avoider = ArcAvoider(self._avoid)
         self._points: list = []
@@ -111,7 +124,8 @@ class PDPathFollower(Node):
         )
         self.get_logger().info(
             f"PD path follower: kp {self._f('kp')} 1/m^2, kd {self._f('kd')} 1/m, ff {self._f('ff')}, "
-            f"{self._f('speed_mps')} m/s")
+            f"{self._f('speed_mps')} m/s (yaw <= {self._f('max_yaw_rate_rps')} rad/s, track "
+            f"{drive.track_width_m:.3f} m{'' if drive.measured else ' PLACEHOLDER'})")
 
     def _f(self, name: str) -> float:
         return float(self.get_parameter(name).value)
@@ -184,8 +198,19 @@ class PDPathFollower(Node):
             goal_handle.abort()
             return self._result(1, "empty path")
         tracker = PathTracker([(ps.pose.position.x, ps.pose.position.y) for ps in path.poses])
+        q = path.poses[-1].pose.orientation
+        goal_yaw = _yaw(q) if (q.x or q.y or q.z or q.w) else None
+        dd = DiffDriveParams(
+            speed_mps=self._f("speed_mps"), min_speed_mps=self._f("min_speed_mps"),
+            max_yaw_rate_rps=self._f("max_yaw_rate_rps"),
+            rotate_enter_rad=math.radians(self._f("rotate_enter_deg")),
+            rotate_exit_rad=math.radians(self._f("rotate_exit_deg")),
+            rotate_gain=self._f("rotate_gain"), min_rotate_rps=self._f("min_rotate_rps"),
+            goal_slow_m=self._f("goal_slow_m"))
+        yaw_tol = self._f("yaw_goal_tolerance")
+        rotating = False
+        at_goal = False
         gains = PDGains(kp=self._f("kp"), kd=self._f("kd"), ff=self._f("ff"), ff_ahead_m=self._f("ff_ahead_m"))
-        v = self._f("speed_mps")
         tol = self._f("xy_goal_tolerance")
         period = 1.0 / self._f("rate_hz")
         gx, gy = tracker.pts[-1]
@@ -210,10 +235,19 @@ class PDPathFollower(Node):
             x, y, th = pose
             tr = tracker.track(x, y, th, gains)
             dist_goal = math.hypot(gx - x, gy - y)
-            if dist_goal < tol or tr.remaining < 0.05:
-                self._stop()
-                goal_handle.succeed()
-                return self._result()
+            if at_goal or dist_goal < tol or tr.remaining < 0.05:
+                at_goal = True
+                err = wrap(th - goal_yaw) if goal_yaw is not None else 0.0
+                if yaw_tol >= math.pi or abs(err) <= yaw_tol:
+                    self._stop()
+                    goal_handle.succeed()
+                    return self._result()
+                # skid-steer: turn on the spot to the goal heading
+                cmd = Twist()
+                cmd.angular.z = rotate_command(err, dd)
+                self._pub.publish(cmd)
+                time.sleep(period)
+                continue
             now = self.get_clock().now()
             if anchor is None or math.hypot(x - anchor[0], y - anchor[1]) > self._f("progress_radius_m"):
                 anchor, anchor_t = (x, y), now
@@ -224,11 +258,19 @@ class PDPathFollower(Node):
                 goal_handle.abort()
                 return self._result(105, "failed to make progress")
             t_arc = time.perf_counter()
-            kappa = self._avoid_kappa(pd_curvature(tr, gains))
+            kappa = pd_curvature(tr, gains)
+            if not rotating:
+                kappa = self._avoid_kappa(kappa)
             self._timing.duration("pd.arc_check", time.perf_counter() - t_arc)
+            was_rotating = rotating
+            v, omega, rotating = diff_drive_command(tr, kappa, dd, rotating, dist_goal)
+            if rotating != was_rotating:
+                self.get_logger().info(
+                    f"heading error {math.degrees(tr.psi_e):+.0f} deg: "
+                    f"{'turning on the spot' if rotating else 'following the path again'}")
             cmd = Twist()
             cmd.linear.x = v
-            cmd.angular.z = v * kappa
+            cmd.angular.z = omega
             self._pub.publish(cmd)
             now_c = self.get_clock().now()
             self._timing.duration("pd.tick", time.perf_counter() - t_tick)

@@ -1,4 +1,4 @@
-"""PD path follower for the rear-steer car (pure math, no ROS imports).
+"""PD path follower for the skid-steer car (pure math, no ROS imports).
 
 Classical PD on the path, the same idea as the VISION lane PID:
 
@@ -11,17 +11,26 @@ Classical PD on the path, the same idea as the VISION lane PID:
   kappa_path  path curvature just ahead (feed-forward, so a planned curve is
           followed without first building an error).
   kappa_cmd   commanded path curvature (1/m, + = turn left); cmd_vel carries it
-          as omega = v * kappa_cmd and actuation.py turns it into a servo angle.
+          as omega = v * kappa_cmd and actuation.py turns it into wheel speeds.
 
 Units: kp in 1/m^2, kd in 1/m. Measured along the path (not time), the error
 obeys e'' + kd e' + kp e = 0, so the gains do not depend on speed: kp sets how
 quickly the car returns to the path (it settles in roughly 2*pi/sqrt(kp) m),
 kd = 2*sqrt(kp) is "critically damped" (no overshoot without delay). The
-0.65 s command delay is a dead distance of v*0.65 m (0.33 m at 0.5 m/s); more
-kd is what keeps the car from rocking because of it.
+command delay (0.25 s assumed) is a dead distance of v*0.25 m (0.1 m at 0.4
+m/s); more kd is what keeps the car from rocking because of it.
 
-base_link is the floor point under the FRONT (fixed) axle, so these are the
-exact kinematics for this car (x' = v cos th, y' = v sin th, th' = v kappa).
+base_link is the centre of the skid-steer car (midway between the left and
+right wheels), so these are its exact kinematics (x' = v cos th,
+y' = v sin th, th' = omega = v kappa). Unlike the old rear-steer car it can
+also slow down and turn on the spot; diff_drive_command() turns the PD
+curvature into (v, omega) with those extras:
+
+* the speed drops in tight curves so omega stays within max_yaw_rate,
+* far off heading (|psi_e| > rotate_enter_rad, e.g. a path that starts
+  behind the car) it stops and turns on the spot until |psi_e| <
+  rotate_exit_rad, then follows the path,
+* it slows down over the last goal_slow_m of the path.
 """
 from __future__ import annotations
 
@@ -142,7 +151,7 @@ def extrapolate_pose(x: float, y: float, th: float, v: float, omega: float, age:
     i.e. 0.1-0.2 m at 0.5 m/s. v and omega are the odometry's own latest
     velocities (adaptive_odom: learned speed x delayed drive state, so 0
     while it stands). Only forward motion, capped at max_dist metres; a
-    negative age or speed changes nothing. base_link (front axle) moves on
+    negative age or speed changes nothing. base_link (car centre) moves on
     the arc x' = v cos th, y' = v sin th, th' = omega.
     """
     if age <= 0.0 or v <= 0.0 or max_dist <= 0.0:
@@ -156,3 +165,41 @@ def extrapolate_pose(x: float, y: float, th: float, v: float, omega: float, age:
     return (x + (math.sin(th + dth) - math.sin(th)) / k,
             y - (math.cos(th + dth) - math.cos(th)) / k,
             wrap(th + dth))
+
+
+@dataclass(frozen=True)
+class DiffDriveParams:
+    speed_mps: float = 0.4          # cruise speed
+    min_speed_mps: float = 0.08     # slowest forward speed while following
+    max_yaw_rate_rps: float = 1.5
+    rotate_enter_rad: float = 0.9   # turn on the spot above this heading error (~52 deg)
+    rotate_exit_rad: float = 0.25   # ... until below this (~14 deg)
+    rotate_gain: float = 2.0        # omega = gain * heading error while turning on the spot
+    min_rotate_rps: float = 0.5     # slowest turn on the spot (skid-steer wheels stick below this)
+    goal_slow_m: float = 0.6        # slow down linearly over this last stretch
+
+
+def rotate_command(err: float, p: DiffDriveParams) -> float:
+    """Turn rate on the spot that reduces heading error `err` (rad, + = car points left of target)."""
+    rate = min(max(p.rotate_gain * abs(err), p.min_rotate_rps), p.max_yaw_rate_rps)
+    return -math.copysign(rate, err)
+
+
+def diff_drive_command(tr: Tracking, kappa: float, p: DiffDriveParams, rotating: bool,
+                       dist_goal: float) -> tuple[float, float, bool]:
+    """(v, omega, rotating) for PD curvature `kappa`; `rotating` is the turn-on-the-spot state."""
+    err = tr.psi_e
+    if rotating and abs(err) < p.rotate_exit_rad:
+        rotating = False
+    elif not rotating and abs(err) > p.rotate_enter_rad:
+        rotating = True
+    if rotating:
+        return 0.0, rotate_command(err, p), True
+    v = p.speed_mps
+    if p.goal_slow_m > 0.0:
+        v = min(v, p.speed_mps * max(dist_goal, 0.0) / p.goal_slow_m)
+    if abs(kappa) * v > p.max_yaw_rate_rps:
+        v = p.max_yaw_rate_rps / abs(kappa)
+    v = max(v, p.min_speed_mps)
+    omega = min(max(v * kappa, -p.max_yaw_rate_rps), p.max_yaw_rate_rps)
+    return v, omega, False

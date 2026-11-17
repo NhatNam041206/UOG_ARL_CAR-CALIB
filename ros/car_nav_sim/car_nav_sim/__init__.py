@@ -1,1 +1,1 @@
-"""Simulator for the car_nav NAV2 mode (rear-steer car)."""
+"""Simulator for the car_nav NAV2 mode (skid-steer car)."""

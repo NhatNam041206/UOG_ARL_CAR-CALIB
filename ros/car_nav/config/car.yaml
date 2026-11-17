@@ -1,26 +1,26 @@
-# Car geometry for NAV2 mode (ros-nav container).
+# Car geometry for NAV2 mode (ros-nav container), SKID-STEER car.
 #
-# base_link = the floor point directly under the centre of the FRONT
-# (fixed, non-steered) axle. The car steers with its REAR wheels.
+# base_link = the floor point at the CENTRE of the car, midway between the
+# left and right wheels (and between the front and rear axles): the point a
+# skid-steer (differential drive) car turns about. It can turn on the spot.
 # Axes (REP-103): x forward, y left, z up. Metres, radians unless *_deg.
 #
 # A value of null means "not measured yet". The launch file warns loudly
-# and uses 0 for it. Measure it with a tape and replace null; never guess.
+# and uses 0 (or the assumed_* value) for it. Measure it and replace null.
 
 footprint:
-  # Conservative until the front-axle position inside the 0.37 m body is
-  # measured (car_nav DECISIONS D-144): covers every possible axle position.
-  x_front: 0.16
-  x_rear: -0.37
+  # Same 0.37 x 0.27 m body as the rear-steer car, centred on base_link.
+  x_front: 0.185
+  x_rear: -0.185
   half_width: 0.135
 
 laser:
-  # RPLIDAR A1, mounted upside down at 0.42 m. The upside-down mount is
-  # handled ONLY by roll = pi here; the driver's `inverted` stays false.
-  x: null          # front axle centre -> LiDAR centre, along x (m)
+  # RPLIDAR A1, mounted the normal way up (motor down, scan plane level):
+  # roll = pitch = 0, the driver's `inverted` stays false.
+  x: null          # car centre (base_link) -> LiDAR centre, along x (m)
   y: 0.0
   z: 0.42
-  roll: 3.141592653589793
+  roll: 0.0
   pitch: 0.0
   yaw: null        # direction of the A1's 0 deg mark once mounted (rad)
   max_range_m: 12.0
@@ -43,31 +43,23 @@ camera:
   yaw: 0.0
 
 speed:
-  # There is no speed feedback and no speed command (drive_code is only
-  # STOP/FORWARD). Until a wall-approach run measures it, use a HIGH
-  # conservative value: every stop-zone size grows with it.
-  baseline_speed_mps: 0.5
+  # Commanded speed -> real speed. adaptive_odom learns the ratio online
+  # (rf2o where the scan sees forward motion, AMCL corrections elsewhere).
+  command_latency_s: null    # wheel command sent -> wheels react (s); 0.25 assumed
   measured: false
-  stopping_distance_m: null
-  command_latency_s: null
 
-steering:
-  # Rear-wheel steering, front axle fixed: the turn centre lies on the
-  # front-axle line. Used by the cmd_vel -> "<angle>,<drive_code>" mapping
-  # (car_nav/actuation.py) on the car and in the simulator.
-  wheelbase_m: 0.28        # front axle -> rear axle (nam, 2026-11-10)
-  servo_center: 62         # absolute servo angle that drives straight
-  servo_min: 35            # physical servo limits (absolute angle)
-  servo_max: 140
-  # Which way the CAR turns when the servo angle goes ABOVE centre. The
-  # VISION `left` presets send angles above centre, so "left". Confirm on
-  # the floor (rear wheels point right when the car turns left).
-  servo_up_turns: left
-  # Measured table [[absolute servo angle, path curvature 1/m, + = left], ...]
-  # from driving full circles at fixed servo angles (curvature = 1/radius of
-  # the front-axle centre's circle). null = not measured yet: a placeholder
-  # is built from the wheelbase, with rear wheel angle = servo offset x
-  # assumed_linkage_ratio, capped at assumed_max_wheel_deg.
-  curvature_table: null
-  assumed_linkage_ratio: 1.0
-  assumed_max_wheel_deg: 30.0
+drive:
+  # Skid-steer / differential drive. Wheel command "<left m/s>,<right m/s>"
+  # on /car/wheels/cmd (car_nav/actuation.py), turned into the car's own
+  # command format by the ugv-controller adapter.
+  type: diff_drive
+  track_width_m: null          # left wheel centre -> right wheel centre (m)
+  assumed_track_width_m: 0.22  # used while track_width_m is null
+  wheel_radius_m: null         # only for the adapter (m/s <-> rad/s or rpm)
+  max_wheel_speed_mps: 0.6     # never command a wheel faster than this
+  cruise_speed_mps: 0.4        # Nav2 driving speed (pd_path_follower.speed_mps)
+  max_yaw_rate_rps: 1.5        # fastest turn Nav2 asks for
+  min_wheel_speed_mps: 0.0     # motor dead band: both wheels below -> 0,0
+  # NAV2 drives forward and turns on the spot; reversing stays off until the
+  # rear is checked by a sensor (the LiDAR sees it, but nothing is tuned for it).
+  allow_reverse: false

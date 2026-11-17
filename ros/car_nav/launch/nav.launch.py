@@ -8,6 +8,7 @@ Expects base_link -> laser TF and /scan_filtered (sensors.launch.py on the
 car, sim.launch.py in the simulator). Starts:
 
   scan_upright      /scan_filtered -> /scan_nav (frame laser_upright) + its static TF
+                    (the LiDAR is mounted upright now: a pass-through, plus /scan_odom)
   rf2o              laser odometry, odom -> base_link   (odom_source:=rf2o)
   adaptive_odom     rf2o + learned forward speed, odom -> base_link (odom_source:=adaptive, default)
   map_server + AMCL                                     (slam:=false)
@@ -15,16 +16,16 @@ car, sim.launch.py in the simulator). Starts:
                     corrections in blind corridors (pose_gate:=true, default);
                     pose_gate:=false lets AMCL publish map -> odom itself
   slam_toolbox      map -> odom + /map                  (slam:=true)
-  planner (Smac Hybrid-A*, DUBIN forward only), controller (RPP),
-  behavior server (wait only), bt_navigator (no spin/backup),
+  planner (Smac 2D A*, the skid-steer car turns on the spot), controller (RPP),
+  behavior server (wait + spin), bt_navigator (spin recovery, no backup),
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
   pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
                      pd_follow_path -> cmd_vel_nav, plus LiDAR wall avoidance.
                      controller:=rpp uses Pure Pursuit.
-  cmd_vel_to_control /cmd_vel -> "<angle>,<drive_code>" on /car/raspi5/control (ROS only)
+  cmd_vel_to_control /cmd_vel -> "<left m/s>,<right m/s>" on /car/wheels/cmd (ROS only)
 
-Nothing here talks MQTT: on the car, the WO-02 forwarder copies
-/car/raspi5/control to MQTT only while the drive mode is NAV2.
+Nothing here talks to the motors: on the car, the ugv-controller adapter
+turns /car/wheels/cmd into the controller's own command.
 """
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from nav2_common.launch import RewrittenYaml
 
 from car_nav import config_loader
-from car_nav.actuation import table_from_cfg
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
 
 NAV_NODES = ["planner_server", "controller_server", "behavior_server", "bt_navigator", "collision_monitor"]
 
@@ -49,10 +50,11 @@ NAV_NODES = ["planner_server", "controller_server", "behavior_server", "bt_navig
 def _upright_tf(context, *args, **kwargs):
     cfg = config_loader.load()
     laser = config_loader.laser_pose(cfg)
-    table = table_from_cfg(cfg)
+    drive = drive_from_cfg(cfg)
     msgs = [LogInfo(msg=(
-        f"[car_nav] steering: wheelbase {table.cfg.wheelbase_m} m, min turning radius "
-        f"{table.min_turning_radius:.2f} m ({'measured' if table.measured else 'PLACEHOLDER table, not measured'})"
+        f"[car_nav] diff drive: track {drive.track_width_m:.3f} m "
+        f"({'measured' if drive.measured else 'PLACEHOLDER, not measured'}), cruise {drive.cruise_speed_mps} m/s, "
+        f"wheel limit {drive.max_wheel_speed_mps} m/s"
     ))]
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
     msgs.append(Node(
@@ -188,5 +190,5 @@ def generate_launch_description() -> LaunchDescription:
         slam_launch,
         navigation,
         Node(package="car_nav", executable="cmd_vel_to_control", name="cmd_vel_to_control", output="screen",
-             parameters=[params], remappings=[("control", "/car/raspi5/control")]),
+             parameters=[params], remappings=[("control", WHEELS_TOPIC)]),
     ])

@@ -1,22 +1,20 @@
 # Nav2 for the NAV2 mode, shared by the simulator and the real car.
 #
-# Car facts behind these numbers (see car.yaml; tests/test_car_nav_nav2_params.py
-# checks they stay consistent):
-# * base_link = front (fixed) axle centre, the car steers with its REAR
-#   wheels. The front axle cannot slip sideways, so base_link moves like a
-#   differential-drive point that cannot turn in place: AMCL's differential
-#   motion model and pure pursuit at base_link are both exact.
-# * Forward only, ONE speed: drive_code is STOP/FORWARD, no speed value.
-#   Speed regulation in RPP is therefore off; desired_linear_vel = the
-#   baseline speed (0.5 m/s, unmeasured).
-# * Command latency ~0.65 s: the car drives ~0.33 m before a new command
-#   acts. Lookahead 0.9 m keeps tracking stable with that delay (pure-python
-#   check in tests: <0.12 m cross-track on 0.75 m radius turns); the
-#   collision monitor stops when the path ahead is blocked within ~0.54 m.
-# * Weak side = right (~27 deg servo): min turning radius ~0.55 m with the
-#   placeholder curvature table; the planner uses 0.75 m for margin.
-# * All scan consumers read /scan_nav (frame laser_upright), never the raw
-#   upside-down /scan, because rf2o only uses the laser's yaw.
+# SKID-STEER car (differential drive). Car facts behind these numbers (see
+# car.yaml; tests/test_car_nav_nav2_params.py checks they stay consistent):
+# * base_link = centre of the car, midway between the left and right wheels.
+#   It turns on the spot: AMCL's differential motion model is exact, the
+#   planner is a plain 2D grid planner (no turning radius), and the PD
+#   follower / RPP turn on the spot when the path heads away from the car.
+# * Variable speed: the wheel command is "<left m/s>,<right m/s>", so Nav2
+#   can slow down (curves, goal, collision monitor approach zone).
+#   Cruise 0.4 m/s, wheels <= 0.6 m/s, yaw <= 1.5 rad/s (car.yaml drive.*).
+# * Forward only (drive.allow_reverse false): no BackUp, Spin is allowed.
+# * Command latency assumed 0.25 s (unmeasured): 0.1 m at cruise speed.
+# * Skid-steer turns slower than (right - left) / track says (wheels slide):
+#   rf2o measures the real rotation, the PD loop corrects the rest.
+# * LiDAR mounted upright: scan_upright passes /scan_filtered through to
+#   /scan_nav (and /scan_odom with inf -> 0 for rf2o).
 #
 # use_sim_time, map yaml and BT xml paths are filled in by nav.launch.py.
 
@@ -108,45 +106,38 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
-      # The car cannot slow down and keeps going ~0.35 m after STOP
-      # (latency + braking): a tight tolerance would make it drive past
-      # the goal and circle back. Final error is reported by the sim.
-      xy_goal_tolerance: 0.5
-      # Position-only goals. A forward-only car can only fix its heading by
-      # driving on, so a yaw tolerance made it circle the goal (sim, CI run
-      # 2026-11-10: 43 m driven for one goal). The planned path already
-      # ends on the goal heading; the report shows the final heading error.
-      yaw_goal_tolerance: 3.14
+      # The skid-steer car slows down near the goal and stops within a few
+      # cm (latency 0.25 s at the slow approach speed), and it can turn on
+      # the spot to the goal heading.
+      xy_goal_tolerance: 0.2
+      yaw_goal_tolerance: 0.25
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.5
-      lookahead_dist: 1.1
-      min_lookahead_dist: 0.9
-      max_lookahead_dist: 1.4
-      lookahead_time: 1.8
-      use_velocity_scaled_lookahead_dist: false
+      desired_linear_vel: 0.4
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 1.0
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
       transform_tolerance: 0.5
-      min_approach_linear_velocity: 0.1
-      approach_velocity_scaling_dist: 0.0
+      min_approach_linear_velocity: 0.08
+      approach_velocity_scaling_dist: 0.6
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.5
-      use_regulated_linear_velocity_scaling: false
+      use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.25
-      # Keep the curvature carrot 0.9 m ahead even at the end of the path
-      # (extended along the goal heading). Without it the carrot collapses
-      # onto the goal, curvature spikes in the last metre, and the 0.65 s
-      # of coasting after STOP swings the car up to ~35 deg off heading.
-      use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 1.1
-      use_rotate_to_heading: false
-      rotate_to_heading_angular_vel: 1.0
-      rotate_to_heading_min_angle: 3.14
+      regulated_linear_scaling_min_radius: 0.5
+      regulated_linear_scaling_min_speed: 0.15
+      use_fixed_curvature_lookahead: false
+      curvature_lookahead_dist: 0.6
+      # skid-steer: turn on the spot toward the path / goal heading
+      use_rotate_to_heading: true
+      rotate_to_heading_angular_vel: 1.2
+      rotate_to_heading_min_angle: 0.9
       allow_reversing: false
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
-      interpolate_curvature_after_goal: true
+      interpolate_curvature_after_goal: false
       use_interpolation: true
 
 local_costmap:
@@ -161,8 +152,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      # x_front 0.16, x_rear -0.37, half_width 0.135 (car.yaml footprint)
-      footprint: "[[0.16, 0.135], [0.16, -0.135], [-0.37, -0.135], [-0.37, 0.135]]"
+      # x_front 0.185, x_rear -0.185, half_width 0.135 (car.yaml footprint)
+      footprint: "[[0.185, 0.135], [0.185, -0.135], [-0.185, -0.135], [-0.185, 0.135]]"
       footprint_padding: 0.02
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -193,7 +184,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.16, 0.135], [0.16, -0.135], [-0.37, -0.135], [-0.37, 0.135]]"
+      footprint: "[[0.185, 0.135], [0.185, -0.135], [-0.185, -0.135], [-0.185, 0.135]]"
       footprint_padding: 0.02
       resolution: 0.05
       track_unknown_space: true
@@ -233,41 +224,24 @@ planner_server:
     expected_planner_frequency: 1.0
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlannerHybrid"
-      # Forward only: DUBIN has no reverse primitives (REEDS_SHEPP would).
-      motion_model_for_search: "DUBIN"
-      minimum_turning_radius: 0.75
+      # Skid-steer: no turning radius, so a 2D grid A* (the car turns on the
+      # spot at sharp corners and at the start). cost_travel_multiplier keeps
+      # the path in the middle of corridors.
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.25
       downsample_costmap: false
       downsampling_factor: 1
-      tolerance: 0.25
       allow_unknown: true
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 3.0
-      angle_quantization_bins: 72
-      analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 3.0
-      analytic_expansion_max_cost: 200.0
-      analytic_expansion_max_cost_override: false
-      reverse_penalty: 2.0
-      change_penalty: 0.0
-      non_straight_penalty: 1.2
-      cost_penalty: 2.0
-      retrospective_penalty: 0.015
-      lookup_table_size: 20.0
-      cache_obstacle_heuristic: false
-      debug_visualizations: false
-      use_quadratic_cost_penalty: false
-      downsample_obstacle_heuristic: true
-      allow_primitive_interpolation: false
-      smooth_path: true
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
         w_smooth: 0.3
         w_data: 0.2
         tolerance: 1.0e-10
-        do_refinement: true
-        refinement_num: 2
 
 behavior_server:
   ros__parameters:
@@ -277,10 +251,16 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
-    # No spin / backup / drive_on_heading: forward-only car.
-    behavior_plugins: ["wait"]
+    # Spin (recovery: turn on the spot) and wait; no backup (forward only).
+    behavior_plugins: ["spin", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
     wait:
       plugin: "nav2_behaviors::Wait"
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.5
+    rotational_acc_lim: 3.2
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
@@ -300,38 +280,45 @@ collision_monitor:
     base_shift_correction: false  # true needs odom TF at the scan time + now; adaptive_odom lagging 10 ms made "invalid source" stops (sim 2026-11-14)
     stop_pub_timeout: 2.0
     enable_stamped_cmd_vel: false
-    # The car has ONE speed, so slowdown cannot happen. Two zones:
-    # * FootprintApproach follows the CURRENT curvature, so it does not
-    #   fire on walls a turn will miss (a straight box ahead did: CI sim
-    #   2026-11-10, the car froze before a turn next to a pillar). It
-    #   scales v to d / time_before_collision; cmd_vel_to_control sends
-    #   STOP below forward_threshold_mps (0.3), so the car stops when the
-    #   predicted path hits something within 0.3 x 1.8 = 0.54 m
-    #   (= 0.33 m latency travel + ~0.06 m braking + 0.15 m margin).
-    # * PolygonStop is the bumper zone, the backstop when the approach
-    #   zone's prediction is wrong (it follows the COMMANDED curvature, but
-    #   the wheels follow it ~0.65 s later). It must reach as far ahead of
-    #   the nose as the car travels before a STOP acts: one scan period
-    #   (0.07 m) + latency (0.33 m) + braking (0.06 m) = 0.46 m, so the
-    #   front edge is x_front 0.16 + 0.46 + 0.02 = 0.64 m. It is only a
-    #   little wider than the car (0.15 vs 0.135) so walls and pillars
-    #   beside the path do not trigger it. The earlier 0.30 m bumper ended
-    #   0.14 m past the nose: CI sim 2026-11-11 (loop_left rf2o) it fired
-    #   and the car still hit the shelf.
-    polygons: ["PolygonStop", "FootprintApproach"]
-    PolygonStop:
-      type: polygon
-      points: "[[0.64, 0.15], [0.64, -0.15], [0.0, -0.15], [0.0, 0.15]]"
+    # Two zones:
+    # * VelocityStop, the bumper: its shape depends on what the car is doing.
+    #   Driving forward it reaches 0.22 m past the nose (x 0.405): one scan
+    #   period 0.06 m + latency 0.25 s x 0.4 m/s = 0.10 m + braking 0.04 m
+    #   + 0.02. It is only a little wider than the car (0.15 vs 0.135) so
+    #   walls beside the path do not trigger it. Turning on the spot it is
+    #   the footprint + 3 cm: a box ahead would block the turn that gets the
+    #   car away from a wall.
+    # * FootprintApproach follows the current (v, omega): the speed is scaled
+    #   down so the footprint never reaches an obstacle within
+    #   time_before_collision; unlike the old one-speed car this really slows
+    #   the car down.
+    polygons: ["VelocityStop", "FootprintApproach"]
+    VelocityStop:
+      type: velocity_polygon
       action_type: stop
       min_points: 3
       visualize: true
       polygon_pub_topic: polygon_stop
       enabled: true
+      holonomic: false
+      velocity_polygons: ["rotation", "forward"]
+      rotation:
+        points: "[[0.215, 0.165], [0.215, -0.165], [-0.215, -0.165], [-0.215, 0.165]]"
+        linear_min: -0.05
+        linear_max: 0.05
+        theta_min: -3.0
+        theta_max: 3.0
+      forward:
+        points: "[[0.405, 0.15], [0.405, -0.15], [0.0, -0.15], [0.0, 0.15]]"
+        linear_min: 0.05
+        linear_max: 2.0
+        theta_min: -3.0
+        theta_max: 3.0
     FootprintApproach:
       type: polygon
       action_type: approach
       footprint_topic: /local_costmap/published_footprint
-      time_before_collision: 1.8
+      time_before_collision: 1.2
       simulation_time_step: 0.05
       min_points: 3
       visualize: false
@@ -357,9 +344,11 @@ rf2o_laser_odometry:
 
 adaptive_odom:
   # odom_source:=adaptive (car_nav/adaptive_odom.py + speed_filter.py):
-  # forward motion = w*rf2o + (1-w)*learned speed, w = how many scan points
-  # face the driving direction (obs_points_low..high). The start speed and
-  # command latency come from car.yaml (speed.*); the speed is then learned.
+  # forward motion = w*rf2o + (1-w)*(commanded speed x learned ratio),
+  # w = how many scan points face the driving direction (obs_points_low..high).
+  # Command latency from car.yaml (speed.command_latency_s, 0.25 while null).
+  # wheel_odom_topic: the car's encoder odometry, when it has one, replaces
+  # the commanded speed (the ratio then absorbs wheel slip).
   ros__parameters:
     use_sim_time: false
     accel_mps2: 1.0
@@ -372,6 +361,7 @@ adaptive_odom:
     correction_min_blind_m: 1.0   # AMCL correction -> speed after >= this many blind metres
     correction_min_along_m: 0.3
     correction_max_blind_m: 6.0
+    wheel_odom_topic: ""
 
 pose_gate:
   # car_nav/pose_gate.py + localization_gate.py: map -> odom from AMCL, but
@@ -400,42 +390,50 @@ pose_gate:
 
 pd_path_follower:
   # PD path follower (car_nav/pd_follower.py), used with controller:=pd
-  # (default). kappa = ff*path_curvature - kp*offset - kd*sin(heading error).
-  # kp: how hard it pulls back to the path (1/m^2); kd: damping (1/m), the D
-  # term (heading error = rate of change of the offset along the path).
-  # Chosen in a pure-Python model with 0.65 s delay and AMCL-like noise
-  # (3 cm, 2 deg): kp 0.7 / kd 1.2 gives ~4 cm max offset and ~1/2 the
-  # steering reversals of Pure Pursuit 1.1 m. Higher kd reacts to heading
-  # noise and with the delay starts to rock; lower kp leaves more offset in
-  # turns when the car understeers.
+  # (default). kappa = ff*path_curvature - kp*offset - kd*sin(heading error),
+  # then diff_drive_command(): v = speed_mps (lower in tight curves so the
+  # yaw stays <= max_yaw_rate_rps, and over the last goal_slow_m), omega =
+  # v*kappa; above rotate_enter_deg heading error it turns on the spot
+  # until below rotate_exit_deg. At the goal it turns on the spot to the
+  # goal heading (yaw_goal_tolerance; >= 3.14 = position only).
+  # kp (1/m^2) / kd (1/m) act along the path, independent of speed; with the
+  # 0.25 s latency (0.1 m at cruise) the car tolerates more kp than the old
+  # rear-steer car with its 0.65 s.
   ros__parameters:
     use_sim_time: false
-    kp: 0.7
-    kd: 1.2
+    kp: 1.5
+    kd: 2.0
     ff: 1.0
-    ff_ahead_m: 0.3          # 0.65 cuts corners ~20 cm with a true pose (test_car_nav_pd_follower)
-    speed_mps: 0.5           # = car.yaml speed baseline (RPP desired_linear_vel)
+    ff_ahead_m: 0.1          # = distance driven in the 0.25 s latency; 1 m-radius corner ~1 cm off (test_car_nav_pd_follower)
+    speed_mps: 0.4           # = car.yaml drive.cruise_speed_mps
+    min_speed_mps: 0.08
+    max_yaw_rate_rps: 1.5    # = car.yaml drive.max_yaw_rate_rps
+    rotate_enter_deg: 52.0
+    rotate_exit_deg: 14.0
+    rotate_gain: 2.0
+    min_rotate_rps: 0.5      # skid-steer wheels stick below a minimum turn rate
+    goal_slow_m: 0.6
     rate_hz: 10.0
-    xy_goal_tolerance: 0.5   # = general_goal_checker
+    xy_goal_tolerance: 0.2   # = general_goal_checker
+    yaw_goal_tolerance: 0.25
     progress_radius_m: 0.3   # = progress_checker
     progress_time_s: 10.0
     global_frame: map
     robot_frame: base_link
-    max_pose_age_s: 1.0      # stop while the pose is older (lagging odometry); 7 Hz LiDAR + rf2o on a
-                             # busy laptop reached 0.5-1.0 s now and then, 0.5 stopped the car often
+    max_pose_age_s: 1.0      # stop while the pose is older (lagging odometry)
                              # (nav.launch arg max_pose_age_s overrides it; the sim uses 1.5)
-    # LiDAR wall avoidance (car_nav/wall_avoid.py), arc check like DWA
-    # (nam 2026-11-15): the footprint (rear swing included) is swept along
-    # the PD's arc on the latest scan. Clear for avoid_horizon_m -> the PD
-    # drives, however close a wall is (inner corners of planned turns).
-    # Hits -> the clear candidate arc (full right .. full left, from the
-    # steering table) closest to the PD's is driven until the PD's arc is
-    # clear for release_factor x horizon. Needs no pose.
+    # LiDAR wall avoidance (car_nav/wall_avoid.py), arc check like DWA: the
+    # footprint is swept along the PD's arc on the latest scan. Clear for
+    # avoid_horizon_m -> the PD drives. Hits -> the clear candidate arc
+    # (-avoid_max_curvature .. +avoid_max_curvature) closest to the PD's is
+    # driven until the PD's arc is clear for release_factor x horizon.
+    # Not used while turning on the spot. Needs no pose.
     avoid_enabled: true
     avoid_margin_m: 0.05
-    avoid_horizon_m: 1.3          # 0.33 m driven in the 0.65 s delay + 1 m; 1.0 saved a 0.8 m pose lag too late (test)
+    avoid_horizon_m: 0.9          # 0.1 m driven in the 0.25 s delay + 0.8 m
     avoid_release_factor: 1.3
     avoid_candidates: 13
+    avoid_max_curvature: 2.5      # 1/m (0.4 m radius); the car could turn tighter
     avoid_max_scan_age_s: 0.5
 
 cmd_vel_to_control:
@@ -443,6 +441,5 @@ cmd_vel_to_control:
     use_sim_time: false
     rate_hz: 10.0
     watchdog_s: 0.5
-    # RPP always asks for 0.5 m/s (no regulation); anything the collision
-    # monitor scales below 0.3 becomes STOP (see collision_monitor above).
-    forward_threshold_mps: 0.3
+    # Wheel speeds are capped by car.yaml drive.max_wheel_speed_mps (both
+    # wheels scaled together, curvature kept).

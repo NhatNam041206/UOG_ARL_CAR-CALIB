@@ -1,17 +1,22 @@
-"""Adaptive odometry: rf2o + a learned forward speed (odom_source:=adaptive).
+"""Adaptive odometry: rf2o + commanded speed x learned ratio (odom_source:=adaptive).
 
 rf2o runs with publish_tf false and publishes /odom_rf2o. This node
 publishes /odom and the TF odom -> base_link instead:
 
     rotation, sideways motion  <- rf2o (it measures these well)
-    forward motion             <- w * rf2o + (1 - w) * (motion fraction * learned speed)
+    forward motion             <- w * rf2o + (1 - w) * (model speed * learned ratio)
+
+model speed = the commanded forward speed (left + right) / 2 of the wheel
+command on /car/wheels/cmd, delayed by the command latency and ramped; or,
+with wheel_odom_topic set, the car's own wheel-encoder speed. The ratio
+(real / model speed, start 1.0) absorbs wheel slip, battery and floor.
 
 w = how well the current scan shows forward motion (speed_filter.scan_observability),
 so in a plain corridor (w ~ 0) the car keeps moving forward at the learned
 speed instead of "standing still" like rf2o alone. The learned speed is a
-Kalman filter (speed_filter.SpeedKF) fed by rf2o where it can see and by
-AMCL's corrections along the heading after blind stretches. STOP commands
-(/car/raspi5/control, delayed by the command latency) mean speed 0.
+Kalman filter (speed_filter.SpeedKF, here on the ratio) fed by rf2o where it
+can see and by AMCL's corrections along the heading after blind stretches.
+A zero wheel command (delayed by the command latency) means standing still.
 
 Logs the learned speed every 5 s and publishes it on /odom_speed_estimate
 (std_msgs/Float32) for plots, and the scan observability on
@@ -32,7 +37,7 @@ from std_msgs.msg import Float32, String
 from tf2_ros import TransformBroadcaster
 
 from . import config_loader
-from .actuation import parse_payload
+from .actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 from .speed_filter import MotionModel, SpeedKF, fuse_forward, scan_observability
 from .timing import TimingStats
 
@@ -53,11 +58,14 @@ class AdaptiveOdom(Node):
     def __init__(self) -> None:
         super().__init__("adaptive_odom")
         cfg = config_loader.load()
-        base_speed = float((cfg.get("speed") or {}).get("baseline_speed_mps", 0.5))
+        self._drive = drive_from_cfg(cfg)
         latency = (cfg.get("speed") or {}).get("command_latency_s")
         p = self.declare_parameter
-        p("initial_speed_mps", base_speed)
-        p("command_latency_s", float(latency) if latency is not None else 0.65)
+        p("initial_speed_ratio", 1.0)
+        p("command_latency_s", float(latency) if latency is not None else 0.25)
+        # nav_msgs/Odometry from the car's wheel encoders ('' = none: use the command)
+        p("wheel_odom_topic", "")
+        p("wheel_odom_timeout_s", 0.5)
         p("accel_mps2", 1.0)
         p("decel_mps2", 2.0)
         p("speed_random_walk", 0.01)     # m/s per sqrt(s)
@@ -76,9 +84,15 @@ class AdaptiveOdom(Node):
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._laser_yaw = float(config_loader.laser_pose(cfg).yaw)
         self._motion = MotionModel(latency_s=float(g("command_latency_s")), accel_mps2=float(g("accel_mps2")),
-                                   decel_mps2=float(g("decel_mps2")), nominal_speed=float(g("initial_speed_mps")))
-        self._kf = SpeedKF(v=float(g("initial_speed_mps")), q=float(g("speed_random_walk")) ** 2,
-                           r_rf2o=float(g("rf2o_speed_noise")) ** 2)
+                                   decel_mps2=float(g("decel_mps2")), nominal_speed=self._drive.cruise_speed_mps)
+        # The filter state is the ratio real / model speed; noises are given in m/s
+        # at cruise speed and converted to ratio units here.
+        vn = max(self._drive.cruise_speed_mps, 0.05)
+        self._kf = SpeedKF(v=float(g("initial_speed_ratio")), var=0.2 ** 2,
+                           q=(float(g("speed_random_walk")) / vn) ** 2,
+                           r_rf2o=(float(g("rf2o_speed_noise")) / vn) ** 2, v_min=0.3, v_max=2.0)
+        self._wheel_v: float | None = None
+        self._wheel_t = -1e9
         self._obs_args = dict(max_range=float(g("obs_max_range_m")), n_low=int(g("obs_points_low")),
                               n_high=int(g("obs_points_high")))
         self._odom_frame, self._base_frame = g("odom_frame"), g("base_frame")
@@ -101,11 +115,14 @@ class AdaptiveOdom(Node):
         tw = self._timing.wrap
         self.create_subscription(Odometry, "/odom_rf2o", tw("odom.rf2o_cb", self._on_rf2o), 20)
         self.create_subscription(LaserScan, "/scan_nav", tw("odom.scan_cb", self._on_scan), qos_profile_sensor_data)
-        self.create_subscription(String, "/car/raspi5/control", self._on_control, 20)
+        self.create_subscription(String, WHEELS_TOPIC, self._on_control, 20)
+        if g("wheel_odom_topic"):
+            self.create_subscription(Odometry, str(g("wheel_odom_topic")), self._on_wheel_odom, 20)
         self.create_subscription(PoseWithCovarianceStamped, str(g("localized_pose_topic")), tw("odom.amcl_cb", self._on_amcl), 10)
         self.get_logger().info(
-            f"adaptive odometry: start speed {self._kf.v:.2f} m/s (learned online), "
-            f"command latency {self._motion.latency_s:.2f} s")
+            f"adaptive odometry: speed ratio {self._kf.v:.2f} (learned online), command latency "
+            f"{self._motion.latency_s:.2f} s, model speed from "
+            f"{g('wheel_odom_topic') or 'the wheel command'}")
 
     # ---------------------------------------------------------------- inputs
     def _now(self) -> float:
@@ -114,7 +131,20 @@ class AdaptiveOdom(Node):
     def _on_control(self, msg: String) -> None:
         parsed = parse_payload(msg.data)
         if parsed is not None:
-            self._motion.command(self._now(), parsed[1] == 1)
+            v, omega = self._drive.body(*parsed)
+            self._motion.command(self._now(), v, omega)
+
+    def _on_wheel_odom(self, msg: Odometry) -> None:
+        self._wheel_v = float(msg.twist.twist.linear.x)
+        self._wheel_t = self._now()
+
+    def _model_speed(self, t: float, dt: float) -> float:
+        """Forward speed before the learned ratio: encoders if fresh, else the command model."""
+        v_cmd = self._motion.step(t, dt)
+        if self._wheel_v is not None and self._now() - self._wheel_t <= float(
+                self.get_parameter("wheel_odom_timeout_s").value):
+            return self._wheel_v
+        return v_cmd
 
     def _on_scan(self, msg: LaserScan) -> None:
         self._timing.value("odom.scan_age_s", self._now() - _stamp(msg))
@@ -142,16 +172,19 @@ class AdaptiveOdom(Node):
         dx_b, dy_b = c * ddx + s * ddy, -s * ddx + c * ddy
         dth = _wrap(pth - prev[3])
 
-        frac = self._motion.step(t, dt)
+        v_model = self._model_speed(t, dt)
         self._kf.predict(dt)
-        if self._motion.standing:
+        if self._motion.standing and abs(v_model) < 1e-3:
             fwd, side, dth = 0.0, 0.0, 0.0          # the car is not moving: ignore rf2o noise
         else:
             w = self._w
-            if self._motion.cruising and not self._kf.update_rf2o(dx_b / dt, w):
-                w = 0.0                              # rf2o disagrees too much: drive on the model
-                self._n_rejected += 1
-            fwd = fuse_forward(dx_b, frac * self._kf.v * dt, w)
+            if self._motion.cruising and v_model >= 0.1:
+                # rf2o's speed as a ratio measurement; its noise in ratio units grows as v drops
+                vn = max(self._drive.cruise_speed_mps, 0.05)
+                if not self._kf.update_rf2o(dx_b / dt / v_model, w, r_scale=(vn / v_model) ** 2):
+                    w = 0.0                          # rf2o disagrees too much: drive on the model
+                    self._n_rejected += 1
+            fwd = fuse_forward(dx_b, v_model * self._kf.v * dt, w)
             side = dy_b
         self._blind_m += (1.0 - (self._w if not self._motion.standing else 1.0)) * abs(fwd)
         mid = self._th + 0.5 * dth
@@ -164,7 +197,7 @@ class AdaptiveOdom(Node):
         if t - self._last_log > 5.0:
             self._last_log = t
             self.get_logger().info(
-                f"speed {self._kf.v:.3f} m/s (+-{math.sqrt(self._kf.var):.3f}), scan observability "
+                f"speed ratio {self._kf.v:.3f} (+-{math.sqrt(self._kf.var):.3f}), scan observability "
                 f"{self._w:.2f} ({self._n_facing} facing points), blind {self._blind_m:.1f} m, "
                 f"rf2o outliers {self._n_rejected}")
 
@@ -201,7 +234,7 @@ class AdaptiveOdom(Node):
             self._kf.update_correction(self._along_acc, self._blind_m)
             self.get_logger().info(
                 f"AMCL moved the car {self._along_acc:+.2f} m along its heading after {self._blind_m:.1f} m "
-                f"blind: speed {v0:.3f} -> {self._kf.v:.3f} m/s")
+                f"blind: speed ratio {v0:.3f} -> {self._kf.v:.3f}")
             self._blind_m = self._along_acc = 0.0
 
     # --------------------------------------------------------------- output

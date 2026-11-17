@@ -1,9 +1,12 @@
 """Lightweight 2D simulator: no Gazebo, no GPU, runs in CI and on any laptop.
 
-* listens to /car/raspi5/control ("<angle>,<drive_code>") like the real car
-* moves the car with the actuator model (latency, fixed speed, understeer)
-* publishes /scan in the LiDAR's own (upside-down) frame `laser`, like
-  sllidar_ros2 on the car, by ray casting the world shapes
+* listens to /car/wheels/cmd ("<left m/s>,<right m/s>") like the real car
+* moves the skid-steer car with the actuator model (latency, wheel limits,
+  speed scale, yaw efficiency)
+* publishes /scan in the LiDAR's own frame `laser`, like sllidar_ros2 on
+  the car, by ray casting the world shapes
+* publishes /odom_wheel: what wheel encoders would report (no slip), for
+  adaptive_odom wheel_odom_topic:=/odom_wheel
 * publishes /clock (all other nodes run with use_sim_time) and the true
   pose on /sim/ground_truth (frame `world` = map)
 """
@@ -22,7 +25,7 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 from car_nav import config_loader
-from car_nav.actuation import table_from_cfg
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
 
 from . import sim_config
 from .actuator_model import ActuatorModel, Pose2D, TruthParams, integrate
@@ -50,7 +53,8 @@ class LiteSim(Node):
         x, y, th = start if len(start) == 3 else self.world.start
         self.pose = Pose2D(x, y, th)
         self.laser = config_loader.laser_pose(car)
-        self.model = ActuatorModel(table_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
+        self.model = ActuatorModel(drive_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
+        self.enc = Pose2D(0.0, 0.0, 0.0)
         self.lidar = sim.get("lidar") or {}
         lite = sim.get("lite") or {}
         self.dt = 1.0 / float(lite.get("physics_hz", 100.0))
@@ -65,7 +69,9 @@ class LiteSim(Node):
         self.clock_pub = self.create_publisher(Clock, "/clock", QoSProfile(depth=10))
         self.scan_pub = self.create_publisher(LaserScan, "scan", qos_profile_sensor_data)
         self.truth_pub = self.create_publisher(Odometry, "/sim/ground_truth", 10)
-        self.create_subscription(String, "/car/raspi5/control", self._on_control, 50)
+        self.wheel_pub = self.create_publisher(Odometry, "/odom_wheel", 10)
+        self._next_wheel = 0.0
+        self.create_subscription(String, WHEELS_TOPIC, self._on_control, 50)
         self.get_logger().info(
             f"lite sim: world {self.world.name}, start ({x:.2f}, {y:.2f}, {math.degrees(th):.0f} deg), "
             f"truth {self.model.params}, rtf {self.rtf}"
@@ -83,7 +89,12 @@ class LiteSim(Node):
         while self.t + self.dt <= target and steps < 50:
             v, w = self.model.step(self.t, self.dt)
             self.pose = integrate(self.pose, v, w, self.dt)
+            ev, ew = self.model.encoder_twist()
+            self.enc = integrate(self.enc, ev, ew, self.dt)
             self.t += self.dt
+            if self.t >= self._next_wheel:
+                self._next_wheel += 0.05   # 20 Hz like a typical controller feedback
+                self._publish_wheel(ev, ew)
             steps += 1
             if self.t >= self.next_scan:
                 self.next_scan += self.scan_period
@@ -105,6 +116,20 @@ class LiteSim(Node):
         msg.range_max = float(self.lidar.get("range_max_m", 12.0))
         msg.ranges = [float(v) for v in r]
         self.scan_pub.publish(msg)
+
+    def _publish_wheel(self, v: float, w: float) -> None:
+        n = float(self.model.params.encoder_noise)
+        o = Odometry()
+        o.header.stamp = _stamp(self.t)
+        o.header.frame_id = "odom_wheel"
+        o.child_frame_id = "base_link"
+        o.pose.pose.position.x = self.enc.x
+        o.pose.pose.position.y = self.enc.y
+        o.pose.pose.orientation.z = math.sin(self.enc.theta / 2)
+        o.pose.pose.orientation.w = math.cos(self.enc.theta / 2)
+        o.twist.twist.linear.x = v * (1.0 + n * float(self.rng.normal()))
+        o.twist.twist.angular.z = w * (1.0 + n * float(self.rng.normal()))
+        self.wheel_pub.publish(o)
 
     def _publish_truth(self) -> None:
         o = Odometry()

@@ -9,7 +9,7 @@ inner corner of a left turn made it steer right, sim 2026-11-14 goal 2).
 So instead it tries the drive out before it happens:
 
   1. Take the curvature the PD wants and sweep the car's footprint (nose,
-     sides AND the rear, which swings out on this rear-steered car) along
+     sides AND the rear, which swings out when the car turns about its centre) along
      that arc for horizon_m metres (the distance covered in the command
      delay plus a margin). If no scan point falls inside the swept body
      (+ margin), the PD drives: the layer does nothing, however close a
@@ -43,7 +43,7 @@ class AvoidParams:
     x_rear: float = -0.37
     half_width: float = 0.135
     margin_m: float = 0.05          # extra clearance around the body
-    horizon_m: float = 1.3          # how far ahead an arc must be clear (m of front-axle travel)
+    horizon_m: float = 1.3          # how far ahead an arc must be clear (m of base_link travel)
     step_m: float = 0.1             # sampling along the arc
     release_factor: float = 1.3     # PD arc must be clear this x horizon to hand back
     max_left: float = 1.33          # candidate arcs span [-max_right, +max_left] (1/m)
