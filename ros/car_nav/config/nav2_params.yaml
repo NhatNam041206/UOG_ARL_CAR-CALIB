@@ -391,6 +391,12 @@ pose_gate:
     reseed_sigma_along_m: 0.15
     reseed_sigma_lateral_m: 0.08
     reseed_sigma_yaw_rad: 0.05
+    # Startup race (sim 2026-11-17, 8 of 32 runs): an /initialpose that reached the gate
+    # after AMCL's answer left map -> odom unpublished; the car never started and AMCL,
+    # which only updates while the car moves, never answered again. The gate resends the
+    # last initial pose every initialpose_retry_s until an AMCL pose arrives after it.
+    initialpose_retry_s: 2.0      # 0 = off
+    initialpose_retry_max: 10
 
 pd_path_follower:
   # PD path follower (car_nav/pd_follower.py), used with controller:=pd

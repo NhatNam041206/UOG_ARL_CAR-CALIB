@@ -87,3 +87,40 @@ def reseed_covariance(heading: float, sigma_along: float, sigma_lateral: float,
     cov[1] = cov[6] = c * s * (va - vl)
     cov[35] = sigma_yaw ** 2
     return cov
+
+
+@dataclass
+class InitialPoseRetry:
+    """Resend the initial pose until AMCL answers (C3, nam 2026-11-17).
+
+    Seen in the sim under CPU load (8 of 32 runs): AMCL takes /initialpose
+    ("Setting pose") but never publishes /amcl_pose, so map -> odom never
+    appears and the car never starts. pose_gate keeps the last initial pose
+    and, while no /amcl_pose has arrived since it, sends it again every
+    interval_s, at most max_tries times. Times are seconds (any monotonic clock).
+    """
+    interval_s: float = 2.0
+    max_tries: int = 10
+    waiting_since: float | None = None
+    last_sent: float = 0.0
+    tries: int = 0
+
+    def on_initialpose(self, t: float) -> None:
+        """An initial pose from someone else (RViz, the mission, the operator)."""
+        self.waiting_since, self.last_sent, self.tries = t, t, 0
+
+    def on_amcl(self, t: float) -> None:
+        if self.waiting_since is not None and t >= self.waiting_since:
+            self.waiting_since = None
+
+    def due(self, t: float) -> bool:
+        """True when the initial pose should be sent again now (and counts the try)."""
+        if self.waiting_since is None or self.tries >= self.max_tries or t - self.last_sent < self.interval_s:
+            return False
+        self.tries += 1
+        self.last_sent = t
+        return True
+
+    @property
+    def gave_up(self) -> bool:
+        return self.waiting_since is not None and self.tries >= self.max_tries

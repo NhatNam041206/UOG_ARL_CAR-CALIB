@@ -31,7 +31,7 @@ from rclpy.time import Time
 from std_msgs.msg import Float32
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
-from .localization_gate import gate_correction, reseed_covariance
+from .localization_gate import InitialPoseRetry, gate_correction, reseed_covariance
 from .timing import TimingStats
 
 
@@ -56,6 +56,8 @@ class PoseGate(Node):
         p("reseed_sigma_along_m", 0.15)
         p("reseed_sigma_lateral_m", 0.08)
         p("reseed_sigma_yaw_rad", 0.05)
+        p("initialpose_retry_s", 2.0)        # resend the initial pose until AMCL answers (0 = off)
+        p("initialpose_retry_max", 10)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._map, self._odom, self._base = g("global_frame"), g("odom_frame"), g("base_frame")
         self._tf = Buffer()
@@ -66,6 +68,9 @@ class PoseGate(Node):
         self._last_reseed = 0.0
         self._sent_seed = None
         self._held_back = 0.0
+        self._init_msg = None
+        self._retry = InitialPoseRetry(interval_s=max(self._f("initialpose_retry_s"), 0.0),
+                                       max_tries=int(self.get_parameter("initialpose_retry_max").value))
         self._last_log = 0.0
         self._pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/localized_pose", 10)
         self._seed_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
@@ -74,6 +79,8 @@ class PoseGate(Node):
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initialpose, 10)
         self.create_subscription(Float32, "/scan_observability", self._on_obs, 10)
         self.create_timer(1.0 / float(g("publish_rate_hz")), self._timing.wrap("gate.tf_timer", self._publish_tf))
+        if self._f("initialpose_retry_s") > 0.0:
+            self.create_timer(0.5, self._retry_initialpose)
         self.get_logger().info(
             f"pose gate: AMCL along-corridor corrections scaled by observability / {g('obs_full')}")
 
@@ -92,9 +99,27 @@ class PoseGate(Node):
         q = msg.pose.pose
         if self._sent_seed is not None and math.hypot(q.position.x - self._sent_seed[0],
                                                       q.position.y - self._sent_seed[1]) < 0.01:
-            return  # our own reseed
+            return  # our own reseed or resend
         self.get_logger().info("initial pose set: next AMCL pose is taken fully")
         self._map_odom = None
+        self._init_msg = msg
+        self._retry.on_initialpose(time.monotonic())
+
+    def _retry_initialpose(self) -> None:
+        now = time.monotonic()
+        if self._init_msg is None or not self._retry.due(now):
+            return
+        m = PoseWithCovarianceStamped()
+        m.header.frame_id = self._init_msg.header.frame_id or self._map
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.pose = self._init_msg.pose
+        q = m.pose.pose
+        self._sent_seed = (q.position.x, q.position.y, _yaw(q.orientation))
+        self._seed_pub.publish(m)
+        self.get_logger().warn(f"no AMCL pose {now - self._retry.waiting_since:.1f} s after the initial pose: "
+                               f"sent it again ({self._retry.tries}/{self._retry.max_tries})")
+        if self._retry.gave_up:
+            self.get_logger().error("AMCL never answered the initial pose: giving up (set it again by hand)")
 
     def _odom_pose(self, stamp):
         for t in (Time.from_msg(stamp), Time()):
@@ -107,6 +132,7 @@ class PoseGate(Node):
         return None
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        self._retry.on_amcl(time.monotonic())
         self._timing.value("gate.amcl_age_s", (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds * 1e-9)
         odom = self._odom_pose(msg.header.stamp)
         if odom is None:

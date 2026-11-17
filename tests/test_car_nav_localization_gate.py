@@ -63,3 +63,27 @@ def test_reseed_covariance_long_along_heading():
     assert np.allclose(xy, xy.T) and np.all(np.linalg.eigvalsh(xy) > 0)
     assert math.isclose(xy[1, 1], 0.15 ** 2) and math.isclose(xy[0, 0], 0.08 ** 2, rel_tol=1e-9)
     assert math.isclose(cov[5, 5], 0.05 ** 2)
+
+
+def test_initialpose_retry_waits_resends_and_gives_up():
+    from car_nav.localization_gate import InitialPoseRetry
+    r = InitialPoseRetry(interval_s=2.0, max_tries=3)
+    assert not r.due(100.0)                       # nothing to wait for yet
+    r.on_initialpose(10.0)
+    assert not r.due(11.9)                        # AMCL still has time
+    assert r.due(12.0) and r.tries == 1           # first resend after 2 s
+    assert not r.due(13.0)
+    assert r.due(14.0) and r.due(16.0) and r.tries == 3
+    assert not r.due(30.0) and r.gave_up          # max tries reached: stop, report
+
+
+def test_initialpose_retry_stops_when_amcl_answers_after_it():
+    from car_nav.localization_gate import InitialPoseRetry
+    r = InitialPoseRetry(interval_s=2.0, max_tries=10)
+    r.on_initialpose(10.0)
+    r.on_amcl(9.5)                                # an AMCL pose from BEFORE the initial pose
+    assert r.due(12.0)                            # does not count (the startup deadlock, sim 2026-11-17)
+    r.on_amcl(12.5)
+    assert not r.due(20.0) and not r.gave_up
+    r.on_initialpose(30.0)                        # a new initial pose starts a new wait
+    assert r.due(32.0) and r.tries == 1
