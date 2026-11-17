@@ -15,6 +15,10 @@ for i in $(seq 1 "$n"); do
   seed=$((seed0 + i - 1))
   d=$(printf "%s/%s/run%02d" "$out" "$exp" "$seed")
   mkdir -p "$d"
+  # resumable: a run that already has a report (or was recorded as hung) is not repeated
+  if ls "$d"/report-*.json >/dev/null 2>&1 || grep -q HUNG "$d/args.txt" 2>/dev/null; then
+    echo "== $exp seed=$seed already done, skipped"; continue
+  fi
   before_log=$(ls -t run_logs/sim/campus_block_left-*.log 2>/dev/null | head -1)
   before_rep=$(ls -t run_logs/sim/report-*.json 2>/dev/null | head -1)
   echo "== $exp run seed=$seed args: $*"
@@ -40,6 +44,6 @@ for i in $(seq 1 "$n"); do
   [[ -n "$log" && "$log" != "$before_log" ]] && cp "$log" "$d/"
   [[ -n "$rep" && "$rep" != "$before_rep" ]] && cp "$rep" "$d/"
   rm -f "$d/console.txt"   # same content as the log
-  echo "args: $* SIM_CPUS=${SIM_CPUS:-} SIM_STRESS=${SIM_STRESS:-} CAR_CORES=${CAR_CORES:-} wall_s=$(( $(date +%s) - t0 ))$([[ $hung == 1 ]] && echo ' HUNG: stopped by the watchdog')" > "$d/args.txt"
+  echo "args: $* SIM_CPUS=${SIM_CPUS:-} SIM_STRESS=${SIM_STRESS:-} CAR_CORES=${CAR_CORES:-} SIM_NAV2_PARAMS=${SIM_NAV2_PARAMS:-} wall_s=$(( $(date +%s) - t0 ))$([[ $hung == 1 ]] && echo ' HUNG: stopped by the watchdog')" > "$d/args.txt"
   python sim_results/analyze.py --table "$out/$exp" | grep "run$(printf %02d "$seed")"
 done

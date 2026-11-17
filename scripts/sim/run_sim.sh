@@ -83,6 +83,16 @@ apply_stress() {
 }
 apply_stress
 
+# SIM_NAV2_PARAMS=<file>: run with another nav2_params.yaml (parameter variants), copied
+# into run_logs/sim so the container sees it. The default is ros/car_nav/config/nav2_params.yaml.
+if [[ -n "${SIM_NAV2_PARAMS:-}" ]]; then
+  [[ -f "$SIM_NAV2_PARAMS" ]] || { echo "no params file $SIM_NAV2_PARAMS" >&2; exit 2; }
+  cp "$SIM_NAV2_PARAMS" run_logs/sim/nav2-params-variant.yaml
+  export MSYS2_ARG_CONV_EXCL="CAR_NAV_NAV2_PARAMS=${MSYS2_ARG_CONV_EXCL:+;$MSYS2_ARG_CONV_EXCL}"
+  RUN_EXTRA+=(-e CAR_NAV_NAV2_PARAMS=/data/sim/nav2-params-variant.yaml)
+  echo "nav2 params: $SIM_NAV2_PARAMS"
+fi
+
 latest_report() { ls -t run_logs/sim/report-*.json 2>/dev/null | head -1; }
 
 mission() {
