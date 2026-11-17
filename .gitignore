@@ -223,3 +223,11 @@ temp/
 
 # NAV2 simulator reports
 run_logs/sim/
+
+# sim campaign raw outputs (kept on the laptop, too big for git)
+sim_results/**/*.log
+sim_results/**/report-*.json
+sim_results/**/probe.csv
+sim_results/**/cpu.txt
+sim_results/**/stress-sim.yaml
+sim_results/*.console.txt

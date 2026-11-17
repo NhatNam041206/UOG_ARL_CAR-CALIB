@@ -96,3 +96,24 @@ def test_corner_with_the_cars_delay_and_a_true_pose():
     # in the sim comes from the pose estimate lagging, not from the delay.
     assert _corner_error(NAV_FF_AHEAD) < 0.05
     assert _corner_error(0.65) > 3 * _corner_error(0.3)
+
+
+def test_extrapolate_pose_straight_arc_cap_and_standstill():
+    from car_nav.pd_follower import extrapolate_pose
+    x, y, th = extrapolate_pose(1.0, 2.0, 0.0, 0.5, 0.0, 0.4)
+    assert (x, y, th) == pytest.approx((1.2, 2.0, 0.0))
+    # capped distance
+    x, y, _ = extrapolate_pose(0.0, 0.0, math.pi / 2, 0.5, 0.0, 2.0, max_dist=0.3)
+    assert (x, y) == pytest.approx((0.0, 0.3), abs=1e-12)
+    # standing still / no age / negative speed: unchanged
+    assert extrapolate_pose(1.0, 1.0, 0.3, 0.0, 0.2, 0.5) == (1.0, 1.0, 0.3)
+    assert extrapolate_pose(1.0, 1.0, 0.3, 0.5, 0.2, 0.0) == (1.0, 1.0, 0.3)
+    assert extrapolate_pose(1.0, 1.0, 0.3, -0.5, 0.2, 0.5) == (1.0, 1.0, 0.3)
+    # quarter circle of radius 1: v 0.5, omega 0.5 for pi seconds = pi/2 m (cap off)
+    x, y, th = extrapolate_pose(0.0, 0.0, 0.0, 0.5, 0.5, math.pi, max_dist=10.0)
+    assert (x, y, th) == pytest.approx((1.0, 1.0, math.pi / 2), abs=1e-9)
+    # matches small-step integration of the car model
+    xi, yi, ti = 0.0, 0.0, 0.2
+    for _ in range(3000):
+        xi += 0.5 * math.cos(ti) * 1e-4; yi += 0.5 * math.sin(ti) * 1e-4; ti += -0.8 * 1e-4
+    assert extrapolate_pose(0.0, 0.0, 0.2, 0.5, -0.8, 0.3) == pytest.approx((xi, yi, ti), abs=1e-4)

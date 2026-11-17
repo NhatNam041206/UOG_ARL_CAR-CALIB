@@ -1,0 +1,40 @@
+6,7 | /usr/bin/python3 /opt/ros/jazzy/bin/ros2 launch car_nav_sim sim.launch.py backend:=lite mi
+6,7 | sleep 2 
+0-7 | bash -c for d in /proc/[0-9]*; do p=${d#/proc/}; n=$(tr "\0" " " < $d/cmdline 2>/dev/null 
+6,7 | pin_loop -c 
+car="$1"; sim="$2"
+while true; do
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    cmd=$(tr "\0" " " < $d/cmdline 2>/dev/null) || continue
+    [[ -z "$cmd" ]] && continue
+    case "$cmd" in
+      *lite_sim*|*car_nav_sim/mission*|*latency_probe*|*"ros2 launch"*|*truth_odom_tf*|*"g
+      *) cores=$car ;;
+    esac
+    taskset -a -cp "$cores" "$p" >/dev/null 2>&1
+  done
+  sleep 2
+done pin_loop 0 6-7 
+0 | /opt/ros/jazzy/lib/tf2_ros/static_transform_publisher --x 0.0 --y 0.0 --z 0.42 --roll 3.14
+0 | /opt/ros/jazzy/lib/tf2_ros/static_transform_publisher --frame-id map --child-frame-id worl
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/scan_self_mask --ros-args -r __node:=scan_sel
+6,7 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav_sim/lite_sim --ros-args -r __node:=lite_sim -
+0 | /opt/ros/jazzy/lib/tf2_ros/static_transform_publisher --x 0.0 --y 0.0 --z 0.42 --roll 0 --
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/scan_upright --ros-args -r __node:=scan_uprig
+0 | /opt/car_nav_ws/lib/rf2o_laser_odometry/rf2o_laser_odometry_node --ros-args --log-level rf
+6,7 | python3 /tmp/latency_probe.py /data/sim/probe-current.csv 
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/adaptive_odom --ros-args -r __node:=adaptive_
+0 | /opt/ros/jazzy/lib/nav2_map_server/map_server --ros-args --log-level info --ros-args -r __
+0 | /opt/ros/jazzy/lib/nav2_amcl/amcl --ros-args --log-level info --ros-args -r __node:=amcl -
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/pose_gate --ros-args --log-level info --ros-a
+0 | /opt/ros/jazzy/lib/nav2_lifecycle_manager/lifecycle_manager --ros-args -r __node:=lifecycl
+0 | /opt/ros/jazzy/lib/nav2_planner/planner_server --ros-args --log-level info --ros-args -r _
+0 | /opt/ros/jazzy/lib/nav2_controller/controller_server --ros-args --log-level info --ros-arg
+0 | /opt/ros/jazzy/lib/nav2_behaviors/behavior_server --ros-args --log-level info --ros-args -
+0 | /opt/ros/jazzy/lib/nav2_bt_navigator/bt_navigator --ros-args --log-level info --ros-args -
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/pd_path_follower --ros-args --log-level info 
+0 | /opt/ros/jazzy/lib/nav2_collision_monitor/collision_monitor --ros-args --log-level info --
+0 | /opt/ros/jazzy/lib/nav2_lifecycle_manager/lifecycle_manager --ros-args -r __node:=lifecycl
+0 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav/cmd_vel_to_control --ros-args -r __node:=cmd_
+6,7 | /usr/bin/python3 /opt/car_nav_ws/lib/car_nav_sim/mission --ros-args -r __node:=sim_mission

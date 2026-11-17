@@ -131,3 +131,28 @@ def _bisect(a: Sequence[float], x: float) -> int:
         else:
             hi = mid
     return lo
+
+
+def extrapolate_pose(x: float, y: float, th: float, v: float, omega: float, age: float,
+                     max_dist: float = 0.3) -> tuple[float, float, float]:
+    """Pose `age` seconds later, driving at speed v (m/s) and yaw rate omega (rad/s).
+
+    The pose the follower reads (map -> base_link) is as old as the last
+    odometry message; on a busy computer that is 0.2-0.4 s (sim, 2 CPUs),
+    i.e. 0.1-0.2 m at 0.5 m/s. v and omega are the odometry's own latest
+    velocities (adaptive_odom: learned speed x delayed drive state, so 0
+    while it stands). Only forward motion, capped at max_dist metres; a
+    negative age or speed changes nothing. base_link (front axle) moves on
+    the arc x' = v cos th, y' = v sin th, th' = omega.
+    """
+    if age <= 0.0 or v <= 0.0 or max_dist <= 0.0:
+        return x, y, th
+    d = min(v * age, max_dist)
+    t = d / v
+    dth = omega * t
+    if abs(dth) < 1e-6:
+        return x + d * math.cos(th), y + d * math.sin(th), th
+    k = dth / d                      # curvature of the arc
+    return (x + (math.sin(th + dth) - math.sin(th)) / k,
+            y - (math.cos(th + dth) - math.cos(th)) / k,
+            wrap(th + dth))
