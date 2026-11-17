@@ -36,7 +36,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -96,7 +96,8 @@ class PDPathFollower(Node):
         self._chain = PlanarTfChain(self.get_parameter("global_frame").value, "odom",
                                     self.get_parameter("robot_frame").value)
         self._chain_lock = threading.Lock()
-        self.create_subscription(TFMessage, "/tf", self._on_tf, 100, callback_group=ReentrantCallbackGroup())
+        self.create_subscription(TFMessage, "/tf", self._on_tf, 100,
+                                 callback_group=MutuallyExclusiveCallbackGroup())  # one /tf callback at a time
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
         # /scan_nav is in laser_upright = base_link shifted to the laser, turned by its yaw
         self._laser = config_loader.laser_pose(cfg)
@@ -262,8 +263,11 @@ class PDPathFollower(Node):
 def main() -> None:
     rclpy.init()
     node = PDPathFollower()
-    # 2 threads: one runs the FollowPath loop, one serves scan / tf / odom callbacks
-    ex = MultiThreadedExecutor(num_threads=2)
+    # 4 threads: the FollowPath loop holds one (two while a new path replaces the old), the rest
+    # serve the action requests, scans and /tf. 2 threads made the goal acknowledgement miss the
+    # BT's 500 ms server timeout on 2 busy cores (sim 2026-11-17: 31 "Timed out while waiting
+    # for action server to acknowledge goal request", car never started), so it stays at 4.
+    ex = MultiThreadedExecutor(num_threads=4)
     ex.add_node(node)
     try:
         ex.spin()
