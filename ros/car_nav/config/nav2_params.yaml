@@ -214,8 +214,11 @@ global_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.6
+        # Slow decay over the whole 1.2 m corridor so Smac 2D keeps to its
+        # middle (4.0 / 0.6 let the path run 0.3 m from a wall: campus sim
+        # 2026-11-17, the car then could not turn on the spot at the goal).
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.8
       always_send_full_costmap: true
 
 planner_server:
@@ -235,7 +238,7 @@ planner_server:
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
-      cost_travel_multiplier: 2.0
+      cost_travel_multiplier: 4.0
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
@@ -411,7 +414,7 @@ pd_path_follower:
     rotate_enter_deg: 52.0
     rotate_exit_deg: 14.0
     rotate_gain: 2.0
-    min_rotate_rps: 0.5      # skid-steer wheels stick below a minimum turn rate
+    min_rotate_rps: 0.8      # skid-steer wheels stick below a minimum turn rate (0.5 stalled at 0.04 m/s wheels)
     goal_slow_m: 0.6
     rate_hz: 10.0
     xy_goal_tolerance: 0.2   # = general_goal_checker

@@ -29,6 +29,7 @@ setup(
             "pd_path_follower = car_nav.pd_path_follower:main",
             "adaptive_odom = car_nav.adaptive_odom:main",
             "pose_gate = car_nav.pose_gate:main",
+            "ugv_serial_bridge = car_nav.ugv_serial_bridge:main",
         ],
     },
 )

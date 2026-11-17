@@ -149,6 +149,10 @@ services:
     network_mode: host
     devices:
       - ${LIDAR_DEVICE:-/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0}:/dev/rplidar
+      # Skid-steer car: the ugv-controller ESP32-C3 (USB CDC, 303a:1001). Only
+      # ugv_serial_bridge (car.launch.py) writes to it. Find the stable path
+      # with `ls -l /dev/serial/by-id/` and set UGV_DEVICE in .env.
+      - ${UGV_DEVICE:-/dev/ttyACM0}:/dev/ugv
     # Astra Pro depth (2bc5:0403) and colour (2bc5:0501) are read over
     # libusb/libuvc, so the container needs the USB bus (char major 189),
     # but no /dev/videoN node: the lane camera stays invisible as V4L2.
@@ -158,6 +162,9 @@ services:
       - /dev/bus/usb:/dev/bus/usb
       - ${PI5_DEST_DIR:-/opt/car-calib-pi5}/data/nav:/data/nav
       - ./ros/car_nav/config/car.yaml:/config/car.yaml:ro
+    # Default: sensors only (nothing moves the car). The whole NAV2 mode with
+    # the motor bridge: ROS_NAV_COMMAND="ros2 launch car_nav car.launch.py map:=/data/nav/maps/<map>.yaml"
+    command: ${ROS_NAV_COMMAND:-ros2 launch car_nav sensors.launch.py}
     environment:
       - CAR_NAV_CONFIG=/config/car.yaml
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}

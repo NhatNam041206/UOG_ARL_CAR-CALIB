@@ -46,6 +46,40 @@ for the car's `ugv-controller` turns that into its own command (see
 (`"<angle>,<drive_code>"` on `/car/raspi5/control`) stays on
 `claude/project-thread-t304ze`.
 
+## Running it on the skid-steer car
+
+Motor controller: `ugv-controller` (ESP32-C3 Super Mini, USB CDC, 303a:1001).
+It takes `"<left> <right>"` integers -500..500 (ESC pulse 1500 ± us), has
+no wheel encoders, and streams its MPU6050 as `IMU: ...` lines at 10 Hz.
+`car_nav/ugv_serial_bridge.py` writes Nav2's `/car/wheels/cmd` to it at
+20 Hz (m/s → units with `car.yaml ugv.*`) and publishes the IMU on
+`/imu/data_raw`.
+
+**Safety: the firmware has no command timeout.** If the computer hangs or
+the USB cable comes out while the car drives, it keeps the last speed. The
+bridge sends `0 0` whenever Nav2 stops commanding (0.5 s watchdog) and
+`stop` when it exits, but it cannot help if it hangs itself. Keep the motor
+power switch within reach. [ugv-controller-failsafe.patch](ugv-controller-failsafe.patch)
+adds a 0.5 s timeout to `main/main.c` if the firmware can ever be reflashed.
+
+1. Build the image with Nav2 (GitHub Actions **ros-nav image (arm64)**, or
+   `docker build -f docker/ros/Dockerfile -t car-calib-ros-nav:latest .`).
+2. `.env`: `UGV_DEVICE=/dev/serial/by-id/usb-Espressif_...` (see
+   `ls -l /dev/serial/by-id/`), `LIDAR_DEVICE` as before.
+3. First run with the wheels off the ground and motors off:
+   `ROS_NAV_COMMAND="ros2 launch car_nav car.launch.py slam:=true motors:=false"`.
+   Check `/scan` (LEFT/RIGHT with `scan_probe`), `/imu/data_raw`, and that
+   `/car/wheels/cmd` changes when you send a goal in RViz.
+4. Calibrate on the floor (`car.yaml ugv:` / `drive:`): drive `100 100` for
+   5 s and measure the distance → `units_per_mps`; the smallest `n n` that
+   moves the car → `deadband_units`; track width → `drive.track_width_m`;
+   `100 0` must turn the car RIGHT (else `swap_sides`), `100 100` must go
+   forward on both sides (else `invert_*`).
+5. Map: `slam:=true`, drive around, save with
+   `ros2 run nav2_map_server map_saver_cli -f /data/nav/maps/<name>`; then
+   `car.launch.py map:=/data/nav/maps/<name>.yaml` and set the initial pose
+   in RViz.
+
 ## Geometry (`ros/car_nav/config/car.yaml`)
 
 `base_link` is the floor point at the **centre** of the car, midway between

@@ -63,3 +63,16 @@ drive:
   # NAV2 drives forward and turns on the spot; reversing stays off until the
   # rear is checked by a sensor (the LiDAR sees it, but nothing is tuned for it).
   allow_reverse: false
+
+ugv:
+  # Motor controller: ugv-controller (ESP32-C3, USB serial, "<left> <right>"
+  # integers -500..500 = ESC pulse 1500 +- us). car_nav/ugv_link.py.
+  # Open loop, so m/s -> units must be measured: drive "100 100" for 5 s on
+  # the floor, measure the distance d (m): units_per_mps = 100 / (d / 5).
+  units_per_mps: null
+  assumed_units_per_mps: 250   # 0.4 m/s cruise -> "100 100" (the guide's start speed)
+  deadband_units: 0            # ESC dead band: smallest |units| that turns a wheel
+  max_units: 200               # never send more (safety cap; 0.6 m/s wheel limit = 150)
+  invert_left: false           # a side that drives backwards on "100 100"
+  invert_right: false
+  swap_sides: false            # "100 0" turns the car LEFT -> sides are swapped

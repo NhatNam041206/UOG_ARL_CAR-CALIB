@@ -11,15 +11,16 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <!-- nav.launch.py also needs Nav2, slam_toolbox and rf2o. They are NOT
-       listed here on purpose: the ros-nav (car) image stays sensors-only
-       until WO-03. docker/sim/Dockerfile installs them. -->
+  <!-- nav.launch.py also needs Nav2, slam_toolbox and rf2o. They are not
+       listed here (rosdep would pull the whole stack into every build):
+       docker/ros/Dockerfile and docker/sim/Dockerfile install them. -->
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>launch_xml</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
   <exec_depend>astra_camera</exec_depend>
 

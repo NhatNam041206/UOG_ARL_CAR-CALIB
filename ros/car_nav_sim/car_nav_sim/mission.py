@@ -22,7 +22,7 @@ from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 
 try:  # Jazzy nav2_msgs
     from nav2_msgs.msg import CollisionMonitorState
@@ -97,6 +97,7 @@ class Tracker:
         self._trace_t = -math.inf
         self.last_cmd = None
         self.cm_state = ""
+        self.plan = []  # latest global plan [(x, y), ...] (every 5th pose)
 
     def on_truth(self, msg: Odometry) -> None:
         p = msg.pose.pose
@@ -120,9 +121,12 @@ class Tracker:
             self._trace_t = t
             e = self.estimate()
             est = [round(e[0], 2), round(e[1], 2), round(math.degrees(e[2]))] if e else None
+            plan_d = min((math.hypot(px - x, py - y) for px, py in self.plan), default=None)
             self.trace.append({
                 "t": round(t, 1), "true": [round(x, 2), round(y, 2), round(math.degrees(th))],
                 "est": est, "cmd": self.last_cmd, "cm": self.cm_state, "clear": round(clear, 2),
+                # distance from the TRUE pose to the latest global plan
+                "plan_d": None if plan_d is None else round(plan_d, 2),
             })
 
     def estimate(self):
@@ -136,6 +140,10 @@ class Tracker:
             except Exception:  # noqa: BLE001 - TF not ready yet
                 pass
         return self.amcl
+
+    def on_plan(self, msg: Path) -> None:
+        pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
+        self.plan = pts[::5] + pts[-1:] if pts else []
 
     def on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         p = msg.pose.pose
@@ -200,6 +208,7 @@ def main() -> None:
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
     nav.create_subscription(String, WHEELS_TOPIC, tracker.on_control, 50)
     nav.create_subscription(Odometry, "/odom", tracker.on_odom, 20)
+    nav.create_subscription(Path, "/plan", tracker.on_plan, 5)
     if CollisionMonitorState is not None:
         nav.create_subscription(CollisionMonitorState, "/collision_monitor_state", tracker.on_cm, 20)
 
