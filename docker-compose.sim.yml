@@ -1,0 +1,41 @@
+# NAV2 simulator for a laptop. NOT for the Pi. See docs/car_nav/simulation.md.
+#
+#   docker compose -f docker-compose.sim.yml build
+#   ./scripts/sim/run_sim.sh mission loop_left
+#
+# Safety: the simulator publishes "<angle>,<drive_code>" on the ROS topic
+# /car/raspi5/control exactly like NAV2 on the car. It must never be seen
+# by the car's ros-nav container, so it runs on its own Docker network
+# (no host network), its own ROS domain, and DDS discovery limited to
+# localhost.
+services:
+  sim:
+    build:
+      context: .
+      dockerfile: docker/sim/Dockerfile
+    image: car-calib-nav-sim:latest
+    container_name: car-calib-nav-sim
+    environment:
+      - ROS_DOMAIN_ID=${SIM_ROS_DOMAIN_ID:-77}
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - DISPLAY=${DISPLAY:-}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}
+      - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}
+      - PULSE_SERVER=${PULSE_SERVER:-}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      # Edit these on the laptop; no rebuild needed (restart the run).
+      # Whole packages (the image is built with --symlink-install, so Python
+      # code and launch files are read from here). Rebuild only after adding a
+      # new file to launch/ or rviz/, a new executable, or a Dockerfile change.
+      - ./ros/car_nav:/ws/src/car_nav:ro
+      - ./ros/car_nav_sim:/ws/src/car_nav_sim:ro
+      - ./ros/car_nav/config:/opt/car_nav_ws/share/car_nav/config:ro
+      - ./ros/car_nav/behavior_trees:/opt/car_nav_ws/share/car_nav/behavior_trees:ro
+      - ./ros/car_nav_sim/config:/opt/car_nav_ws/share/car_nav_sim/config:ro
+      - ./ros/car_nav_sim/worlds:/opt/car_nav_ws/share/car_nav_sim/worlds:ro
+      - ./ros/car_nav_sim/missions:/opt/car_nav_ws/share/car_nav_sim/missions:ro
+      - ./run_logs/sim:/data/sim
+      - ./scripts/sim:/opt/car_nav_sim_tools:ro   # report_view.py (run_sim.sh view)
+      # X11 socket: added by run_sim.sh only for SIM_VIEW=x11 (the browser view needs none)
+    shm_size: "1gb"

@@ -1,0 +1,1 @@
+args:  SIM_CPUS= SIM_STRESS= CAR_CORES=0-5 wall_s=133

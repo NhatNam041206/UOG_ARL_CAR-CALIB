@@ -1,0 +1,1 @@
+args:  SIM_CPUS= SIM_STRESS=speed_drift wall_s=142

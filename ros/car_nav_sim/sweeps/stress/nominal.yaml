@@ -1,0 +1,2 @@
+description: the simulated car exactly as config/sim.yaml (matches car.yaml's guesses)
+sim: {}

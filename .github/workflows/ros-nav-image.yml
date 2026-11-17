@@ -3,13 +3,10 @@
 # laptop:  ./deploy_pi5_remote.sh --ros-image ros-nav-<sha>.tar.gz
 name: ros-nav image (arm64)
 
+# Manual only (nam 2026-11-17): every push used to upload a ~650 MB image
+# and filled the Actions artifact quota. Images are also built locally.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "docker/ros/**"
-      - "ros/**"
-      - ".github/workflows/ros-nav-image.yml"
 
 permissions:
   contents: read

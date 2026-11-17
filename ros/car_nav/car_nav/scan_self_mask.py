@@ -16,6 +16,7 @@ from sensor_msgs.msg import LaserScan
 
 from . import config_loader
 from .geometry import bearing_deg, beam_to_base, self_mask
+from .timing import TimingStats
 
 
 class ScanSelfMask(Node):
@@ -28,7 +29,9 @@ class ScanSelfMask(Node):
         self._margin = float(mask.get("margin_m", 0.03))
         self._sectors = [tuple(s) for s in (mask.get("sectors_deg") or [])]
         self._pub = self.create_publisher(LaserScan, "scan_filtered", qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
+        self._timing = TimingStats(self.get_logger())
+        self.create_subscription(LaserScan, "scan", self._timing.wrap("mask.scan_cb", self._on_scan),
+                                 qos_profile_sensor_data)
         self._last_report = 0.0
         self._masked_bearings: set[int] = set()
 

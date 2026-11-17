@@ -18,6 +18,7 @@ There is no mode arbiter and no local broker (decided 2026-11-10).
 | WO-02 | `car/drive_mode` flag + dashboard mode selector, nav bridge (`cmd_vel` → `"<angle>,<drive_code>"` through `map_calibrated_servo()`), teleop, servo → curvature table, Last Will `62,0` in NAV2 only | next |
 | WO-03 | rf2o, slam_toolbox, AMCL, Nav2 (Smac Hybrid forward only + Regulated Pure Pursuit), collision monitor, behavior tree without spin/back-up | later |
 | WO-04 | Dashboard NAV2 tab (map, goals, status), event log | later |
+| SIM | Laptop simulator (Gazebo Harmonic + 2D backend), shared `nav2_params.yaml`, `nav.launch.py`, `actuation.py` (cmd_vel → payload), `cmd_vel_to_control` (ROS topic only). See [simulation.md](simulation.md) | PR stacked on WO-01 |
 
 ## Hardware on the Pi5 (checked 2026-11-10)
 

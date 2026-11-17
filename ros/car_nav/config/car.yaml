@@ -50,3 +50,24 @@ speed:
   measured: false
   stopping_distance_m: null
   command_latency_s: null
+
+steering:
+  # Rear-wheel steering, front axle fixed: the turn centre lies on the
+  # front-axle line. Used by the cmd_vel -> "<angle>,<drive_code>" mapping
+  # (car_nav/actuation.py) on the car and in the simulator.
+  wheelbase_m: 0.28        # front axle -> rear axle (nam, 2026-11-10)
+  servo_center: 62         # absolute servo angle that drives straight
+  servo_min: 35            # physical servo limits (absolute angle)
+  servo_max: 140
+  # Which way the CAR turns when the servo angle goes ABOVE centre. The
+  # VISION `left` presets send angles above centre, so "left". Confirm on
+  # the floor (rear wheels point right when the car turns left).
+  servo_up_turns: left
+  # Measured table [[absolute servo angle, path curvature 1/m, + = left], ...]
+  # from driving full circles at fixed servo angles (curvature = 1/radius of
+  # the front-axle centre's circle). null = not measured yet: a placeholder
+  # is built from the wheelbase, with rear wheel angle = servo offset x
+  # assumed_linkage_ratio, capped at assumed_max_wheel_deg.
+  curvature_table: null
+  assumed_linkage_ratio: 1.0
+  assumed_max_wheel_deg: 30.0

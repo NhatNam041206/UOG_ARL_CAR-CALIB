@@ -1,0 +1,14 @@
+# Campus tile map (worlds/campus_path.yaml, 0.6 m tiles): counter-clockwise
+# round the block east of AAD-1, so every corner is a LEFT turn (the car's
+# stronger side). Start next to AAD-1 facing south, down the 3-tile corridor,
+# east along the 2-tile corridor, north up the 2-tile corridor past F.218,
+# west along the 3-tile corridor towards AAD-1.
+# Cell (row, col) centre: x = (col + 68.5) * 0.6, y = (15.5 - row) * 0.6.
+world: campus_path
+goal_timeout_s: 120
+start: [43.5, 26.4, -1.5708]     # col 4, row -28.5, facing south
+goals:
+  - [43.5, 15.3, -1.5708]        # col 4,  row -10   (3-tile corridor)
+  - [50.1, 12.0, 0.0]            # col 15, row -4.5  (2-tile corridor)
+  - [54.6, 21.3, 1.5708]         # col 22.5, row -20 (2-tile corridor)
+  - [48.3, 27.3, 3.1416]         # col 12, row -30   (3-tile corridor)
