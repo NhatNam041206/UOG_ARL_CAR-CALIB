@@ -109,6 +109,21 @@ the car, the path and the guard zones. You can:
 * **EMERGENCY STOP**: the guard sends zero until you press RELEASE STOP. This is a
   software stop over Wi-Fi: it does not replace the motor power switch.
 
+**Driving** sliders: cruise speed, max turn rate, slow-down before curves (PD follower,
+act from the next goal).
+
+**Profiles** (saved on the mini-PC in `/data/nav/ui/profiles/`, survive restarts and image
+updates): *Save current* stores what the sliders show (guard + driving) under a name, with a
+note; *Load + apply* sends a profile to the car; *Use at start* applies it every time the
+stack starts; *Delete*. Also over HTTP: `GET/PUT/DELETE /api/profiles/<name>`.
+
+**Tests** (saved in `/data/nav/ui/tests/`): type a name, *Start recording*, drive / walk in
+front of the car, *Stop + save*. A record holds the parameters in use, every event (guard
+stop/slow/clear with the distance, goals, initial pose, E-STOP, parameter changes) and a
+5 Hz trace (pose, guard state, nearest person, wheel command). The list shows a summary
+(time, distance, stops, nearest person, goals); add a verdict and a note, **Download** the
+JSON to send for analysis, or delete it.
+
 The ports are open to the whole network the mini-PC is on: use it on the lab's own Wi-Fi.
 In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open
 `http://localhost:8080`.

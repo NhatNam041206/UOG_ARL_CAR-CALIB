@@ -13,6 +13,26 @@ this node does the ROS-side work:
 
 The page publishes /initialpose, /goal_pose, /ui/estop and /ui/safety_params
 itself (see web/index.html). HTTP: http://<car>:<http_port>/ (default 8080).
+
+Profiles and test records (ui_store.py, JSON files under data_dir), REST:
+
+  GET    /api/profiles                     list (name, note, updated, default)
+  GET    /api/profiles/<name>              one profile {"guard": {...}, "drive": {...}, "note"}
+  PUT    /api/profiles/<name>              create / overwrite (body = the profile)
+  DELETE /api/profiles/<name>
+  POST   /api/profiles/<name>/apply        send it to safety_guard and pd_path_follower now
+  POST   /api/profiles/<name>/default      apply it every time the stack starts
+  POST   /api/tests/start  {"name","note"} start recording (5 Hz samples + events)
+  POST   /api/tests/stop                   stop and save; returns the summary
+  GET    /api/tests/status                 recording or not
+  GET    /api/tests                        list with summaries
+  GET    /api/tests/<id>[?download=1]      the whole record (download = as a file)
+  PUT    /api/tests/<id>   {"note","verdict"}
+  DELETE /api/tests/<id>
+
+"drive" values (speed_mps, max_yaw_rate_rps, lat_accel_mps2, kp, kd) are set
+on pd_path_follower with its set_parameters service; they act from the next
+goal on. /ui/drive_params (std_msgs/String, JSON) does the same live.
 """
 from __future__ import annotations
 
@@ -22,6 +42,8 @@ import json
 import math
 import os
 import threading
+import time
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import rclpy
@@ -34,8 +56,18 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from rcl_interfaces.msg import Parameter as ParamMsg
+from rcl_interfaces.msg import ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
+from std_msgs.msg import Bool
+
 from . import config_loader
+from .actuation import WHEELS_TOPIC, parse_payload
 from .ui_pack import rle
+from .ui_store import ProfileStore, TestRecorder, TestStore
+
+DRIVE_KEYS = ("speed_mps", "max_yaw_rate_rps", "lat_accel_mps2", "kp", "kd")
 
 
 def _yaw(q) -> float:
@@ -59,6 +91,16 @@ class UiBridge(Node):
         self.declare_parameter("rosbridge_port", 9090)
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("web_dir", "")
+        self.declare_parameter("data_dir", "/data/nav/ui")   # profiles + test records (a volume on the car)
+        data_dir = self.get_parameter("data_dir").value
+        self._profiles = ProfileStore(data_dir)
+        self._tests = TestStore(data_dir)
+        self._rec: TestRecorder | None = None
+        self._rec_lock = threading.Lock()
+        self._drive: dict = {}
+        self._wheels = None
+        self._guard_prev = None
+        self._default_applied = False
         cfg = config_loader.load()
         fp = config_loader.footprint(cfg)
         laser = config_loader.laser_pose(cfg)
@@ -81,6 +123,18 @@ class UiBridge(Node):
                                  qos_profile_sensor_data)
         self.create_subscription(Path, "/plan", self._on_plan, 5)
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
+        self.create_subscription(String, WHEELS_TOPIC, self._on_wheels, 20)
+        self.create_subscription(PoseStamped, "/goal_pose", lambda m: self._event(
+            "goal", x=round(m.pose.position.x, 2), y=round(m.pose.position.y, 2)), 10)
+        self.create_subscription(PoseWithCovarianceStamped, "/initialpose", lambda m: self._event(
+            "initial_pose", x=round(m.pose.pose.position.x, 2), y=round(m.pose.pose.position.y, 2)), 10)
+        self.create_subscription(Bool, "/ui/estop", lambda m: self._event("estop", on=bool(m.data)), 10)
+        self.create_subscription(String, "/ui/safety_params", lambda m: self._event("guard_params", data=m.data), 10)
+        self.create_subscription(String, "/ui/drive_params", self._on_drive_params, 10)
+        self._guard_params_pub = self.create_publisher(String, "/ui/safety_params", 10)
+        self._pd_params = self.create_client(SetParameters, "/pd_path_follower/set_parameters")
+        self._pd_get = self.create_client(GetParameters, "/pd_path_follower/get_parameters")
+        self._drive_timer = self.create_timer(2.0, self._read_drive)
         self.create_timer(3.0, self._publish_map)
         self.create_timer(0.2, self._publish_state)
         self._start_http()
@@ -88,7 +142,7 @@ class UiBridge(Node):
     def _start_http(self) -> None:
         web = self.get_parameter("web_dir").value or os.path.join(get_package_share_directory("car_nav"), "web")
         port = int(self.get_parameter("http_port").value)
-        handler = functools.partial(_QuietHandler, directory=web)
+        handler = functools.partial(_ApiHandler, directory=web, bridge=self)
         try:
             srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
         except OSError as exc:
@@ -121,7 +175,104 @@ class UiBridge(Node):
         try:
             self._guard = json.loads(msg.data)
         except ValueError:
-            pass
+            return
+        st = self._guard.get("state")
+        if st != self._guard_prev:
+            self._event("guard", to=st, nearest=self._guard.get("nearest_m"))
+            self._guard_prev = st
+        if not self._default_applied:      # the guard is up: apply the start profile once
+            self._default_applied = True
+            name = self._profiles.default()
+            if name:
+                self.get_logger().info(f"applying the default profile {name!r}")
+                self.apply_profile(name)
+
+    def _on_wheels(self, msg: String) -> None:
+        self._wheels = parse_payload(msg.data)
+
+    # ------------------------------------------------------------- profiles
+    def _on_drive_params(self, msg: String) -> None:
+        try:
+            self.set_drive(json.loads(msg.data))
+        except ValueError:
+            self.get_logger().warn(f"bad /ui/drive_params: {msg.data!r}")
+
+    def _read_drive(self) -> None:
+        """Once: the follower's current drive values, so the page starts from them."""
+        if self._drive or not self._pd_get.service_is_ready():
+            if self._drive:
+                self._drive_timer.cancel()
+            return
+        fut = self._pd_get.call_async(GetParameters.Request(names=list(DRIVE_KEYS)))
+
+        def done(f) -> None:
+            try:
+                vals = f.result().values
+            except Exception:  # noqa: BLE001
+                return
+            for k, v in zip(DRIVE_KEYS, vals):
+                if v.type == ParameterType.PARAMETER_DOUBLE:
+                    self._drive.setdefault(k, v.double_value)
+        fut.add_done_callback(done)
+
+    def set_drive(self, d: dict) -> dict:
+        vals = {k: float(d[k]) for k in DRIVE_KEYS if k in d}
+        if not vals:
+            return {}
+        self._drive.update(vals)
+        req = SetParameters.Request()
+        for k, v in vals.items():
+            req.parameters.append(ParamMsg(name=k, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                                                                        double_value=v)))
+        if self._pd_params.service_is_ready():
+            self._pd_params.call_async(req)
+        else:
+            self.get_logger().warn("pd_path_follower parameters not reachable (controller:=rpp?)")
+        self._event("drive_params", data=vals)
+        return vals
+
+    def apply_profile(self, name: str) -> dict | None:
+        prof = self._profiles.get(name)
+        if prof is None:
+            return None
+        if prof.get("guard"):
+            self._guard_params_pub.publish(String(data=json.dumps(prof["guard"])))
+        if prof.get("drive"):
+            self.set_drive(prof["drive"])
+        self._event("profile_applied", name=prof.get("name"))
+        return prof
+
+    def current(self) -> dict:
+        return {"guard": (self._guard or {}).get("params", {}), "drive": dict(self._drive)}
+
+    # ---------------------------------------------------------------- tests
+    def _event(self, kind: str, **data) -> None:
+        with self._rec_lock:
+            if self._rec is not None:
+                self._rec.event(kind, **data)
+
+    def start_test(self, name: str, note: str = "") -> dict:
+        with self._rec_lock:
+            if self._rec is not None:
+                raise ValueError(f"already recording {self._rec.name!r}")
+            self._rec = TestRecorder(name=name, note=note, params=self.current())
+        self.get_logger().info(f"test {name!r}: recording")
+        return {"recording": True, "name": name}
+
+    def stop_test(self) -> dict:
+        with self._rec_lock:
+            rec, self._rec = self._rec, None
+        if rec is None:
+            raise ValueError("not recording")
+        tid = self._tests.save(rec)
+        self.get_logger().info(f"test {rec.name!r} saved as {tid}: {rec.summary()}")
+        return {"id": tid, "summary": rec.summary()}
+
+    def test_status(self) -> dict:
+        with self._rec_lock:
+            r = self._rec
+            return {"recording": r is not None, "name": r.name if r else None,
+                    "elapsed_s": round(time.time() - r.started, 1) if r else None}
 
     def _lookup(self, child: str):
         try:
@@ -138,6 +289,8 @@ class UiBridge(Node):
         st["guard"] = self._guard
         st["plan"] = self._plan
         st["scan"] = st["dyn"] = []
+        st["drive"] = self._drive
+        st["test"] = self.test_status()
         if self._scan is not None:
             sp = self._lookup(self._scan.header.frame_id)
             if sp is not None:
@@ -145,11 +298,110 @@ class UiBridge(Node):
                 if self._dyn is not None:
                     st["dyn"] = scan_to_map(self._dyn, sp, step=1)
         self._state_pub.publish(String(data=json.dumps(st)))
+        with self._rec_lock:
+            if self._rec is not None:
+                self._rec.sample(st["pose"], (self._guard or {}).get("state"), (self._guard or {}).get("nearest_m"),
+                                 list(self._wheels) if self._wheels else None, len(st["dyn"]))
 
 
-class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+class _ApiHandler(http.server.SimpleHTTPRequestHandler):
+    """Static files + the /api/ endpoints (see the module docstring)."""
+
+    def __init__(self, *args, bridge: UiBridge, **kwargs) -> None:
+        self.bridge = bridge
+        super().__init__(*args, **kwargs)
+
     def log_message(self, *args) -> None:  # noqa: D401 - silence per-request logs
         pass
+
+    def _json(self, code: int, data, filename: str | None = None) -> None:
+        body = json.dumps(data, indent=1).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        data = json.loads(self.rfile.read(min(n, 1_000_000)).decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+
+    def _api(self, method: str) -> None:
+        url = urlparse(self.path)
+        parts = [p for p in url.path.split("/") if p][1:]     # drop "api"
+        b, ps, ts = self.bridge, self.bridge._profiles, self.bridge._tests
+        from urllib.parse import unquote
+        parts = [unquote(p) for p in parts]
+        try:
+            if parts[:1] == ["profiles"]:
+                if len(parts) == 1 and method == "GET":
+                    return self._json(200, {"profiles": ps.list(), "current": b.current()})
+                name = parts[1]
+                if len(parts) == 2 and method == "GET":
+                    d = ps.get(name)
+                    return self._json(200, d) if d else self._json(404, {"error": "no such profile"})
+                if len(parts) == 2 and method == "PUT":
+                    body = self._body()
+                    if not body.get("guard") and not body.get("drive"):
+                        body = {**b.current(), "note": body.get("note", "")}   # save what is active now
+                    return self._json(200, ps.put(name, body))
+                if len(parts) == 2 and method == "DELETE":
+                    return self._json(200 if ps.delete(name) else 404, {"deleted": name})
+                if len(parts) == 3 and parts[2] == "apply" and method == "POST":
+                    d = b.apply_profile(name)
+                    return self._json(200, d) if d else self._json(404, {"error": "no such profile"})
+                if len(parts) == 3 and parts[2] == "default" and method == "POST":
+                    if ps.get(name) is None:
+                        return self._json(404, {"error": "no such profile"})
+                    ps.set_default(name)
+                    return self._json(200, {"default": name})
+            if parts[:1] == ["tests"]:
+                if len(parts) == 1 and method == "GET":
+                    return self._json(200, {"tests": ts.list(), "status": b.test_status()})
+                if parts[1:] == ["start"] and method == "POST":
+                    body = self._body()
+                    return self._json(200, b.start_test(body.get("name") or "test", body.get("note", "")))
+                if parts[1:] == ["stop"] and method == "POST":
+                    return self._json(200, b.stop_test())
+                if parts[1:] == ["status"] and method == "GET":
+                    return self._json(200, b.test_status())
+                tid = parts[1]
+                if method == "GET":
+                    d = ts.get(tid)
+                    if d is None:
+                        return self._json(404, {"error": "no such test"})
+                    dl = "download" in parse_qs(url.query)
+                    return self._json(200, d, filename=f"{tid}.json" if dl else None)
+                if method == "PUT":
+                    d = ts.update(tid, self._body())
+                    return self._json(200, d) if d else self._json(404, {"error": "no such test"})
+                if method == "DELETE":
+                    return self._json(200 if ts.delete(tid) else 404, {"deleted": tid})
+            return self._json(404, {"error": "unknown endpoint"})
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - never kill the server thread
+            return self._json(500, {"error": repr(exc)})
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/"):
+            return self._api("GET")
+        return super().do_GET()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        return self._api("PUT")
+
+    def do_POST(self) -> None:  # noqa: N802
+        return self._api("POST")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        return self._api("DELETE")
 
 
 def main() -> None:

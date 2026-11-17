@@ -158,6 +158,7 @@ def _setup(context, *args, **kwargs):
             "ui": arg("ui"),
             # the mounted source: edits to web/index.html show on reload, no rebuild
             "ui_web_dir": "/ws/src/car_nav/web",
+            "ui_data_dir": "/data/sim/ui",    # = run_logs/sim/ui on the laptop
         }.items(),
     ))
 

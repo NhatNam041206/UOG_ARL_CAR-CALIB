@@ -37,6 +37,11 @@
   input[type=range] { width: 100%; }
   #hint { position: absolute; left: 12px; top: 12px; background: rgba(16,20,24,.85); padding: 6px 10px;
     border-radius: 6px; color: var(--muted); max-width: calc(100% - 24px); }
+  input:not([type]), select { background: #0f151b; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 8px; font: inherit; min-width: 0; }
+  .test { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 8px 0; font-size: 13px; }
+  .test .row { margin: 4px 0; flex-wrap: wrap; }
+  .test a { color: var(--accent); }
   #legend { position: absolute; left: 12px; bottom: 12px; background: rgba(16,20,24,.85); padding: 6px 10px;
     border-radius: 6px; font-size: 12px; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 4px 0 10px; }
@@ -78,7 +83,25 @@
     <label class="row"><input type="checkbox" id="p_enabled"> enabled</label>
     <div id="sliders"></div>
     <div class="row"><button id="apply">Apply</button><span id="applied" class="muted"></span></div>
-    <h2>Car</h2>
+    <h2>Driving</h2>
+    <div id="dsliders"></div>
+    <div class="row"><button id="dapply">Apply</button><span id="dapplied" class="muted">acts from the next goal</span></div>
+    <h2>Profiles</h2>
+    <div class="row"><select id="plist" style="flex:1"></select></div>
+    <div class="tools">
+      <button id="pload">Load + apply</button>
+      <button id="pdefault">Use at start</button>
+      <button id="pdelete">Delete</button>
+    </div>
+    <div class="row" style="margin-top:8px"><input id="pname" placeholder="profile name" style="flex:1">
+      <button id="psave">Save current</button></div>
+    <input id="pnote" placeholder="note (optional)" style="width:100%">
+    <div id="pmsg" class="muted"></div>
+    <h2>Tests</h2>
+    <div class="row"><input id="tname" placeholder="test name, e.g. corridor_person_0.6m" style="flex:1"></div>
+    <div class="row"><button id="tstart">Start recording</button><button id="tstop">Stop + save</button></div>
+    <div id="tstatus" class="muted"></div>
+    <div id="tlist"></div>
     <div class="muted" id="pose">pose –</div>
     <p class="muted" style="margin-top:16px">Only points in <b>front</b> of the car (within the field of
       view, past the nose) and <b>not on the map</b> count for the guard; walls are handled by the
@@ -348,7 +371,124 @@ function draw() {
   }
   requestAnimationFrame(draw);
 }
+// ------------------------------------------------------------- driving
+const DSLIDERS = [
+  ["speed_mps", "Cruise speed", 0.1, 0.6, 0.05, "m/s"],
+  ["max_yaw_rate_rps", "Max turn rate", 0.3, 2.5, 0.1, "rad/s"],
+  ["lat_accel_mps2", "Slow before curves (lateral accel)", 0.1, 1.0, 0.05, "m/s²"],
+];
+let dEdited = false;
+$("dsliders").innerHTML = DSLIDERS.map(([k, label, lo, hi, st, unit]) =>
+  `<label class="slider"><span>${label}<b><output id="o_${k}"></output> ${unit}</b></span>
+   <input type="range" id="p_${k}" min="${lo}" max="${hi}" step="${st}"></label>`).join("");
+for (const [k] of DSLIDERS) $("p_" + k).addEventListener("input", () => {
+  dEdited = true; $("o_" + k).textContent = $("p_" + k).value; $("dapplied").textContent = "not applied"; });
+function loadDrive(d) {
+  for (const [k] of DSLIDERS) if (d && k in d) { $("p_" + k).value = d[k]; $("o_" + k).textContent = (+d[k]).toFixed(2); }
+}
+$("dapply").onclick = () => {
+  const d = {}; for (const [k] of DSLIDERS) d[k] = parseFloat($("p_" + k).value);
+  send({ op: "publish", topic: "/ui/drive_params", msg: { data: JSON.stringify(d) } });
+  dEdited = false; $("dapplied").textContent = "applied (from the next goal)";
+};
+const _onState = onState;
+onState = (s) => { _onState(s); if (!dEdited && s.drive) loadDrive(s.drive); showTest(s.test); };
+
+// ------------------------------------------------------------- REST API
+async function api(method, path, body) {
+  const r = await fetch("/api/" + path, { method, headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const enc = encodeURIComponent;
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+async function loadProfiles(select) {
+  try {
+    const d = await api("GET", "profiles");
+    $("plist").innerHTML = d.profiles.length ? d.profiles.map((p) =>
+      `<option value="${esc(p.name)}">${esc(p.name)}${p.default ? " (start)" : ""}${p.note ? " – " + esc(p.note) : ""}</option>`).join("")
+      : "<option value=''>no profiles yet</option>";
+    if (select) $("plist").value = select;
+  } catch (e) { $("pmsg").textContent = "profiles: " + e.message; }
+}
+const pmsg = (t) => { $("pmsg").textContent = t; };
+$("psave").onclick = async () => {
+  const name = $("pname").value.trim() || $("plist").value;
+  if (!name) return pmsg("type a name");
+  // save what the sliders show (applied or not)
+  const guard = { enabled: $("p_enabled").checked };
+  for (const [k] of SLIDERS) guard[k] = parseFloat($("p_" + k).value);
+  const drive = {}; for (const [k] of DSLIDERS) drive[k] = parseFloat($("p_" + k).value);
+  try { const p = await api("PUT", "profiles/" + enc(name), { guard, drive, note: $("pnote").value });
+        pmsg(`saved "${p.name}"`); loadProfiles(p.name); } catch (e) { pmsg(e.message); }
+};
+$("pload").onclick = async () => {
+  const name = $("plist").value; if (!name) return;
+  try { const p = await api("POST", `profiles/${enc(name)}/apply`);
+        edited = dEdited = false; loadParams({ ...state?.guard?.params, ...p.guard }); loadDrive(p.drive);
+        $("pname").value = p.name; $("pnote").value = p.note || ""; pmsg(`applied "${p.name}"`); }
+  catch (e) { pmsg(e.message); }
+};
+$("pdefault").onclick = async () => {
+  const name = $("plist").value; if (!name) return;
+  try { await api("POST", `profiles/${enc(name)}/default`); pmsg(`"${name}" is applied at every start`); loadProfiles(name); }
+  catch (e) { pmsg(e.message); }
+};
+$("pdelete").onclick = async () => {
+  const name = $("plist").value; if (!name || !confirm(`Delete profile "${name}"?`)) return;
+  try { await api("DELETE", "profiles/" + enc(name)); pmsg(`deleted "${name}"`); loadProfiles(); }
+  catch (e) { pmsg(e.message); }
+};
+
+// ---------------------------------------------------------------- tests
+function showTest(t) {
+  if (!t) return;
+  $("tstatus").textContent = t.recording ? `● recording "${t.name}" – ${t.elapsed_s}s` : "not recording";
+  $("tstatus").style.color = t.recording ? "var(--stop)" : "";
+}
+$("tstart").onclick = async () => {
+  try { await api("POST", "tests/start", { name: $("tname").value.trim() || "test" }); }
+  catch (e) { $("tstatus").textContent = e.message; }
+};
+$("tstop").onclick = async () => {
+  try { const r = await api("POST", "tests/stop"); $("tstatus").textContent = `saved ${r.id}`; loadTests(); }
+  catch (e) { $("tstatus").textContent = e.message; }
+};
+async function loadTests() {
+  try {
+    const d = await api("GET", "tests");
+    $("tlist").innerHTML = d.tests.slice(0, 30).map((t) => {
+      const s = t.summary || {};
+      return `<div class="test" data-id="${esc(t.id)}">
+        <div class="row"><b>${esc(t.name)}</b><span class="muted">${esc(t.started)}</span></div>
+        <div class="muted">${s.duration_s}s · ${s.distance_m} m · stops ${s.guard_stops} · nearest person
+          ${s.min_person_distance_m ?? "–"} m · goals ${s.goals}</div>
+        <div class="row"><select class="verdict"><option value="">verdict…</option>
+          ${["ok", "too cautious", "too late", "false stop", "failed"].map((v) =>
+            `<option ${t.verdict === v ? "selected" : ""}>${v}</option>`).join("")}</select>
+          <input class="note" placeholder="what happened" value="${esc(t.note)}" style="flex:1"></div>
+        <div class="row"><button class="tsave">Save note</button>
+          <a href="/api/tests/${enc(t.id)}?download=1">Download</a>
+          <button class="tdel">Delete</button></div></div>`;
+    }).join("") || "<p class='muted'>No tests yet.</p>";
+    $("tlist").querySelectorAll(".test").forEach((el) => {
+      const id = el.dataset.id;
+      el.querySelector(".tsave").onclick = async () => {
+        await api("PUT", "tests/" + enc(id), { note: el.querySelector(".note").value,
+          verdict: el.querySelector(".verdict").value });
+        el.querySelector(".tsave").textContent = "Saved";
+      };
+      el.querySelector(".tdel").onclick = async () => {
+        if (confirm("Delete this test record?")) { await api("DELETE", "tests/" + enc(id)); loadTests(); }
+      };
+    });
+  } catch (e) { $("tlist").textContent = "tests: " + e.message; }
+}
+
 buildSliders(); setConn(); connect(); requestAnimationFrame(draw);
+loadProfiles(); loadTests();
 </script>
 </body>
 </html>
