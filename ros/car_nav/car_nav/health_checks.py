@@ -17,7 +17,7 @@ A rule is (name, ok, value, rule text); a check passes when all its rules pass. 
            gyro axis std <= 0.05 rad/s (the car stands still)
   Wheels   per step: observer "yes" and the ESP32 echoed the command (/car/wheels/applied) within
            2 units of what ugv_link sends; all six steps must pass
-  Speed    moved 50 .. 160 % of the commanded distance, heading change <= 6 deg, not stopped by the guard,
+  Speed    moved 50 .. 160 % of the commanded distance, heading change <= 6 deg, never slowed or stopped by the safety guard,
            (tape distance given) tape within 20 % of the LiDAR distance, observer "yes"
 """
 from __future__ import annotations
@@ -428,7 +428,8 @@ def speed_result(cmd_v: float, t_cmd: float, t_window: tuple[float, float], odom
              f"{100 * lo:.0f} .. {100 * hi:.0f} %"),
         Rule("straight", heading is None or abs(math.degrees(heading)) <= t["speed_heading_deg"],
              "n/a" if heading is None else f"{math.degrees(heading):+.1f} deg", f"within +-{t['speed_heading_deg']} deg"),
-        Rule("guard", not guard_stopped, "stopped the car" if guard_stopped else "never stopped it", "no stop"),
+        Rule("guard", not guard_stopped, "slowed or stopped the car (drive where nothing is within 1.5 m ahead, "
+             "or load the map so walls are not 'people')" if guard_stopped else "never slowed or stopped it", "no slow / stop"),
     ]
     if tape_m is not None and total_path_m:
         err = abs(tape_m - total_path_m) / tape_m if tape_m > 0 else 1.0
@@ -441,8 +442,12 @@ def speed_result(cmd_v: float, t_cmd: float, t_window: tuple[float, float], odom
     return verdict(rules, out)
 
 
-def spin_result(cmd_w: float, t_window: tuple[float, float], yaws: list[tuple], track_m: float) -> dict:
+def spin_result(cmd_w: float, t_window: tuple[float, float], yaws: list[tuple], track_m: float,
+                guard_stopped: bool = False) -> dict:
     """Spin on the spot: real yaw rate, yaw_efficiency = real / commanded (the ideal turn of the wheels)."""
+    if guard_stopped:
+        return {"status": "fail", "rules": [], "detail": "the safety guard slowed or stopped the spin (something is within its "
+                "zone: spin where nothing is within 1.5 m ahead, or load the map)"}
     t0, t1 = t_window
     dyaw = window_yaw(yaws, t0, t1)
     if dyaw is None or t1 <= t0:

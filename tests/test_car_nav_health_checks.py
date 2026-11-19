@@ -192,3 +192,10 @@ def test_clearance_and_passed_today():
     assert not H.passed_today({"overall": "fail", "started_ts": now - 60}, now)
     assert not H.passed_today({"overall": "pass", "started_ts": now - 3 * 86400}, now)
     assert not H.passed_today(None, now)
+
+
+def test_spin_refused_when_guard_slowed_it():
+    yaws = [(i * 0.1, 0.4 * i * 0.1) for i in range(60)]
+    assert H.spin_result(0.5, (1.0, 5.0), yaws, 0.52)["status"] == "pass"
+    r = H.spin_result(0.5, (1.0, 5.0), yaws, 0.52, guard_stopped=True)
+    assert r["status"] == "fail" and "guard" in r["detail"]

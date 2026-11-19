@@ -45,7 +45,7 @@ from .ugv_link import UgvConfig
 ALL_CHECKS = ("lidar", "depth", "camera", "imu", "wheels", "speed")
 ACTUATORS = ("wheels", "speed")
 HEARTBEAT_S = 0.5
-GUARD_OK = ("clear", "slow", "depth_stale", "off")
+GUARD_OK = ("clear", "depth_stale", "off")      # "slow" would scale the speed: not a valid measurement
 DEFAULTS = {"wheel_speed_mps": 0.15, "pulse_s": 1.5, "announce_s": 3.0, "answer_timeout_s": 30.0,
             "speed_mps": 0.2, "duration_s": 4.5, "spin_rps": 0.5, "spin_s": 3.0, "tape_timeout_s": 120.0,
             "collect_s": 4.5}
@@ -629,7 +629,7 @@ class HealthRunner:
             t_stop = time.monotonic()
             o2 = [(t, x, y) for t, x, y, _ in odom]
             yaws = [(t, yw) for t, _, _, yw in odom]
-            total = window_total(o2, t_start, t_stop)
+            total = window_total(o2, t_start, min(t_stop, o2[-1][0]))
             tape_ans, tape = None, None
             win = (t_start + 1.5, t_start + dur)
             fres = H.speed_result(v, t_start, win, o2, front, yaws, total, ugv.units_per_mps, None, guard_bad[0], "yes")
@@ -650,8 +650,14 @@ class HealthRunner:
                     tw2 = Twist()
                     tw2.angular.z = w
                     s0 = time.monotonic()
+                    spin_bad = [False]
+
+                    def spin_go() -> None:
+                        self._cmd_pub.publish(tw2)
+                        if (getattr(self.b, "_guard", None) or {}).get("state") not in GUARD_OK + (None,):
+                            spin_bad[0] = True
                     try:
-                        self._drive(params["spin_s"], lambda: self._cmd_pub.publish(tw2))
+                        self._drive(params["spin_s"], spin_go)
                     finally:
                         self._zero()
                     try:
@@ -659,7 +665,7 @@ class HealthRunner:
                     finally:
                         self._zero()
                     yaws = [(t, yw) for t, _, _, yw in odom]
-                    spin = H.spin_result(w, (s0 + 1.2, s0 + params["spin_s"]), yaws, track)
+                    spin = H.spin_result(w, (s0 + 1.2, s0 + params["spin_s"]), yaws, track, spin_bad[0])
             # the observer
             lid = fres.get("real_mps")
             txt = (f"Measured by the LiDAR ({fres.get('source')}): {lid if lid is not None else 'n/a'} m/s of the commanded {v:.2f} m/s; "
