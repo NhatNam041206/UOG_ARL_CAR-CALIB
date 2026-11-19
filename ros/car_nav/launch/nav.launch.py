@@ -60,15 +60,8 @@ def _upright_tf(context, *args, **kwargs):
     ))]
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
     msgs.append(Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="tf_base_to_laser_upright",
-        arguments=[
-            "--x", f"{laser.x}", "--y", f"{laser.y}", "--z", f"{laser.z}",
-            "--roll", "0", "--pitch", "0", "--yaw", f"{laser.yaw}",
-            "--frame-id", "base_link", "--child-frame-id", "laser_upright",
-        ],
-        parameters=[{"use_sim_time": use_sim_time}],
+        package="car_nav", executable="car_tf_publisher", name="car_tf_upright", output="screen",
+        parameters=[{"use_sim_time": use_sim_time, "frames": ["laser_upright"]}],
     ))
     return msgs
 
@@ -176,6 +169,9 @@ def generate_launch_description() -> LaunchDescription:
              name="rf2o_laser_odometry", output="screen",
              parameters=[params, {"publish_tf": False, "odom_topic": "/odom_rf2o"}],
              arguments=["--ros-args", "--log-level", "rf2o_laser_odometry:=error"],
+             # rf2o reads the laser -> base_link TF once, at its first scan: ui_bridge stops it after a Car tab
+             # Apply that moved the LiDAR, and launch starts it again with the new mount
+             respawn=True, respawn_delay=1.0,
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
         Node(package="car_nav", executable="adaptive_odom", name="adaptive_odom", output="screen",
              parameters=[params, {"localized_pose_topic": PythonExpression(

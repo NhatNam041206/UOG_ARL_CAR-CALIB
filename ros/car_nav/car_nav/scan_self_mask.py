@@ -14,7 +14,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
-from . import config_loader
+from . import car_reload, config_loader
 from .geometry import bearing_deg, beam_to_base, self_mask
 from .timing import TimingStats
 
@@ -22,18 +22,22 @@ from .timing import TimingStats
 class ScanSelfMask(Node):
     def __init__(self) -> None:
         super().__init__("scan_self_mask")
-        cfg = config_loader.load()
-        self._laser = config_loader.laser_pose(cfg)
-        self._footprint = config_loader.footprint(cfg)
-        mask = cfg.get("self_mask") or {}
-        self._margin = float(mask.get("margin_m", 0.03))
-        self._sectors = [tuple(s) for s in (mask.get("sectors_deg") or [])]
+        self._reload(config_loader.load())
+        car_reload.watch(self, self._reload)
         self._pub = self.create_publisher(LaserScan, "scan_filtered", qos_profile_sensor_data)
         self._timing = TimingStats(self.get_logger())
         self.create_subscription(LaserScan, "scan", self._timing.wrap("mask.scan_cb", self._on_scan),
                                  qos_profile_sensor_data)
         self._last_report = 0.0
         self._masked_bearings: set[int] = set()
+
+    def _reload(self, cfg: dict) -> None:
+        self._laser = config_loader.laser_pose(cfg)
+        self._footprint = config_loader.footprint(cfg)
+        mask = cfg.get("self_mask") or {}
+        self._margin = float(mask.get("margin_m", 0.03))
+        self._sectors = [tuple(s) for s in (mask.get("sectors_deg") or [])]
+        self._masked_bearings = set()
 
     def _on_scan(self, msg: LaserScan) -> None:
         ranges, masked = self_mask(

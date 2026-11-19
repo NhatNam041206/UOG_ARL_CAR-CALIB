@@ -137,6 +137,9 @@ case "$cmd" in
   ui)
     # the same web UI as on the car; ports bound to 127.0.0.1 only
     RUN_EXTRA+=(-p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090)
+    # the Car tab writes its car.yaml here (run_logs/sim/ui/car.yaml); missions never see it
+    export MSYS2_ARG_CONV_EXCL="CAR_NAV_CONFIG_OVERRIDE=${MSYS2_ARG_CONV_EXCL:+;$MSYS2_ARG_CONV_EXCL}"
+    RUN_EXTRA+=(-e CAR_NAV_CONFIG_OVERRIDE=/data/sim/ui/car.yaml)
     echo "web UI: open http://localhost:8080 (wait ~20 s). Ctrl+C to stop."
     run ros2 launch car_nav_sim sim.launch.py backend:=lite ui:=true exit_after_mission:=false "$@" ;;
   campus)

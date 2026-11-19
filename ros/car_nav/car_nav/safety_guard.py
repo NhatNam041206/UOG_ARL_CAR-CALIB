@@ -43,6 +43,7 @@ from std_msgs.msg import Bool, String
 
 from . import config_loader
 from .depth_obstacles import parse_cloud
+from .idle_logic import from_rest, is_nonzero, resume_gate
 from .safety_zone import GuardParams, decide_merged
 from .wall_avoid import points_in_base
 
@@ -70,6 +71,9 @@ class SafetyGuard(Node):
         self._last_stop = -1e9
         self._nearest = math.inf
         self._cmd_t = 0.0
+        self._last_nonzero_t = -1e9     # last non-zero command in (a gap > REST_S = a start from rest follows)
+        self._start_t = -1e9            # when the current start from rest began
+        self._n_wake = 0                # starts held until a scan newer than the command arrived
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
         self._state_pub = self.create_publisher(String, "/safety_guard/state", 10)
         self.create_subscription(Twist, "cmd_vel_guarded", self._on_cmd, 10)
@@ -172,10 +176,22 @@ class SafetyGuard(Node):
             self._state = state
 
     def _on_cmd(self, msg: Twist) -> None:
-        self._cmd_t = time.monotonic()
+        now = self._cmd_t = time.monotonic()
+        nonzero = is_nonzero(msg.linear.x, msg.angular.z)
+        if nonzero:
+            if from_rest(now, self._last_nonzero_t):
+                self._start_t = now
+            self._last_nonzero_t = now
         turning = abs(msg.linear.x) < 0.05 and abs(msg.angular.z) > 0.05
         state = self._evaluate(turning)
         out = Twist()
+        if nonzero and state in ("clear", "slow", "depth_stale") and not resume_gate(
+                self._start_t, self._scan_t, self._depth_status == "ok", self._depth_t):
+            # a start from rest: the data may be from the idle pause (dynamic_scan / depth run slowly
+            # then). Send 0 until a scan (and depth cloud) newer than this command has arrived.
+            self._n_wake += 1
+            self._pub.publish(out)
+            return
         if state in ("clear", "off", "depth_stale"):
             out = msg
         elif state == "slow":
@@ -193,6 +209,7 @@ class SafetyGuard(Node):
             "depth_status": self._depth_status,
             "depth_age_s": None if self._depth_t < -1e8 else round(time.monotonic() - self._depth_t, 2),
             "depth_points": int(self._depth.shape[0]),
+            "wake_holds": self._n_wake,
             "params": self._p.as_dict(),
             "footprint": {"x_front": self._x_front, "half_width": self._half_body},
         })))

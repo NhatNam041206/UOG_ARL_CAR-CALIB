@@ -34,6 +34,13 @@ from car_nav.map_store import MapStore
 NAV_NODES = ["planner_server", "controller_server", "behavior_server", "bt_navigator", "collision_monitor"]
 
 
+def _footprint_str() -> str:
+    from car_nav import config_loader
+    fp = config_loader.footprint(config_loader.load())
+    return (f"[[{fp.x_front}, {fp.half_width}], [{fp.x_front}, {-fp.half_width}], "
+            f"[{fp.x_rear}, {-fp.half_width}], [{fp.x_rear}, {fp.half_width}]]")
+
+
 def _stack(context, *args, **kwargs):
     share = get_package_share_directory("car_nav")
     a = lambda n: context.launch_configurations[n]  # noqa: E731
@@ -56,7 +63,9 @@ def _stack(context, *args, **kwargs):
     params = RewrittenYaml(
         source_file=a("params_file"),
         param_rewrites={"use_sim_time": str(use_sim_time).lower(), "yaml_filename": map_yaml,
-                        "default_nav_to_pose_bt_xml": bt_xml},
+                        "default_nav_to_pose_bt_xml": bt_xml,
+                        # costmap footprints follow car.yaml (the web UI's Car tab edits it)
+                        "footprint": _footprint_str()},
         convert_types=True,
     )
     common = {"output": "screen", "arguments": ["--ros-args", "--log-level", a("log_level")]}

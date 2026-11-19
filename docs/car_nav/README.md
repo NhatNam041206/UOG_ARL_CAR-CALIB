@@ -98,40 +98,96 @@ Everything runs on the mini-PC, in the `ros-nav` container:
 
 ## Web UI (like RViz, in a browser)
 
-`nav.launch.py ui:=true` (default) starts rosbridge and `ui_bridge`. The page shows the map,
-the LiDAR points (red = not on the map, i.e. what the safety guard treats as a person),
-the car, the path and the guard zones. You can:
+`nav.launch.py ui:=true` (default) starts rosbridge and `ui_bridge`. Open `http://<mini-PC IP>:8080`. The page is black / white /
+grey; colour is only used for safety (guard STOP / ESTOP state, the E-STOP button, the points that count as people / obstacles).
+The top bar (connection, map mode, guard state, **E-STOP**) is always visible. The side panel has one open tab at a time:
 
-* **Initial pose**: click where the car is, drag the way it faces (→ `/initialpose`).
-* **Nav goal**: click the goal, drag the arrival direction (→ `/goal_pose`).
-* Change the guard's stop / slow distances, widths, field of view, slow speed and resume
-  delay live (**Apply**). Changes are not saved: copy good values into
-  `nav2_params.yaml` (`safety_guard:`).
-* **EMERGENCY STOP**: the guard sends zero until you press RELEASE STOP. This is a
-  software stop over Wi-Fi: it does not replace the motor power switch.
+| Tab | What it holds |
+|---|---|
+| **Map** | Load / Create / Unknown-flat mode, stored maps, tools: pan / zoom, **initial pose** (click + drag, `/initialpose`), **nav goal** (click + drag, `/goal_pose`), follow car, "Go ahead" in flat mode |
+| **Drive** | cruise speed, max turn rate, slow-down before curves (PD follower, act from the next goal); settings **profiles** (guard + driving values, saved in `/data/nav/ui/profiles/`: save, load + apply, use at start, delete; HTTP `GET/PUT/DELETE /api/profiles/<name>`) |
+| **Safety guard** | state, nearest person, stop / slow distances, widths, field of view, slow speed, resume delay, depth camera section (**Apply** sends them live; not saved: use a profile or copy them to `nav2_params.yaml safety_guard:`) |
+| **Car** | car properties, drawings, car profiles, Apply to the car (below) |
+| **Tests** | name, *Start recording*, drive / walk in front of the car, *Stop + save* (parameters, every event, 5 Hz trace). Verdict + note, **Download** (JSON), delete. Saved in `/data/nav/ui/tests/` |
 
-**Driving** sliders: cruise speed, max turn rate, slow-down before curves (PD follower,
-act from the next goal).
-
-**Profiles** (saved on the mini-PC in `/data/nav/ui/profiles/`, survive restarts and image
-updates): *Save current* stores what the sliders show (guard + driving) under a name, with a
-note; *Load + apply* sends a profile to the car; *Use at start* applies it every time the
-stack starts; *Delete*. Also over HTTP: `GET/PUT/DELETE /api/profiles/<name>`.
-
-**Tests** (saved in `/data/nav/ui/tests/`): type a name, *Start recording*, drive / walk in
-front of the car, *Stop + save*. A record holds the parameters in use, every event (guard
-stop/slow/clear with the distance, goals, initial pose, E-STOP, parameter changes) and a
-5 Hz trace (pose, guard state, nearest person, wheel command). The list shows a summary
-(time, distance, stops, nearest person, goals); add a verdict and a note, **Download** the
-JSON to send for analysis, or delete it.
-
+**E-STOP**: the guard sends zero until you press RELEASE STOP. A software stop over Wi-Fi; it does not replace the motor power switch.
 The ports are open to the whole network the mini-PC is on: use it on the lab's own Wi-Fi.
-In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open
-`http://localhost:8080`.
+In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open `http://localhost:8080`.
+
+### Work only when needed
+
+* **Topics.** `ui_bridge` publishes small topics instead of one big state: `/ui/map` (3 s and when a page subscribes), `/ui/pose`,
+  `/ui/scan`, `/ui/depth`, `/ui/guard` (5 Hz), `/ui/plan` (2 Hz), `/ui/mode` (1 Hz: map mode, driving values, test state, guard
+  state for the top bar, car apply state). A topic is packed and published **only while it has a subscriber**
+  (`get_subscription_count()`); the LiDAR / depth / plan subscriptions of `ui_bridge` itself exist only while a page needs them (or
+  while a test records); its hold-stop and test-sampling timers run only when needed. No browser connected = nothing is packed.
+* **The page** subscribes only to what the open tab shows: Map: map, pose, scan, depth (if used), guard, plan; Drive: map, pose,
+  plan; Safety guard: map, pose, scan, depth, guard; Car and Tests: only `/ui/mode`. A hidden browser tab unsubscribes from everything.
+  The map canvas is redrawn only when data, the view or the size changed (no animation loop). The Car tab's drawings are drawn
+  only while that tab is open and only when a value changes.
+* **Idle pause** (`idle_logic.py`, `idle_watch.py`). The car is *idle* when no goal is active and nothing non-zero has been
+  commanded on `/cmd_vel_guarded` / `/cmd_vel` for 10 s (`idle_after_s`). While idle: `dynamic_scan` aligns and classifies one scan
+  per 0.4 s instead of every scan; the depth node (if on) processes one cloud per 0.4 s; `ui_bridge` sends scan / depth / plan at
+  2 Hz instead of 5 Hz. **Localization is never paused** (AMCL, `pose_gate`, odometry, `map_server`, Nav2 keep running).
+  It ends at once on a non-zero command, a goal becoming active (`/navigate_to_pose/_action/status`) or an E-STOP change. The guard
+  stays safe across a resume: on a **start from rest** (no non-zero command for 0.6 s) `safety_guard` passes nothing (sends 0,
+  `wake_holds` in its state) until it has received a scan (and a depth cloud when depth is in use) that arrived **after** that
+  command (`idle_logic.resume_gate`), so a start is never judged on data from before the pause. It costs at most one scan
+  period (~0.15 s) per start. Stale data still stops the car as before (`no_scan` after 1 s). Parameters (`dynamic_scan`,
+  `depth_obstacles`, `ui_bridge`): `idle_pause` (true), `idle_after_s` (10), `idle_period_s` (0.4 / 0.5).
+
+### Car tab (car properties)
+
+Edit, for the active `car.yaml`: front / rear edge and half width (the body), body height (optional), track width (optional), LiDAR
+x / y / z / roll / pitch / yaw (180 deg roll = upside down), camera x / y / z / pitch / yaw, cruise and max wheel speed. Two line
+drawings follow the values while you type: **top view** (body, wheels at the track width, LiDAR with its 0 deg direction, camera with
+its field of view, the guard's stop / slow zones from the current guard values, the spin circle = half diagonal) and **side view**
+(body, LiDAR scan plane height, camera with the 45 deg vertical field of view and its pitch, the floor point of the lowest ray;
+the "camera blind distance" in the text is `depth_obstacles.blind_distance()`, asked from the server).
+
+*Car profiles* (`<data_dir>/cars/<name>.json`, `/data/nav/ui/cars/` on the car): load into the form, save as, rename, delete.
+REST: `GET /api/car`, `POST /api/car/derived`, `POST /api/car/apply {props | name, force}`, `DELETE /api/car/active`, `GET /api/cars`,
+`GET|PUT|DELETE /api/cars/<name>`, `POST /api/cars/<name>/rename {to}`, `POST /api/cars/<name>/apply`.
+
+**Where car.yaml is.** The shipped file stays read-only (`docker-compose.pi5.yml`: `./ros/car_nav/config/car.yaml:/config/car.yaml:ro`,
+`CAR_NAV_CONFIG`). The Car tab writes a **writable copy** on the data volume, `CAR_NAV_CONFIG_OVERRIDE=/data/nav/ui/car.yaml` (simulator:
+`/data/sim/ui/car.yaml` = `run_logs/sim/ui/car.yaml`, set by `run_sim.sh ui` only, so missions never see it). `config_loader.load()` reads, in
+this order: the override if it exists, `CAR_NAV_CONFIG`, the package copy. While the override exists, editing the shipped file (or a
+deploy that changes it) has no effect: use **Back to shipped file** (`DELETE /api/car/active`) or delete the override.
+The write patches only the VALUES in the text of the file it replaces, so all comments stay; the previous file is kept next to it as
+`car.yaml.<YYYYmmdd-HHMMSS>.bak` (10 newest kept); the new file is written atomically.
+
+**Apply to the car** (`POST /api/car/apply`) is refused with **HTTP 409** unless the car is stopped (wheel command zero: no
+`/car/wheels/cmd` above 0.03 m/s in the last second, `nav_modes.wheels_moving`) and no goal / mission is active; also while the stack
+is already restarting, in Create mode while a map is being built (unless `force`: the map would be lost) and when the file is read-only
+(`car_store.apply_blocker`). Then:
+
+1. validate (ranges, front ahead of rear, cruise <= max wheel speed; 400 otherwise), write the file (above);
+2. `ui_bridge` publishes `/car_config/reload`; these nodes **re-read car.yaml in place**, without restarting: `car_tf_publisher`
+   (static TFs `base_link -> laser`, `laser_upright`, `camera_link`; it replaced the three `static_transform_publisher` nodes of
+   `sensors.launch.py`, `nav.launch.py` and `sim.launch.py`), `scan_upright` (upside-down flag), `scan_self_mask` (laser pose, footprint, margin,
+   sectors), `cmd_vel_to_control` (track width, wheel / yaw limits), `adaptive_odom` (laser yaw, drive geometry; the learned speed
+   ratio and the odometry pose stay), `ui_bridge` itself and, in the simulator, `lite_sim` (simulated LiDAR / camera mount and drive);
+3. `ui_bridge` sets the new cruise speed on `pd_path_follower` and **restarts the nav stack** (`nav_stack.launch.py`, the same
+   restart as a map-mode switch): `safety_guard` (footprint, laser pose), `pd_path_follower` (footprint, laser pose, track), `dynamic_scan`,
+   `depth_obstacles` (camera pose), Nav2, AMCL / `pose_gate` / `map_server` or `slam_toolbox` or `flat_origin`. The wheel command is held
+   at 0 meanwhile and the guard parameters and E-STOP are re-sent after the restart, as for a map-mode switch. In **Load** mode the car's
+   pose before the restart is sent to AMCL as the initial pose (the car did not move); in **Flat** mode the origin restarts at the
+   current pose (goals are relative to it); **Create** mode loses the unsaved map (hence the `force`).
+
+`rf2o` reads the `laser_upright -> base_link` TF once, at its first scan, so when the Apply moved the LiDAR (x, y or yaw changed) `ui_bridge`
+stops the `rf2o_laser_odometry_node` process (SIGTERM, found in /proc) and `nav.launch.py` starts it again (`respawn=True`, 1 s);
+`adaptive_odom` drops its previous rf2o sample on the reload, and the car is stopped, so the restart does not move the pose.
+
+**Not restarted** (they do not read the Car tab's values): `sllidar_node` / Astra drivers, `ugv_serial_bridge` (reads `ugv.*`,
+which the tab does not edit: restart the container after changing those), rosbridge. The Nav2 costmap footprint and inflation values
+are in `nav2_params.yaml` (not generated from `car.yaml`): after changing the body size also change `footprint` there
+(`tests/test_car_nav_nav2_params.py` checks the two agree). The simulator's truth model (`sim.yaml truth:`) and the Gazebo world
+are not changed by Apply.
 
 ## Map modes (Load / Create / Unknown-flat)
 
-The web page's **Map** panel (and `POST /api/mode`) switches between three ways of knowing where the car is:
+The web page's **Map** tab (and `POST /api/mode`) switches between three ways of knowing where the car is:
 
 | Mode | Localization | Global costmap | Use |
 |---|---|---|---|
@@ -145,7 +201,7 @@ rosbridge and `ui_bridge` (the sensors and `ugv_serial_bridge` come from `car.la
 collision monitor, `dynamic_scan`, `safety_guard` and their lifecycle managers). `ui_bridge` runs it as a child process
 (`ros2 launch car_nav nav_stack.launch.py mode:=... map:=...`), stops it (SIGINT to its process group, then SIGTERM / SIGKILL)
 and starts it again on a switch. Meanwhile `ui_bridge` publishes zero `/cmd_vel` (and `cmd_vel_to_control` sends `0.000,0.000`
-0.5 s after `/cmd_vel` stops anyway), and `/ui/state` carries `mode: {mode, map, state, detail}` with state
+0.5 s after `/cmd_vel` stops anyway), and `/ui/mode` carries `mode: {mode, map, state, detail}` with state
 `idle | switching | starting | ready | error` (shown in the page header and the Map panel; the view shows a banner in
 Create and flat mode). `starting` ends when `lifecycle_manager_navigation` (and in Load mode `..._localization`) report active.
 A switch is refused (HTTP 409) while the wheel command is not 0, unless forced (the page asks). After a switch the guard
@@ -209,7 +265,7 @@ invisible to the guard and the bumper. With `depth:=true` (`car.launch.py` also 
   `/safety_guard/state`, plus a log warning. `depth_required: true` stops the car instead (`no_depth`).
 * Depth off (`depth_enabled: false`) = exactly the LiDAR guard as before.
 * All `depth_*` values are in `nav2_params.yaml safety_guard:` and live in the web UI (own section: on/off,
-  required, stop distance, floor / ceiling height, range, stale time; orange dots = depth obstacles on the
+  required, stop distance, floor / ceiling height, range, stale time; red outlined squares = depth obstacles on the
   map); they are part of the saved profiles. `depth_obstacles:` holds the processing details.
 * Not done: the obstacle is not fed to Nav2's costmaps, so the car stops in front of it and waits.
 

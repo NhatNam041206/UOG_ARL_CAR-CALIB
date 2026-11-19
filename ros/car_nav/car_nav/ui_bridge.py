@@ -1,16 +1,22 @@
-"""Web UI backend: serves the page (HTTP) and packs what it shows into two JSON topics.
+"""Web UI backend: serves the page (HTTP) and packs what it shows into small JSON topics.
 
 The browser talks to ROS through rosbridge (WebSocket, port 9090, started
 by nav.launch.py ui:=true). To keep the page simple and the traffic small,
-this node does the ROS-side work:
+this node does the ROS-side work. Every topic is packed and published ONLY while
+somebody subscribes to it (get_subscription_count()), and the page subscribes only to
+what its open tab shows, so a closed tab or no browser costs nothing:
 
-* /ui/map    (std_msgs/String, every 3 s): the occupancy map, run-length
+* /ui/map    (std_msgs/String, every 3 s and when a subscriber appears): the occupancy map, run-length
              encoded: {"w","h","res","ox","oy","rle":[value, count, ...]}
              values 0 = free, 100 = occupied, -1 = unknown
-* /ui/state  (std_msgs/String, 5 Hz): car pose (TF map -> base_link), LiDAR
-             points in the map frame (/scan_nav, and /scan_dynamic = not on
-             the map), the depth camera's obstacle points ("depth", /depth_obstacles, map
-             frame), the global plan, the safety guard state and zones.
+* /ui/pose   (5 Hz)  {"pose": [x, y, yaw] | null}  car pose (TF map -> base_link)
+* /ui/scan   (5 Hz, 2 Hz while the car is idle)  {"scan": [[x, y]...], "dyn": [...]}  LiDAR points in the
+             map frame (/scan_nav, and /scan_dynamic = not on the map)
+* /ui/depth  (5 Hz, 2 Hz idle)  {"depth": [...]}  the depth camera's obstacle points (/depth_obstacles)
+* /ui/guard  (5 Hz)  the safety guard state and parameters (/safety_guard/state)
+* /ui/plan   (2 Hz)  {"plan": [[x, y]...]}  the global plan
+* /ui/mode   (1 Hz)  {"mode": {...}, "drive": {...}, "test": {...}, "idle": bool, "static": {...}, "car": {...},
+             "guard": {"state", "estop", "nearest_m"}}   (what the page header needs, whatever tab is open)
 
 The page publishes /initialpose, /goal_pose, /ui/estop and /ui/safety_params
 itself (see web/index.html). HTTP: http://<car>:<http_port>/ (default 8080).
@@ -30,6 +36,17 @@ Profiles and test records (ui_store.py, JSON files under data_dir), REST:
   GET    /api/tests/<id>[?download=1]      the whole record (download = as a file)
   PUT    /api/tests/<id>   {"note","verdict"}
   DELETE /api/tests/<id>
+
+Car properties (car_store.py; the Car tab). Profiles are stored in <data_dir>/cars/:
+
+  GET    /api/car                          active car.yaml values, derived numbers, state, profiles
+  POST   /api/car/derived {"props"}        derived numbers for values being edited (spin radius, camera blind distance)
+  POST   /api/car/apply {"props"|"name", "force"}   write the active car.yaml (timestamped backup next to it),
+                                           tell the nodes to re-read it (/car_config/reload), restart the nav stack.
+                                           409 unless the car is stopped (wheel command 0) and no goal is active
+  DELETE /api/car/active                   back to the shipped car.yaml (same 409 rule, same restart)
+  GET    /api/cars                         list;  GET|PUT|DELETE /api/cars/<name>
+  POST   /api/cars/<name>/rename {"to"};  POST /api/cars/<name>/apply {"force"}
 
 Maps and map modes (map_store.py, nav_modes.py; maps in <data_dir>/maps):
 
@@ -82,17 +99,41 @@ from std_msgs.msg import Bool
 from geometry_msgs.msg import Twist
 from std_srvs.srv import Trigger
 
-from . import config_loader
+from . import car_reload, config_loader
+from .car_store import ActiveCar, apply_blocker, CarProfileStore, derived as car_derived, props_from_cfg, validate_props
+from .idle_watch import IdleWatcher
 from .actuation import WHEELS_TOPIC, parse_payload
 from .map_store import MapStore, safe_map_name
 from .nav_modes import ALL_MODES, MODES, StackProcess, stack_command, wheels_moving
 from .depth_obstacles import parse_cloud
+from .idle_logic import should_process
 from .ui_pack import rle
 from .ui_store import ProfileStore, TestRecorder, TestStore
 
 START_TIMEOUT_S = 50.0     # "starting" longer than this: the stack is started again
 START_ATTEMPTS = 3
 DRIVE_KEYS = ("speed_mps", "max_yaw_rate_rps", "lat_accel_mps2", "kp", "kd")
+
+
+def stop_processes(name: str) -> int:
+    """SIGTERM every process of this computer whose command line contains `name` (Linux /proc); returns how many."""
+    import signal
+
+    n = 0
+    if not os.path.isdir("/proc"):
+        return 0
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+            if name in cmd and "ros2 launch" not in cmd:
+                os.kill(int(pid), signal.SIGTERM)
+                n += 1
+        except (OSError, ValueError):
+            continue
+    return n
 
 
 def _yaw(q) -> float:
@@ -128,6 +169,10 @@ class UiBridge(Node):
         self._profiles = ProfileStore(data_dir)
         self._tests = TestStore(data_dir)
         self._maps = MapStore(data_dir)
+        self._cars = CarProfileStore(data_dir)
+        self._car_file = ActiveCar(config_loader.shipped_path(), config_loader.override_path())
+        self._car = {"state": "idle", "detail": "", "since": time.time(), "name": None}
+        self._drive_seed: dict = {}
         self._rec: TestRecorder | None = None
         self._rec_lock = threading.Lock()
         self._drive: dict = {}
@@ -146,16 +191,15 @@ class UiBridge(Node):
         self._sw_lock = threading.Lock()
         self._mode = {"mode": "idle", "map": None, "state": "idle", "detail": "", "since": time.time()}
         self._stack_args = list(self.get_parameter("stack_args").value or [])
-        self._stop_cmd = False
+        self._stop_flag = False
         self._last_req = None
         self._attempt = 1
         self._ready_ok = {"nav": False, "loc": False}
         self._default_applied = False
-        cfg = config_loader.load()
-        fp = config_loader.footprint(cfg)
-        laser = config_loader.laser_pose(cfg)
-        self._static = {"footprint": [fp.x_front, fp.x_rear, fp.half_width],
-                        "laser": [laser.x, laser.y, laser.yaw]}
+        self._static = {}
+        self._load_static(config_loader.load())
+        if self._car_file.is_override():       # a car.yaml written by the Car tab: its cruise speed wins over nav2_params
+            self._drive_seed = {"speed_mps": self._static["cruise_speed_mps"]}
         self._frame = self.get_parameter("global_frame").value
         self._tf = Buffer()
         TransformListener(self._tf, self)
@@ -165,7 +209,13 @@ class UiBridge(Node):
         self._plan: list = []
         self._guard: dict = {}
         self._map_pub = self.create_publisher(String, "/ui/map", 1)
-        self._state_pub = self.create_publisher(String, "/ui/state", 5)
+        self._pubs = {k: self.create_publisher(String, f"/ui/{k}", 2)
+                      for k in ("pose", "scan", "depth", "guard", "plan", "mode")}
+        self._idle = IdleWatcher(self)
+        self._last_pub: dict = {}          # topic -> monotonic time of the last publish
+        self._cache: dict = {}             # packing cache: key -> (source message, result)
+        self._map_subs = 0
+        self._guard_raw = ""
         map_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
@@ -176,13 +226,10 @@ class UiBridge(Node):
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 5)
         self._nav_active = self.create_client(Trigger, "/lifecycle_manager_navigation/is_active")
         self._loc_active = self.create_client(Trigger, "/lifecycle_manager_localization/is_active")
-        self.create_timer(0.1, self._hold_stop)
+        self._hold_timer = self.create_timer(0.1, self._hold_stop)     # runs only while the stack is down
+        self._hold_timer.cancel()
         self.create_timer(1.0, self._supervise)
-        self.create_subscription(LaserScan, "/scan_nav", lambda m: setattr(self, "_scan", m), qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "/scan_dynamic", lambda m: setattr(self, "_dyn", m),
-                                 qos_profile_sensor_data)
-        self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth, qos_profile_sensor_data)
-        self.create_subscription(Path, "/plan", self._on_plan, 5)
+        self._lazy: dict = {}      # scan / depth / plan subscriptions, only while a page (or a test) needs them
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
         self.create_subscription(String, WHEELS_TOPIC, self._on_wheels, 20)
         self.create_subscription(PoseStamped, "/goal_pose", lambda m: self._event(
@@ -192,16 +239,64 @@ class UiBridge(Node):
         self.create_subscription(Bool, "/ui/estop", self._on_estop, 10)
         self.create_subscription(String, "/ui/safety_params", self._on_guard_params, 10)
         self.create_subscription(String, "/ui/drive_params", self._on_drive_params, 10)
+        self._reload_pub = self.create_publisher(String, car_reload.RELOAD_TOPIC, 5)
         self._guard_params_pub = self.create_publisher(String, "/ui/safety_params", 10)
         self._estop_pub = self.create_publisher(Bool, "/ui/estop", 10)
         self._pd_params = self.create_client(SetParameters, "/pd_path_follower/set_parameters")
         self._pd_get = self.create_client(GetParameters, "/pd_path_follower/get_parameters")
         self._drive_timer = self.create_timer(2.0, self._read_drive)
         self.create_timer(3.0, self._publish_map)
-        self.create_timer(0.2, self._publish_state)
+        self.create_timer(0.2, self._publish_ui)
+        self._sample_timer = self.create_timer(0.2, self._sample_test)   # runs only while a test records
+        self._sample_timer.cancel()
         self._start_http()
         self._seed_maps()
         self._boot_timer = self.create_timer(1.0, self._boot)
+
+    @property
+    def _stop_cmd(self) -> bool:
+        return self._stop_flag
+
+    @_stop_cmd.setter
+    def _stop_cmd(self, on: bool) -> None:
+        self._stop_flag = on
+        timer = getattr(self, "_hold_timer", None)
+        if timer is not None:
+            timer.reset() if on else timer.cancel()
+
+    def _sync_lazy(self) -> None:
+        """Subscribe to the LiDAR / depth / plan topics only while somebody shows them (or a test records)."""
+        rec = self._rec is not None
+        need = {"scan": self._want("scan") or rec, "depth": self._want("depth"), "plan": self._want("plan")}
+        for name, on in need.items():
+            if on and name not in self._lazy:
+                if name == "scan":
+                    self._lazy[name] = [
+                        self.create_subscription(LaserScan, "/scan_nav", lambda m: setattr(self, "_scan", m),
+                                                 qos_profile_sensor_data),
+                        self.create_subscription(LaserScan, "/scan_dynamic", lambda m: setattr(self, "_dyn", m),
+                                                 qos_profile_sensor_data)]
+                elif name == "depth":
+                    self._lazy[name] = [self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth,
+                                                                 qos_profile_sensor_data)]
+                else:
+                    self._lazy[name] = [self.create_subscription(Path, "/plan", self._on_plan, 5)]
+            elif not on and name in self._lazy:
+                for sub in self._lazy.pop(name):
+                    self.destroy_subscription(sub)
+                if name == "scan":
+                    self._scan = self._dyn = None
+                elif name == "depth":
+                    self._depth = None
+                else:
+                    self._plan = []
+
+    def _load_static(self, cfg: dict) -> None:
+        fp = config_loader.footprint(cfg)
+        laser = config_loader.laser_pose(cfg)
+        self._static = {"footprint": [fp.x_front, fp.x_rear, fp.half_width],
+                        "laser": [laser.x, laser.y, laser.yaw],
+                        "cruise_speed_mps": float((cfg.get("drive") or {}).get("cruise_speed_mps", 0.4))}
 
     def _start_http(self) -> None:
         web = self.get_parameter("web_dir").value or os.path.join(get_package_share_directory("car_nav"), "web")
@@ -242,7 +337,7 @@ class UiBridge(Node):
             self._ingest_grid(msg, 99, False)
 
     def _publish_map(self) -> None:
-        if self._map_json is not None:
+        if self._map_json is not None and self._map_pub.get_subscription_count() > 0:
             self._map_pub.publish(String(data=self._map_json))
 
     def _on_plan(self, msg: Path) -> None:
@@ -251,6 +346,7 @@ class UiBridge(Node):
         self._plan = [[round(x, 2), round(y, 2)] for x, y in pts[::step] + pts[-1:]] if pts else []
 
     def _on_guard(self, msg: String) -> None:
+        self._guard_raw = msg.data
         try:
             self._guard = json.loads(msg.data)
         except ValueError:
@@ -308,6 +404,9 @@ class UiBridge(Node):
             for k, v in zip(DRIVE_KEYS, vals):
                 if v.type == ParameterType.PARAMETER_DOUBLE:
                     self._drive.setdefault(k, v.double_value)
+            if self._drive_seed:                  # car.yaml written by the Car tab: its cruise speed
+                seed, self._drive_seed = self._drive_seed, {}
+                self.set_drive(seed)
         fut.add_done_callback(done)
 
     def set_drive(self, d: dict) -> dict:
@@ -406,10 +505,11 @@ class UiBridge(Node):
         self._mode = {**self._mode, "state": "switching", "detail": f"to {mode}", "since": time.time()}
         return self.mode_status()
 
-    def _switch_worker(self, mode: str, map_name, ymap, send_pose: bool, attempt: int = 1) -> None:
+    def _switch_worker(self, mode: str, map_name, ymap, send_pose: bool, pose: dict | None = None,
+                       attempt: int = 1) -> None:
         if not self._sw_lock.acquire(blocking=False):
             return
-        self._last_req = (mode, map_name, ymap, send_pose)
+        self._last_req = (mode, map_name, ymap, send_pose, pose)
         self._attempt = attempt
         try:
             self._set_mode(self._mode["mode"], self._mode["map"], "switching", f"to {mode}")
@@ -438,7 +538,9 @@ class UiBridge(Node):
             label = map_name or (os.path.splitext(os.path.basename(ymap))[0] if ymap else None)
             self._set_mode(mode, label if mode == "load" else None, "starting", "")
             self._stack.start(stack_command(mode, yaml_path or "", self._stack_args))
-            if mode == "load" and send_pose and map_name:
+            if mode == "load" and send_pose and pose:
+                self._pose_try = {"pose": pose, "n": 0}      # e.g. after a car.yaml apply: where the car stands now
+            elif mode == "load" and send_pose and map_name:
                 info = self._maps.get(map_name) or {}
                 if info.get("start_pose"):
                     self._pose_try = {"pose": info["start_pose"], "n": 0}
@@ -487,6 +589,10 @@ class UiBridge(Node):
                         pt["t0"] = time.monotonic()
                     self._send_initial_pose(pt["pose"])
                     pt["n"] += 1
+        if self._mode["mode"] == "create" and self._create_start is None and self._mode["state"] == "ready":
+            pose = self._lookup("base_link")
+            if pose is not None:
+                self._create_start = {"x": pose[0], "y": pose[1], "yaw": pose[2]}
         if self._drive_restore and self._pd_params.service_is_ready():
             self._drive_restore = False
             self.set_drive(dict(self._drive))
@@ -550,12 +656,14 @@ class UiBridge(Node):
             if self._rec is not None:
                 raise ValueError(f"already recording {self._rec.name!r}")
             self._rec = TestRecorder(name=name, note=note, params=self.current())
+        self._sample_timer.reset()
         self.get_logger().info(f"test {name!r}: recording")
         return {"recording": True, "name": name}
 
     def stop_test(self) -> dict:
         with self._rec_lock:
             rec, self._rec = self._rec, None
+        self._sample_timer.cancel()
         if rec is None:
             raise ValueError("not recording")
         tid = self._tests.save(rec)
@@ -594,32 +702,163 @@ class UiBridge(Node):
         y = pose[1] + s * xy[:, 0] + c * xy[:, 1]
         return np.round(np.stack((x, y), axis=1), 2).tolist()
 
-    def _publish_state(self) -> None:
-        pose = self._lookup("base_link")
-        st = dict(self._static)
-        st["pose"] = None if pose is None else [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]
-        st["guard"] = self._guard
-        st["plan"] = self._plan
-        st["scan"] = st["dyn"] = st["depth"] = []
-        st["drive"] = self._drive
-        st["test"] = self.test_status()
-        st["mode"] = {k: self._mode[k] for k in ("mode", "map", "state", "detail")}
-        if self._mode["mode"] == "create" and self._create_start is None and pose is not None \
-                and self._mode["state"] == "ready":
-            self._create_start = {"x": pose[0], "y": pose[1], "yaw": pose[2]}
+    # ------------------------------------------------------- what the page shows
+    def _want(self, key: str) -> bool:
+        return self._pubs[key].get_subscription_count() > 0
+
+    def _due(self, key: str, period: float) -> bool:
+        now = time.monotonic()
+        if now - self._last_pub.get(key, -1e9) >= period - 0.03:
+            self._last_pub[key] = now
+            return True
+        return False
+
+    def _send(self, key: str, data: dict) -> None:
+        self._pubs[key].publish(String(data=json.dumps(data)))
+
+    def _scan_points(self):
+        """(scan, dyn) in the map frame; cached per scan message, so nothing is packed twice."""
+        c = self._cache.get("scan")
+        if c is not None and c[0] is self._scan and c[1] is self._dyn:
+            return c[2]
+        scan, dyn = [], []
         if self._scan is not None:
             sp = self._lookup(self._scan.header.frame_id)
             if sp is not None:
-                st["scan"] = scan_to_map(self._scan, sp)
+                scan = scan_to_map(self._scan, sp)
                 if self._dyn is not None:
-                    st["dyn"] = scan_to_map(self._dyn, sp, step=1)
-        if self._depth is not None and pose is not None and time.monotonic() - self._depth_t < 1.5:
-            st["depth"] = self._depth_to_map(self._depth, pose)
-        self._state_pub.publish(String(data=json.dumps(st)))
+                    dyn = scan_to_map(self._dyn, sp, step=1)
+        self._cache["scan"] = (self._scan, self._dyn, (scan, dyn))
+        return scan, dyn
+
+    def _publish_ui(self) -> None:
+        """10 Hz: publish each /ui/* topic that has a subscriber and is due; nothing else is packed."""
+        if self._map_pub.get_subscription_count() > self._map_subs:
+            self._publish_map()                        # a page just opened the Map tab
+        self._map_subs = self._map_pub.get_subscription_count()
+        self._sync_lazy()
+        if not any(self._want(k) for k in self._pubs):
+            return
+        idle = self._idle.idle()
+        slow = 0.5 if idle else 0.2                    # idle: nothing moves, the picture can be slower
+        now = time.monotonic()
+        if self._want("pose") and self._due("pose", 0.2):
+            pose = self._lookup("base_link")
+            self._send("pose", {"pose": None if pose is None else
+                                [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]})
+        if self._want("scan") and self._due("scan", slow):
+            c = self._cache.get("scan")
+            if c is None or c[0] is not self._scan or c[1] is not self._dyn or now - self._last_pub.get("scan_s", 0) > 2:
+                self._last_pub["scan_s"] = now
+                scan, dyn = self._scan_points()
+                self._send("scan", {"scan": scan, "dyn": dyn})
+        if self._want("depth") and self._due("depth", slow):
+            pose = self._lookup("base_link")
+            fresh = self._depth is not None and pose is not None and now - self._depth_t < 1.5
+            self._send("depth", {"depth": self._depth_to_map(self._depth, pose) if fresh else []})
+        if self._want("guard") and self._guard_raw and self._due("guard", 0.2):
+            self._pubs["guard"].publish(String(data=self._guard_raw))
+        if self._want("plan") and self._due("plan", 0.5):
+            self._send("plan", {"plan": self._plan})
+        if self._want("mode") and self._due("mode", 1.0):
+            self._send("mode", {"mode": {k: self._mode[k] for k in ("mode", "map", "state", "detail")},
+                                "drive": self._drive, "test": self.test_status(), "idle": idle,
+                                "static": self._static, "car": self.car_status(),
+                                "guard": {"state": (self._guard or {}).get("state"),
+                                          "estop": bool((self._guard or {}).get("estop")),
+                                          "nearest_m": (self._guard or {}).get("nearest_m")}})
+
+    def _sample_test(self) -> None:
+        """5 Hz while a test is recording (independent of any browser)."""
+        with self._rec_lock:
+            if self._rec is None:
+                return
+        pose = self._lookup("base_link")
+        pp = None if pose is None else [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]
+        _scan, dyn = self._scan_points()
         with self._rec_lock:
             if self._rec is not None:
-                self._rec.sample(st["pose"], (self._guard or {}).get("state"), (self._guard or {}).get("nearest_m"),
-                                 list(self._wheels) if self._wheels else None, len(st["dyn"]))
+                self._rec.sample(pp, (self._guard or {}).get("state"), (self._guard or {}).get("nearest_m"),
+                                 list(self._wheels) if self._wheels else None, len(dyn))
+
+    # --------------------------------------------------------------- car properties
+    def goal_active(self) -> bool:
+        return self._idle._tracker.goal_active
+
+    def car_status(self) -> dict:
+        c = dict(self._car)
+        if c["state"] == "restarting" and self._mode["state"] in ("ready", "idle") and not self._sw_lock.locked():
+            c.update(state="done", detail="applied; nav stack is ready")
+            self._car = dict(c)
+        c["writable"] = self._car_file.writable
+        c["moving"] = self.moving()
+        c["goal_active"] = self.goal_active()
+        return c
+
+    def car_info(self) -> dict:
+        d = {"props": self._car_file.read_props(), "path": self._car_file.path(), "shipped": self._car_file.shipped,
+             "override": self._car_file.is_override(), "backups": [os.path.basename(b) for b in self._car_file.backups()],
+             "applied": self._cars.applied(), "profiles": self._cars.list(), "state": self.car_status()}
+        d["derived"] = car_derived(d["props"], self._guard_params())
+        return d
+
+    def _guard_params(self) -> dict:
+        return dict((self._guard or {}).get("params", {}))
+
+    def car_derived(self, props: dict) -> dict:
+        return car_derived(validate_props(props, partial=True) if props else self._car_file.read_props(),
+                           self._guard_params())
+
+    def apply_car(self, props: dict | None = None, name: str | None = None, force: bool = False,
+                  reset: bool = False) -> dict:
+        """Write the active car.yaml and restart what reads it. Refused (RuntimeError -> HTTP 409) unless the
+        car is stopped and no goal is active."""
+        if name and props is None:
+            prof = self._cars.get(name)
+            if prof is None:
+                raise LookupError(f"no such car profile {name!r}")
+            props = prof["props"]
+        if not reset:
+            props = validate_props(props or {})
+        why = apply_blocker(self.moving(), self.goal_active(), self._mode["state"] == "switching" or self._sw_lock.locked(),
+                            self._mode["mode"], self._grid is not None, self._car_file.writable, force)
+        if why:
+            raise RuntimeError(why)
+        res = {"path": self._car_file.path()}
+        old_laser = self._static.get("laser")
+        if reset:
+            res["backup"] = self._car_file.reset()
+        else:
+            res.update(self._car_file.write_props(props))
+        cfg = config_loader.load()
+        self._load_static(cfg)
+        self._car = {"state": "restarting", "detail": "car.yaml written, restarting the nav stack",
+                     "since": time.time(), "name": name}
+        self._cars.set_applied(name if (name and not reset) else None)
+        self._event("car_applied", name=name, reset=reset)
+        self.get_logger().info(f"car.yaml applied ({'reset to shipped' if reset else name or 'edited values'}): "
+                               f"{res.get('path')}, backup {res.get('backup')}")
+        # 1) the persistent nodes re-read it in place (static TFs, scan mask, drive mapper, odometry, sim)
+        self._reload_pub.publish(String(data=self._car_file.path()))
+        new_laser = self._static.get("laser")
+        if old_laser is not None and any(abs(a - b) > 1e-6 for a, b in zip(old_laser, new_laser)):
+            # rf2o keeps the laser -> base_link transform it read at its first scan: restart it (launch respawns it)
+            self.get_logger().info(f"LiDAR mount changed {old_laser} -> {new_laser}: restarting rf2o")
+            res["rf2o_restarted"] = stop_processes("rf2o_laser_odometry_node")
+        cruise = float((cfg.get("drive") or {}).get("cruise_speed_mps", 0.4))
+        self.set_drive({"speed_mps": cruise})
+        # 2) the restartable stack (guard, follower, dynamic_scan, depth, Nav2) is started again with the new file
+        if self._mode["mode"] in MODES and self._last_req:
+            mode, map_name, ymap, send_pose = self._last_req[:4]
+            pose = self._lookup("base_link")
+            start = None if pose is None or mode != "load" else {"x": pose[0], "y": pose[1], "yaw": pose[2]}
+            threading.Thread(target=self._switch_worker, args=(mode, map_name, ymap, start is not None, start),
+                             daemon=True).start()
+            self._mode = {**self._mode, "state": "switching", "detail": "car.yaml applied", "since": time.time()}
+        else:
+            self._car = {**self._car, "state": "done", "detail": "applied (no nav stack running)"}
+        res["state"] = self.car_status()
+        return res
 
 
 class _ApiHandler(http.server.SimpleHTTPRequestHandler):
@@ -631,6 +870,10 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *args) -> None:  # noqa: D401 - silence per-request logs
         pass
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-cache")      # the page is small; always check for a new version
+        super().end_headers()
 
     def _json(self, code: int, data, filename: str | None = None) -> None:
         body = json.dumps(data, indent=1).encode("utf-8")
@@ -679,6 +922,34 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
                         return self._json(404, {"error": "no such profile"})
                     ps.set_default(name)
                     return self._json(200, {"default": name})
+            if parts[:1] == ["car"]:
+                if len(parts) == 1 and method == "GET":
+                    return self._json(200, b.car_info())
+                if parts[1:] == ["derived"] and method == "POST":
+                    return self._json(200, b.car_derived(self._body().get("props") or {}))
+                if parts[1:] == ["apply"] and method == "POST":
+                    body = self._body()
+                    return self._json(200, b.apply_car(body.get("props"), body.get("name"), bool(body.get("force"))))
+                if parts[1:] == ["active"] and method == "DELETE":
+                    return self._json(200, b.apply_car(reset=True, force=bool(self._body().get("force"))))
+            if parts[:1] == ["cars"]:
+                cs = b._cars
+                if len(parts) == 1 and method == "GET":
+                    return self._json(200, {"cars": cs.list(), "applied": cs.applied()})
+                name = parts[1]
+                if len(parts) == 2 and method == "GET":
+                    d = cs.get(name)
+                    return self._json(200, d) if d else self._json(404, {"error": "no such car profile"})
+                if len(parts) == 2 and method == "PUT":
+                    body = self._body()
+                    return self._json(200, cs.put(name, body.get("props") or {}, body.get("note", ""),
+                                                  overwrite=body.get("overwrite", True) is not False))
+                if len(parts) == 2 and method == "DELETE":
+                    return self._json(200 if cs.delete(name) else 404, {"deleted": name})
+                if len(parts) == 3 and parts[2] == "rename" and method == "POST":
+                    return self._json(200, cs.rename(name, str(self._body().get("to", ""))))
+                if len(parts) == 3 and parts[2] == "apply" and method == "POST":
+                    return self._json(200, b.apply_car(name=name, force=bool(self._body().get("force"))))
             if parts[:1] == ["mode"]:
                 if len(parts) == 1 and method == "GET":
                     return self._json(200, b.mode_status())
@@ -742,7 +1013,7 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
             return self._json(400, {"error": str(exc)})
         except LookupError as exc:
             return self._json(404, {"error": str(exc.args[0]) if exc.args else "not found"})
-        except RuntimeError as exc:
+        except (RuntimeError, FileExistsError) as exc:
             return self._json(409, {"error": str(exc), "moving": b.moving()})
         except Exception as exc:  # noqa: BLE001 - never kill the server thread
             return self._json(500, {"error": repr(exc)})

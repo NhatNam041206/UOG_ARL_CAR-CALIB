@@ -36,7 +36,7 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32, String
 from tf2_ros import TransformBroadcaster
 
-from . import config_loader
+from . import car_reload, config_loader
 from .actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 from .speed_filter import MotionModel, SpeedKF, fuse_forward, scan_observability
 from .timing import TimingStats
@@ -119,10 +119,17 @@ class AdaptiveOdom(Node):
         if g("wheel_odom_topic"):
             self.create_subscription(Odometry, str(g("wheel_odom_topic")), self._on_wheel_odom, 20)
         self.create_subscription(PoseWithCovarianceStamped, str(g("localized_pose_topic")), tw("odom.amcl_cb", self._on_amcl), 10)
+        car_reload.watch(self, self._reload)
         self.get_logger().info(
             f"adaptive odometry: speed ratio {self._kf.v:.2f} (learned online), command latency "
             f"{self._motion.latency_s:.2f} s, model speed from "
             f"{g('wheel_odom_topic') or 'the wheel command'}")
+
+    def _reload(self, cfg: dict) -> None:
+        """New car.yaml: laser yaw and drive geometry. The learned speed ratio and the pose stay."""
+        self._drive = drive_from_cfg(cfg)
+        self._laser_yaw = float(config_loader.laser_pose(cfg).yaw)
+        self._prev_rf2o = None       # rf2o may be restarted (new LiDAR mount): its odometry starts again at 0
 
     # ---------------------------------------------------------------- inputs
     def _now(self) -> float:

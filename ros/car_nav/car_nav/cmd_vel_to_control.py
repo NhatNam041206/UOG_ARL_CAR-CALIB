@@ -19,7 +19,7 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from . import config_loader
+from . import car_reload, config_loader
 from .actuation import CmdVelMapper, drive_from_cfg, format_payload
 from .timing import TimingStats
 
@@ -46,7 +46,15 @@ class CmdVelToControl(Node):
         self._last_cmd: tuple[float, float] | None = None
         self._last_t = 0.0
         self._last_payload = ""
+        car_reload.watch(self, self._reload)
         self.create_timer(1.0 / float(self.get_parameter("rate_hz").value), self._tick)
+
+    def _reload(self, cfg: dict) -> None:
+        drive = drive_from_cfg(cfg)
+        self._mapper = CmdVelMapper(drive)
+        self.get_logger().info(
+            f"diff drive: track {drive.track_width_m:.3f} m, wheel limit {drive.max_wheel_speed_mps} m/s, "
+            f"yaw limit {drive.max_yaw_rate_rps} rad/s")
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd = (msg.linear.x, msg.angular.z)

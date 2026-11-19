@@ -30,6 +30,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
+from .idle_watch import IdleWatcher
 from .dynamic_obstacles import align_to_map, dynamic_beams, static_mask
 from .timing import TimingStats
 
@@ -57,6 +58,10 @@ class DynamicScan(Node):
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._timing = TimingStats(self.get_logger())
+        # While the car is idle only one scan in idle_period_s is aligned and classified (the guard
+        # still gets data well inside its 1 s timeout); the first non-zero command or a goal wakes it
+        # and the safety guard waits for a scan newer than that command (idle_logic.resume_gate).
+        self._idle = IdleWatcher(self, default_period_s=0.4)
         self._pub = self.create_publisher(LaserScan, "/scan_dynamic", qos_profile_sensor_data)
         map_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
@@ -94,6 +99,8 @@ class DynamicScan(Node):
         return tr.x, tr.y, _yaw(tf.transform.rotation)
 
     def _on_scan(self, msg: LaserScan) -> None:
+        if not self._idle.process_now():
+            return
         out = LaserScan()
         out.header = msg.header
         out.angle_min, out.angle_max, out.angle_increment = msg.angle_min, msg.angle_max, msg.angle_increment
