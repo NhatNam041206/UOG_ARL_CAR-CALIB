@@ -27,7 +27,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from nav2_common.launch import RewrittenYaml
 
 from car_nav.map_store import MapStore
@@ -93,7 +92,7 @@ def _stack(context, *args, **kwargs):
     if mode == "flat":
         planner_params.append(os.path.join(share, "config", "nav2_flat_overrides.yaml"))
     pd_follow = Node(package="car_nav", executable="pd_path_follower", name="pd_path_follower",
-                     parameters=[params, {"max_pose_age_s": ParameterValue(a("max_pose_age_s"), value_type=float)}],
+                     parameters=[params, {"max_pose_age_s": float(a("max_pose_age_s"))}],
                      remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")], **common)
     acts += [
         Node(package="nav2_planner", executable="planner_server", name="planner_server",
