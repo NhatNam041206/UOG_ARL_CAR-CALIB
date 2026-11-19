@@ -36,6 +36,7 @@ setup(
             "depth_guard_source = car_nav.depth_guard_source:main",
             "ui_bridge = car_nav.ui_bridge:main",
             "flat_origin = car_nav.flat_origin:main",
+            "car_tf_publisher = car_nav.car_tf_publisher:main",
         ],
     },
 )

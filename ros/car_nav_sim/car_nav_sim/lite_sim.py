@@ -32,7 +32,7 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
 
-from car_nav import config_loader
+from car_nav import car_reload, config_loader
 from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
 from car_nav.depth_obstacles import encode_xyz
 
@@ -105,6 +105,7 @@ class LiteSim(Node):
         self.wheel_pub = self.create_publisher(Odometry, "/odom_wheel", 10)
         self._next_wheel = 0.0
         self.create_subscription(String, WHEELS_TOPIC, self._on_control, 50)
+        car_reload.watch(self, self._reload_car)
         self.get_logger().info(
             f"lite sim: world {self.world.name}, start ({x:.2f}, {y:.2f}, {math.degrees(th):.0f} deg), "
             f"truth {self.model.params}, rtf {self.rtf}, depth camera {'on' if self.depth_on else 'off'}, "
@@ -112,6 +113,12 @@ class LiteSim(Node):
         )
         self._wall0 = time.monotonic()
         self.create_timer(self.dt / self.rtf, self._tick)
+
+    def _reload_car(self, car: dict) -> None:
+        """The web UI applied a new car.yaml: the simulated LiDAR / camera mounts and drive follow."""
+        self.laser = config_loader.laser_pose(car)
+        self.camera = config_loader.camera_pose(car)
+        self.model.drive = drive_from_cfg(car)
 
     def _on_control(self, msg: String) -> None:
         self.model.command(self.t, msg.data)

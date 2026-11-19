@@ -42,6 +42,7 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
+from .idle_watch import IdleWatcher
 from .depth_obstacles import (DepthParams, encode_xyz, obstacle_points, parse_cloud, points_to_polar)
 from .dynamic_obstacles import align_points, dynamic_points, static_mask
 from .timing import TimingStats
@@ -84,6 +85,7 @@ class DepthGuardSource(Node):
         self._tf = Buffer()
         TransformListener(self._tf, self)
         self._timing = TimingStats(self.get_logger())
+        self._idle = IdleWatcher(self, default_period_s=0.4)    # idle: ~2.5 frames / s (guard timeout 1 s)
         self._pub = self.create_publisher(PointCloud2, "/depth_obstacles", qos_profile_sensor_data)
         self._state_pub = self.create_publisher(String, "/depth_obstacles/state", 5)
         map_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -135,7 +137,7 @@ class DepthGuardSource(Node):
     # ------------------------------------------------------------------ frame
     def _on_cloud(self, msg: PointCloud2) -> None:
         now = time.monotonic()
-        if not self._enabled or now - self._last_t < float(self.get_parameter("min_period_s").value):
+        if not self._enabled or not self._idle.process_now(float(self.get_parameter("min_period_s").value)):
             return
         self._last_t = now
         t0 = time.perf_counter()

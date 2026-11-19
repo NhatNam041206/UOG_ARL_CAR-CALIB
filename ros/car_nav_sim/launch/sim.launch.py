@@ -106,16 +106,12 @@ def _setup(context, *args, **kwargs):
     sim_time = {"use_sim_time": True}
 
     car = config_loader.load()
-    laser = config_loader.laser_pose(car)
     actions = [
         LogInfo(msg=f"[sim] backend={backend} world={world_name} mission={mission or '(none)'} "
                     f"odom={odom_source} mode={mode} map={map_yaml}"),
         LogInfo(msg=f"[sim] car.yaml={car['_path']} sim.yaml={sim_config.load_sim()['_path']}"),
-        Node(package="tf2_ros", executable="static_transform_publisher", name="tf_base_to_laser",
-             arguments=["--x", f"{laser.x}", "--y", f"{laser.y}", "--z", f"{laser.z}",
-                        "--roll", f"{laser.roll}", "--pitch", f"{laser.pitch}", "--yaw", f"{laser.yaw}",
-                        "--frame-id", "base_link", "--child-frame-id", "laser"],
-             parameters=[sim_time]),
+        Node(package="car_nav", executable="car_tf_publisher", name="car_tf_publisher", output="screen",
+             parameters=[{"use_sim_time": True, "frames": ["laser"]}]),
         # The sim's "world" frame IS the map frame (the map is rasterised from the world),
         # so RViz can draw the true pose (/sim/ground_truth, frame world) next to AMCL's.
         Node(package="tf2_ros", executable="static_transform_publisher", name="tf_map_to_world",

@@ -46,8 +46,10 @@ def _setup(context, *args, **kwargs):
         )))
     laser = config_loader.laser_pose(cfg)
     camera = config_loader.camera_pose(cfg)
-    actions.append(_static_tf("tf_base_to_laser", "base_link", "laser", laser))
-    actions.append(_static_tf("tf_base_to_camera", "base_link", "camera_link", camera))
+    # one node for both mounts: it publishes the changed transforms again when the web UI's Car tab
+    # applies a new car.yaml (/car_config/reload)
+    actions.append(Node(package="car_nav", executable="car_tf_publisher", name="car_tf_publisher",
+                        output="screen", parameters=[{"frames": ["laser", "camera_link"]}]))
     actions.append(LogInfo(msg=(
         f"[car_nav] laser z={laser.z} roll={laser.roll:.3f} ({'upside down' if abs(laser.roll) > 1.0 else 'upright'}); "
         f"camera z={camera.z} pitch={math.degrees(camera.pitch):.1f} deg down"
