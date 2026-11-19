@@ -170,3 +170,14 @@ def test_car_tab_form_has_every_property():
     block = html[html.index("const CAR_GROUPS"):html.index("const VFOV")]
     keys = set(re.findall(r'\["([a-z_]+)", "', block))
     assert keys == set(CAR_FIELDS)
+
+
+def test_write_updates_sets_ugv_scale_keeping_comments(tmp_path):
+    from car_nav.car_store import ActiveCar
+    src = tmp_path / "car.yaml"
+    src.write_text("ugv:\n  units_per_mps: null   # measure me\n  max_units: 200\n", encoding="utf-8")
+    ac = ActiveCar(str(src), str(tmp_path / "over" / "car.yaml"))
+    res = ac.write_updates({("ugv", "units_per_mps"): 312.5})
+    text = (tmp_path / "over" / "car.yaml").read_text(encoding="utf-8")
+    assert "units_per_mps: 312.5" in text and "# measure me" in text and "max_units: 200" in text
+    assert ac.load()["ugv"]["units_per_mps"] == 312.5 and res["backup"]
