@@ -109,10 +109,40 @@ The top bar (connection, map mode, guard state, **E-STOP**) is always visible. T
 | **Safety guard** | state, nearest person, stop / slow distances, widths, field of view, slow speed, resume delay, depth camera section (**Apply** sends them live; not saved: use a profile or copy them to `nav2_params.yaml safety_guard:`) |
 | **Car** | car properties, drawings, car profiles, Apply to the car (below) |
 | **Tests** | name, *Start recording*, drive / walk in front of the car, *Stop + save* (parameters, every event, 5 Hz trace). Verdict + note, **Download** (JSON), delete. Saved in `/data/nav/ui/tests/` |
+| **Manual** | drive by hand: on-screen stick (touch / mouse) + W A S D / arrows, speed and turn-rate limits (default 0.2 m/s, max `drive.cruise_speed_mps`), STOP. Top bar shows **MANUAL** |
+| **Runs** | *Record run* / *Stop + save* (rosbag2 of the important topics), list with size, note, **Download (.zip)**, delete, free-disk guard |
+| **Logs** | pipeline table (Hz, age, last value of every stage from `/scan` to `/car/wheels/applied`) and a `/rosout` console (level / node filter, pause, last 500 lines, download) |
 
 **E-STOP**: the guard sends zero until you press RELEASE STOP. A software stop over Wi-Fi; it does not replace the motor power switch.
 The ports are open to the whole network the mini-PC is on: use it on the lab's own Wi-Fi.
 In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open `http://localhost:8080`.
+
+### Why the map showed nothing (fixed)
+
+`ui_bridge` looked up every pose and LiDAR / depth point in the **map** frame only. `car.launch.py` without a mode starts in
+**idle** (no AMCL / SLAM / flat origin, so no `map -> odom` TF), and Load mode has none either until the initial pose is set: every
+lookup failed, so the page got `pose: null` and empty scan / depth lists and drew no car, no points, no path. Also the page never
+subscribed to depth when the guard's `depth_enabled` was false (the default on the car), and `depth_obstacles` does not run then.
+Now: while `map -> odom` is missing the bridge sends the pose and points in the **odom** frame (`frame: "odom"` in `/ui/pose`,
+`/ui/scan`, `/ui/depth`); the page draws them on the blank grid around the car start (0, 0), fades the map and shows
+"NOT LOCALISED / NO MAP MODE". When no `/depth_obstacles` publisher exists the bridge shows the camera's own cloud (same height
+filter). The plan is drawn only in the map frame.
+
+### Manual drive, runs, logs
+
+* **Manual drive.** The page publishes `geometry_msgs/Twist` on `/cmd_vel_teleop` at 20 Hz through rosbridge. `teleop_mux`
+  (`teleop_logic.py`, in the restartable stack) sits in front of the collision monitor: `/cmd_vel_nav` (Nav2 / PD follower) or
+  `/cmd_vel_teleop` -> `/cmd_vel_mux` -> collision monitor -> safety guard -> `/cmd_vel`, so people and walls still stop the car.
+  No command for 0.3 s -> zero (page closed, Wi-Fi lost, stick released, tab hidden: the page also stops). While manual is in force
+  Nav2's output is dropped and the active goal is cancelled; a new goal (RViz, page, mission) ends manual control; E-STOP overrides.
+  Speed is clipped to `drive.cruise_speed_mps`, turn to `drive.max_yaw_rate_rps`; backward input is ignored unless
+  `drive.allow_reverse`. It needs a running map mode (the guard and monitor are part of it). State: `/teleop_mux/state`.
+* **Runs.** `POST /api/runs/start` runs `ros2 bag record` (mcap if installed, else sqlite3) into `<data_dir>/runs/<id>/bag` with
+  `/scan_nav /odom /tf /tf_static /amcl_pose /plan /cmd_vel* /car/wheels/* /safety_guard/state /depth_obstacles /imu/data_raw /rosout`
+  (+ teleop state, goal, initial pose, map). Refused below 1 GB free disk; stopped when free space falls below that or after 1 h.
+  A *test record* is a light JSON summary; a *run* is the full bag; a test started during a run stores the run id (and the run the test id).
+  Replay: unzip, `ros2 bag play <id>/bag`. After a power cut the run is marked `interrupted` (`ros2 bag reindex`).
+* **Logs.** `/ui/pipe` (2 Hz) and `/ui/logs` (/rosout, 2 Hz) are packed and subscribed only while that tab is open.
 
 ### Work only when needed
 
