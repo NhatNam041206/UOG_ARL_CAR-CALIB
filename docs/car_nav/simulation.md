@@ -76,12 +76,15 @@ click on a straight aisle at least ~1.5 m ahead and drag in the driving
 direction (the car only drives forward and needs ~0.75 m turning radius).
 
 **When to rebuild.** `docker-compose.sim.yml` mounts `ros/car_nav` and
-`ros/car_nav_sim` into the container and the image is built with
-`--symlink-install`, so edits to Python code, launch files, configs, worlds and
-missions take effect on the next run with no build. Rebuild
-(`run_sim.sh build`) only after a Dockerfile change, a new executable in
-`setup.py`, or a new file in `launch/` or `rviz/`. A rebuild after a code
-change redoes only the last layer (seconds); rf2o (C++, ~2 min) stays cached.
+`ros/car_nav_sim`; at start the container builds them into an overlay
+(`run_logs/sim/.overlay`, a few seconds, only when a file changed) and uses it
+instead of the copy baked into the image. Edits to Python code, launch files,
+configs, worlds and missions, and even a **new node, launch file or data file**,
+take effect on the next run with no image build. A failed overlay build keeps
+the last good one and prints the error. Rebuild the image (`run_sim.sh build`)
+only after a Dockerfile / apt / pip dependency change. The host-side report
+summary of `run_sim.sh` uses `python3`, or `python` when that is missing
+(Git Bash on Windows).
 
 ## Backends
 

@@ -296,12 +296,65 @@ has 0.30 m to each wall and 0.14 m to spare for the turn.
 Values left as `null` are not measured yet; the launch prints a warning and
 uses 0 (or the `assumed_*` value). The file is mounted into the container,
 so editing it on the Pi and restarting `car-calib-ros-nav` is enough. No
-rebuild is needed.
+rebuild is needed (nor for any other file of `ros/car_nav`, see
+"Dev loop without rebuilding the image").
 
 Still to measure: `drive.track_width_m` (0.52 m assumed), `laser.x`
 (0 assumed), `laser.yaw` (where the A1's 0° mark points), camera pitch (15°
 assumed), `speed.command_latency_s` (0.25 s assumed), and the body height
 (does anything of the car reach the LiDAR plane at 0.24 m?).
+
+## Dev loop without rebuilding the image
+
+The image holds only the heavy, rarely changing parts (ROS, Nav2, drivers,
+rf2o). `car_nav` itself comes from the repo: `docker-compose.pi5.yml` mounts
+`./ros/car_nav` at `/ws/src/car_nav` (read-only), and at container start the
+entrypoint (`docker/common/car_nav_overlay.sh`) runs a fast
+`colcon build` of that package (pure Python, a few seconds, no internet) into
+`/data/nav/.overlay/builds/<hash>` and puts it in front of the copy baked into
+the image. So **editing any file in `ros/car_nav` and restarting the container
+is enough**, including a new console script (`setup.py`), launch file, config,
+web page or behaviour tree.
+
+* Rebuilt only when the content of `ros/car_nav` changed (hash); an unchanged
+  restart prints `[overlay] up to date` and costs nothing.
+* A failed build (syntax error in `setup.py`, ...) never takes the car down:
+  the log is `/data/nav/.overlay/last_build_error.log` (and the container log),
+  and the last good build keeps running.
+* No mounted source (folder missing) -> the code baked into the image runs.
+  `CAR_NAV_OVERLAY=0` in `.env` forces the baked code.
+* The simulator does the same for `ros/car_nav` and `ros/car_nav_sim`
+  (overlay in `run_logs/sim/.overlay`).
+
+| You changed | Needed |
+|---|---|
+| Python node, launch file, config, web page, behaviour tree in `ros/car_nav` | restart the container |
+| New console script, launch file or data file (`setup.py`, `package.xml` file list) | restart the container |
+| `ros/car_nav/config/car.yaml` | restart (it is also mounted directly) |
+| `docker/ros/Dockerfile`, apt packages, a new Python/ROS dependency, drivers (rf2o, sllidar, astra), a new package other than `car_nav` | rebuild the image (needs internet: laptop or GitHub Actions) and `--ros-image` it |
+| `docker/ros/entrypoint.sh`, `docker/common/car_nav_overlay.sh` | rebuild the image (they are copied into it) |
+| `docker-compose.pi5.yml` (devices, volumes, env) | `up -d` again (recreate), no image rebuild |
+
+On the car (mini-PC), after editing files in the repo checkout it runs from:
+
+```bash
+sudo docker compose --profile nav -f docker-compose.pi5.yml restart ros-nav
+sudo docker logs --tail 20 car-calib-ros-nav        # shows "[overlay] build ok" or the build error
+```
+
+Pushing code from the laptop: `./deploy_pi5_remote.sh --no-build` uploads the
+repo as a new release and recreates the containers; `ros-nav` is not built
+from source on the car (it only uses the loaded image), so no image rebuild
+happens. Only a fast one-folder sync of `ros/car_nav` into the running release
+is also possible:
+
+```bash
+tar -C ros -cz car_nav | ssh <car> 'sudo tar -xz -C /opt/car-calib-pi5/current/ros'
+ssh <car> 'cd /opt/car-calib-pi5/current && sudo docker compose --profile nav -f docker-compose.pi5.yml restart ros-nav'
+```
+
+(`restart` keeps the container's mount, which points at that release folder;
+after a deploy the container is recreated and points at the new release.)
 
 ## Build and deploy (the Pi has no internet)
 
