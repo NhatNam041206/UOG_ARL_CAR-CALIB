@@ -143,7 +143,11 @@ class HealthRunner:
 
     # ------------------------------------------------------------------ small helpers
     def heartbeat(self) -> None:
-        self._hb_t = time.monotonic()
+        now = time.monotonic()
+        run = self._s.get("run")
+        if self._actuating and run is not None:      # diagnostics: the longest silence of the page during the run
+            run["hb_max_gap_s"] = round(max(run.get("hb_max_gap_s", 0.0), now - self._hb_t), 3)
+        self._hb_t = now
 
     def hb_age(self) -> float:
         return time.monotonic() - self._hb_t
