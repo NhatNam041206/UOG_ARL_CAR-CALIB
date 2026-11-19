@@ -181,6 +181,7 @@
       <div id="cmsg" class="muted"></div>
       <div id="cform"></div>
       <div class="muted" id="cderived"></div>
+      <div id="cwarn" hidden style="color:var(--warn);font-weight:600;margin-top:6px"></div>
       <div class="row" style="margin-top:10px"><button id="capply" class="on">Apply to the car</button>
         <button id="creset">Back to shipped file</button></div>
       <p class="muted">Apply writes the active car.yaml (the old file is kept as a timestamped backup next to it),
@@ -861,6 +862,14 @@ function showDerived() {
   $("cderived").textContent = `Body ${d.length_m.toFixed(2)} × ${d.width_m.toFixed(2)} m · spin circle radius ${d.spin_radius_m.toFixed(2)} m` +
     ` · camera blind distance ${d.camera_blind_m.toFixed(2)} m ahead of centre (a 5 cm object is invisible closer than this)` +
     (d.lidar_upside_down ? " · LiDAR mounted upside down" : "");
+  // the guard must stop while the object is still in the camera's view: nose + depth stop distance < blind distance is unsafe
+  const gp = carGuard || {}, p = readForm();
+  const warn = gp.depth_enabled && p.x_front + gp.depth_danger_range_m < d.camera_blind_m;
+  $("cwarn").hidden = !warn;
+  if (warn) $("cwarn").textContent = `Warning: the depth guard stops ${gp.depth_danger_range_m.toFixed(2)} m past the nose ` +
+    `(${(p.x_front + gp.depth_danger_range_m).toFixed(2)} m from the centre), but a low object leaves the camera's view at ` +
+    `${d.camera_blind_m.toFixed(2)} m. Raise "Stop distance past the nose" in the Safety guard tab to at least ` +
+    `${(d.camera_blind_m - p.x_front + 0.05).toFixed(2)} m.`;
 }
 async function openCarTab() {
   carOpen = true;
