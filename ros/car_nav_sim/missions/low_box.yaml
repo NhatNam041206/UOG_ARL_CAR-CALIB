@@ -1,4 +1,4 @@
-# Depth camera test: a 0.3 x 0.3 m box, only 0.2 m high, lies in the aisle. It is NOT in the
+# Depth camera test: a 0.3 x 0.3 m box, only 0.15 m high, lies in the aisle. It is NOT in the
 # map and the LiDAR (0.42 m) looks over it, so only the depth camera sees it.
 #   run_sim.sh mission low_box depth:=false   -> the car drives into it (collision = FAIL)
 #   run_sim.sh mission low_box depth:=true    -> the guard stops the car in front of it (PASS: no collision;
@@ -11,4 +11,4 @@ goals:
   - [7.6, 1.4, 0.0]
 extra_obstacles:
   boxes:
-    - {center: [4.5, 1.2], size: [0.3, 0.3], height: 0.2}
+    - {center: [4.5, 1.2], size: [0.3, 0.3], height: 0.15}

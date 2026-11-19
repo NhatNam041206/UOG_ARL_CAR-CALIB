@@ -385,7 +385,7 @@ depth_obstacles:
     tol_m: 0.35
     align: true
     fallback: all             # no map / no pose: pass all points (safe) or none
-    max_tf_age_s: 0.5
+    max_tf_age_s: 1.0         # the sim odometry can lag ~1 s; older pose = fallback (all points)
     min_period_s: 0.08
 
 dynamic_scan:

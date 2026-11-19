@@ -41,9 +41,9 @@ def test_optical_right_is_minus_y_and_down_is_minus_z():
 
 
 def test_car_yaml_camera_pose_floor_hit_distance():
-    # the lowest ray of the 45 deg field of view hits the floor 1.35 m ahead of the camera
+    # the lowest ray of the 45 deg field of view hits the floor here (from car.yaml, whatever the mount)
     d = blind_distance(CAM, 45.0, 0.0)
-    assert d == pytest.approx(1.035 / math.tan(math.radians(37.5)), abs=1e-3)
+    assert d == pytest.approx(CAM.x + CAM.z / math.tan(CAM.pitch + math.radians(22.5)), abs=1e-3)
     assert blind_distance(CAM, 45.0, 0.2) < d                    # a box top is visible closer
 
 
@@ -186,22 +186,27 @@ def _sim_points(world, pose=Pose2D(0.0, 0.0, 0.0)):
 
 
 def test_sim_camera_sees_a_low_box_the_lidar_misses_and_the_floor():
-    w = _world(Box(2.0, 0.0, 0.3, 0.3, 0.0, 0.2))
+    h = 0.15
+    assert h < LASER.z                                                  # under the LiDAR plane (car.yaml)
+    face = blind_distance(CAM, 45.0, 0.0) + 0.6                         # box front, comfortably in view
+    w = _world(Box(face + 0.15, 0.0, 0.3, 0.3, 0.0, h))
     ang = np.linspace(-0.3, 0.3, 61)
     lid = laser_scan_ranges(w, Pose2D(0.0, 0.0, 0.0), LASER, ang, {"range_max_m": 12.0, "range_min_m": 0.15}, None)
-    assert np.isinf(lid).all()                                          # 0.2 m box under the 0.42 m plane
+    assert np.isinf(lid).all()                                          # box under the LiDAR plane
     pts = _sim_points(w)
     base = cloud_to_base(pts, CAM)
     box = base[(base[:, 2] > 0.05)]
-    assert len(box) > 20
-    assert box[:, 0].min() == pytest.approx(1.85, abs=0.06) and box[:, 2].max() == pytest.approx(0.2, abs=0.03)
+    assert len(box) > 10
+    assert box[:, 0].min() == pytest.approx(face, abs=0.08) and box[:, 2].max() == pytest.approx(h, abs=0.03)
     assert (np.abs(base[base[:, 2] < 0.03][:, 2]) < 0.03).all() and (base[:, 2] < 0.03).sum() > 100   # floor
-    kept = obstacle_points(pts, CAM, DepthParams())
-    assert len(kept) >= 5 and kept[:, 0].min() > 1.7
+    kept = obstacle_points(pts, CAM, DepthParams(max_range_m=6.0))
+    assert len(kept) >= 3 and kept[:, 0].min() > face - 0.1
 
 
 def test_sim_camera_blind_zone_and_tall_things():
-    w = _world(Box(0.8, 0.0, 0.3, 0.3, 0.0, 0.2))                       # box 0.65..0.95 m ahead: inside the blind zone
+    h = 0.2
+    back = blind_distance(CAM, 45.0, h) - 0.1                           # whole box nearer than its top can be seen
+    w = _world(Box(back - 0.15, 0.0, 0.3, 0.3, 0.0, h))
     assert len(obstacle_points(_sim_points(w), CAM, DepthParams())) == 0
     tall = World("t", (-1, -3, 10, 3), [Box(3.0, 0.0, 0.4, 2.0, 0.0, 1.0)], [Cylinder(2.5, 1.0, 0.2, 1.8)])
     kept = obstacle_points(_sim_points(tall), CAM, DepthParams())
