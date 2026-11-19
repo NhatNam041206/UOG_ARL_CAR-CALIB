@@ -95,7 +95,7 @@
     <div id="tabs">
       <button data-tab="map">Map</button><button data-tab="drive">Drive</button>
       <button data-tab="safety">Safety guard</button><button data-tab="car">Car</button>
-      <button data-tab="tests">Tests</button>
+      <button data-tab="tests">Tests</button><button data-tab="health">Health</button>
     </div>
 
     <!-- ============================================================ Map -->
@@ -202,6 +202,7 @@
       <div id="tstatus" class="muted"></div>
       <div id="tlist"></div>
     </div>
+    <div class="tab" id="tab-health"></div>
   </div>
 </div>
 <script>
@@ -1079,5 +1080,6 @@ function drawSide(p) {
 buildSliders(); setConn(); connect(); showTab(tab);
 </script>
 <script src="ops.js"></script>
+<script src="health.js"></script>
 </body>
 </html>

@@ -108,6 +108,7 @@ The top bar (connection, map mode, guard state, **E-STOP**) is always visible. T
 | **Drive** | cruise speed, max turn rate, slow-down before curves (PD follower, act from the next goal); settings **profiles** (guard + driving values, saved in `/data/nav/ui/profiles/`: save, load + apply, use at start, delete; HTTP `GET/PUT/DELETE /api/profiles/<name>`) |
 | **Safety guard** | state, nearest person, stop / slow distances, widths, field of view, slow speed, resume delay, depth camera section (**Apply** sends them live; not saved: use a profile or copy them to `nav2_params.yaml safety_guard:`) |
 | **Car** | car properties, drawings, car profiles, Apply to the car (below) |
+| **Health** | checks every device, one run at a time, saved in `/data/nav/ui/health/` (below); the top bar shows "last health check: PASS/FAIL at <time>" |
 | **Tests** | name, *Start recording*, drive / walk in front of the car, *Stop + save* (parameters, every event, 5 Hz trace). Verdict + note, **Download** (JSON), delete. Saved in `/data/nav/ui/tests/` |
 | **Manual** | drive by hand: on-screen stick (touch / mouse) + W A S D / arrows, speed and turn-rate limits (default 0.2 m/s, max `drive.cruise_speed_mps`), STOP. Top bar shows **MANUAL** |
 | **Runs** | *Record run* / *Stop + save* (rosbag2 of the important topics), list with size, note, **Download (.zip)**, delete, free-disk guard |
@@ -214,6 +215,44 @@ which the tab does not edit: restart the container after changing those), rosbri
 are in `nav2_params.yaml` (not generated from `car.yaml`): after changing the body size also change `footprint` there
 (`tests/test_car_nav_nav2_params.py` checks the two agree). The simulator's truth model (`sim.yaml truth:`) and the Gazebo world
 are not changed by Apply.
+
+### Health tab (device checks)
+
+Rule of the owner: **a check the observer has not confirmed counts as FAILED**. A run is PASS only when every check that ran passed;
+a sensor that is missing (the simulator has no colour camera and no IMU) is a FAIL with the reason. Code: rules and thresholds
+`ros/car_nav/car_nav/health_checks.py` (unit tested), measurements `health_runner.py` (inside `ui_bridge`), page `web/health.js`.
+
+| Check | Measures | PASS rule |
+|---|---|---|
+| **LiDAR** | `/scan` for 4.5 s | rate 5.5 .. 10.5 Hz; >= 25 % beams valid; valid ranges 0.05 m .. range_max; <= 2 valid beams inside the footprint + margin outside `self_mask.sectors_deg` (the car's own body is only allowed where it is masked) |
+| **Depth camera** | `/camera/depth/points` 4.5 s, RANSAC floor plane in base_link with the `car.yaml` camera pose | rate >= 5 Hz; >= 300 valid points per frame (organised cloud: >= 20 % valid pixels); floor plane (>= 150 points) within 6 cm of z = 0 and tilted < 3 deg along x and y. The result also shows which camera z / pitch would make the floor level (hint) |
+| **Colour camera** | image topic rate (`health_image_topic`, default `/camera/color/image_raw`) + a JPEG snapshot shown in the page | rate >= 5 Hz **and** the observer clicks "Looks right" (no answer in 60 s = FAIL) |
+| **IMU** | `/imu/data_raw` 4.5 s, car standing still | rate 7 .. 13 Hz; mean |acceleration| 9.81 +- 0.8 m/s^2; |mean gyro| <= 0.08 rad/s; each gyro axis std <= 0.05 rad/s |
+| **Wheels test** (moves the wheels) | six pulses of 0.15 m/s for 1.5 s: left forward, left back, right forward, right back, both forward, spin left. Each step is announced 3 s before (what to expect), then asks "Did it? yes / no" | per step: observer "yes" **and** `/car/wheels/applied` echoed the command within 2 units of what `ugv_link` sends (proves the ESP32 got it). "No" or no answer in 30 s = FAIL and the test stops there |
+| **Speed test** (drives) | forward at 0.2 m/s for 4.5 s (clamped 0.05 .. 0.3 m/s, 2.5 .. 6 s), then a spin at 0.5 rad/s for 3 s. Real speed from the LiDAR (the wall ahead when seen at both ends, else `/odom_rf2o`) over the steady part (after 1.5 s); optional tape distance in the page scales it | moved 50 .. 160 % of commanded; heading change <= 6 deg; the guard never stopped the car; tape within 20 % of the LiDAR total when typed; spin has room and `yaw_efficiency` 0.2 .. 1.4; observer "yes" |
+
+The speed test proposes `ugv.units_per_mps = now / (real speed / commanded speed)` and shows `yaw_efficiency` (real yaw rate / commanded;
+information only). **Apply to car.yaml** (only for a PASSED test, only while the car is stopped: no goal, wheel command 0, no run)
+writes `ugv.units_per_mps` to the writable car.yaml (timestamped backup, `car_store.ActiveCar.write_updates`) and announces it on
+`/car_config/reload`; `ugv_serial_bridge` re-reads it at once, nothing is restarted.
+
+**Safety of the actuator tests.** Refused (HTTP 409) while a navigation goal is active, the E-STOP is on, the wheels are being driven,
+the nav stack is switching, or without a heartbeat. Before Start the operator ticks: E-STOP within reach; for the wheels test "wheels off
+the ground" or "clear space" (without "off the ground" the LiDAR must show nothing within 0.5 m of the footprint); for the speed test
+"2 m clear ahead" (the LiDAR must show at least max(1.0, v*t + 0.7) m free ahead of the nose, and room for the spin radius + 0.15 m).
+While a test runs the page sends a heartbeat (`/ui/health_hb` over rosbridge every 200 ms, only while the Health tab is open and visible;
+`POST /api/health/heartbeat` does the same); **no heartbeat for 0.5 s, E-STOP, a goal sent, Abort, closing the page or the WebSocket ->
+the wheels are zeroed and the run ends as FAILED**. A run always ends with zero wheels (5 stop messages).
+
+| Test | Path to the wheels | Guards |
+|---|---|---|
+| Wheels | `/health/wheels_override` -> `cmd_vel_to_control` -> `/car/wheels/cmd` | **bypassed on purpose**: one wheel alone or backwards cannot be a `/cmd_vel` (`allow_reverse` is off). Limits: 0.15 m/s per wheel (`cmd_vel_to_control` clamps every override to 0.25 m/s), 1.5 s pulses, the override expires 0.3 s after the last message, ignored while the E-STOP is on or a non-zero `/cmd_vel` (navigation) is fresh |
+| Speed | `/cmd_vel_nav` -> collision monitor -> safety guard -> `/cmd_vel` -> `cmd_vel_to_control` | both apply (same path as a Nav2 goal). Needs a running map mode (flat / load / create, state ready); forward only |
+
+REST (module docstring of `ui_bridge.py`): `GET /api/health`, `POST /api/health/start|answer|heartbeat|abort|apply_speed`,
+`GET /api/health/snapshot`, `GET|DELETE /api/health/runs/<id>[?download=1]`. Optional: `car.launch.py require_health:=true`
+(ui_bridge parameter `require_health`, default false) cancels NAV goals (and sends zero) until a run that covered EVERY check PASSED today (a partial run shows "(partial)" in the banner and does not count).
+Simulator: lite sim publishes a stand-in for the ESP32 echo on `/car/wheels/applied`; it has no colour camera and no IMU, so those two checks FAIL there.
 
 ## Map modes (Load / Create / Unknown-flat)
 

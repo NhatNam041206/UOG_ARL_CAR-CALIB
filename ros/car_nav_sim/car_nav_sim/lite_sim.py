@@ -33,8 +33,9 @@ from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
 
 from car_nav import car_reload, config_loader
-from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 from car_nav.depth_obstacles import encode_xyz
+from car_nav.ugv_link import UgvConfig
 
 from . import sim_config
 from .actors import load_actors
@@ -105,6 +106,9 @@ class LiteSim(Node):
         self.wheel_pub = self.create_publisher(Odometry, "/odom_wheel", 10)
         self._next_wheel = 0.0
         self.create_subscription(String, WHEELS_TOPIC, self._on_control, 50)
+        # stand-in for the ESP32's "OK: L= R=" echo (ugv_serial_bridge publishes it on the car)
+        self._ugv = UgvConfig.from_cfg(car)
+        self._applied_pub = self.create_publisher(String, "/car/wheels/applied", 10)
         car_reload.watch(self, self._reload_car)
         self.get_logger().info(
             f"lite sim: world {self.world.name}, start ({x:.2f}, {y:.2f}, {math.degrees(th):.0f} deg), "
@@ -119,9 +123,13 @@ class LiteSim(Node):
         self.laser = config_loader.laser_pose(car)
         self.camera = config_loader.camera_pose(car)
         self.model.drive = drive_from_cfg(car)
+        self._ugv = UgvConfig.from_cfg(car)
 
     def _on_control(self, msg: String) -> None:
-        self.model.command(self.t, msg.data)
+        if self.model.command(self.t, msg.data):
+            l, r = parse_payload(msg.data)
+            a, b = self._ugv.command(l, r).split()
+            self._applied_pub.publish(String(data=f"{a},{b}"))
 
     def _tick(self) -> None:
         # Catch up to wall time x rtf without drifting.

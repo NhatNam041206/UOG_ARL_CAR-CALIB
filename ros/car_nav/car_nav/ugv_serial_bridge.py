@@ -30,7 +30,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 
-from . import config_loader
+from . import car_reload, config_loader
 from .actuation import WHEELS_TOPIC, parse_payload
 from .ugv_link import STOP_LINE, UgvConfig, parse_imu, parse_ok
 
@@ -64,6 +64,7 @@ class UgvSerialBridge(Node):
         self._imu_pub = self.create_publisher(Imu, "/imu/data_raw", 20)
         self._applied_pub = self.create_publisher(String, "/car/wheels/applied", 10)
         self.create_subscription(String, WHEELS_TOPIC, self._on_cmd, 20)
+        car_reload.watch(self, self._reload)      # the Health tab applies a measured ugv.units_per_mps
         self.create_timer(1.0 / float(g("rate_hz")), self._tick)
         self._stop = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -71,6 +72,11 @@ class UgvSerialBridge(Node):
         self.get_logger().info(
             f"ugv bridge: {self._port} @ {self._baud}, {g('rate_hz')} Hz, watchdog {self._watchdog} s, "
             f"motors {'ON' if self._motors else 'OFF (IMU only)'}")
+
+    def _reload(self, cfg: dict) -> None:
+        self._cfg = UgvConfig.from_cfg(cfg)
+        self.get_logger().info(f"ugv: {self._cfg.units_per_mps:.1f} units per m/s "
+                               f"({'measured' if self._cfg.measured else 'ASSUMED'}), cap {self._cfg.max_units}")
 
     # ------------------------------------------------------------ serial
     def _open(self):

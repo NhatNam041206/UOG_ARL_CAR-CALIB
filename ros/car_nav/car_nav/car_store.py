@@ -298,6 +298,27 @@ class ActiveCar:
         os.replace(tmp, self.override)
         return {"path": self.override, "backup": backup}
 
+    def write_updates(self, updates: dict[tuple[str, str], object], now: float | None = None) -> dict:
+        """Like write_props for values outside the Car tab's form (e.g. ("ugv", "units_per_mps")): patch the
+        text of the active file, check it by parsing it back, back up, write the override atomically."""
+        if not self.writable:
+            raise RuntimeError("car.yaml is read-only here: CAR_NAV_CONFIG_OVERRIDE is not set")
+        with open(self.path(), "r", encoding="utf-8") as fh:
+            text = fh.read()
+        new = patch_yaml_text(text, updates)
+        cfg = yaml.safe_load(new) or {}
+        for (sec, key), v in updates.items():
+            got = (cfg.get(sec) or {}).get(key)
+            if got is None or abs(float(got) - float(v)) > 1e-9:
+                raise ValueError(f"car.yaml could not be updated at {sec}.{key} (got {got!r}, wanted {v!r})")
+        os.makedirs(os.path.dirname(self.override) or ".", exist_ok=True)
+        backup = self._backup(now)
+        tmp = self.override + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(new)
+        os.replace(tmp, self.override)
+        return {"path": self.override, "backup": backup}
+
     def reset(self, now: float | None = None) -> str | None:
         """Remove the override (the shipped file is used again); returns the backup made, or None."""
         if not self.is_override():

@@ -7,6 +7,12 @@ rate so the receiver always has a fresh command:
 * fresh cmd_vel (younger than watchdog_s): mapped payload, e.g. "0.356,0.444"
 * no cmd_vel for watchdog_s: the STOP payload "0.000,0.000"
 
+Health check override (web UI Health tab, wheels test): "<left>,<right>" on /health/wheels_override
+replaces the mapped payload while it is younger than OVERRIDE_FRESH_S. It is the ONLY way a wheel is
+driven backwards or alone (the normal path has allow_reverse false). Safety: each wheel is clamped to
+OVERRIDE_MAX_MPS, it expires by itself 0.3 s after the last message, it is ignored while the E-STOP
+(/ui/estop) is on and while a non-zero /cmd_vel (navigation) is fresh.
+
 In the simulator the actuator model listens to this topic. On the real
 car the ugv-controller adapter turns it into the controller's own command.
 """
@@ -17,11 +23,27 @@ import time
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from . import car_reload, config_loader
-from .actuation import CmdVelMapper, drive_from_cfg, format_payload
+from .actuation import CmdVelMapper, drive_from_cfg, format_payload, parse_payload
 from .timing import TimingStats
+
+
+OVERRIDE_TOPIC = "/health/wheels_override"
+OVERRIDE_FRESH_S = 0.3
+OVERRIDE_MAX_MPS = 0.25
+
+
+def override_payload(text: str, age_s: float, estop: bool, nav_active: bool):
+    """(left, right) to send instead of the mapped command, or None when the override does not apply."""
+    if estop or nav_active or age_s > OVERRIDE_FRESH_S:
+        return None
+    p = parse_payload(text)
+    if p is None:
+        return None
+    lim = OVERRIDE_MAX_MPS
+    return tuple(min(max(w, -lim), lim) for w in p)
 
 
 class CmdVelToControl(Node):
@@ -46,6 +68,10 @@ class CmdVelToControl(Node):
         self._last_cmd: tuple[float, float] | None = None
         self._last_t = 0.0
         self._last_payload = ""
+        self._ovr = ("", -1e9)
+        self._estop = False
+        self.create_subscription(String, OVERRIDE_TOPIC, lambda m: setattr(self, "_ovr", (m.data, time.monotonic())), 10)
+        self.create_subscription(Bool, "/ui/estop", lambda m: setattr(self, "_estop", bool(m.data)), 10)
         car_reload.watch(self, self._reload)
         self.create_timer(1.0 / float(self.get_parameter("rate_hz").value), self._tick)
 
@@ -66,6 +92,12 @@ class CmdVelToControl(Node):
             left, right = self._mapper.stop_payload
         else:
             left, right = self._mapper.map(*self._last_cmd)
+        now = time.monotonic()
+        nav = (self._last_cmd is not None and now - self._last_t <= self._watchdog
+               and (abs(self._last_cmd[0]) > 1e-3 or abs(self._last_cmd[1]) > 1e-3))
+        ovr = override_payload(self._ovr[0], now - self._ovr[1], self._estop, nav)
+        if ovr is not None:
+            left, right = ovr
         payload = format_payload(left, right)
         self._pub.publish(String(data=payload))
         if payload != self._last_payload:

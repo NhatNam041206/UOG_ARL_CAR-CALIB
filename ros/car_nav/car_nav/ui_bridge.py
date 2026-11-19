@@ -61,6 +61,17 @@ Recorded runs (run_store.py, run_recorder.py: `ros2 bag record` as a child proce
 Pages for the Logs tab are the topics /ui/pipe (rate / age / last value of each stage, 2 Hz) and
 /ui/logs (/rosout lines); both exist only while a page shows that tab. /ui/mode carries "manual"
 (teleop_mux state) and "frame" (map | odom: the frame of the pose and points sent).
+Health check (health_runner.py, health_checks.py; the Health tab, web/health.js; runs in <data_dir>/health/):
+
+  GET    /api/health                       state, the running run (checks, current step, open question), last run
+  POST   /api/health/start {"checks": [...], "params": {...}, "confirm": {"estop_in_reach", "wheels_off_ground",
+                                           "clear_space", "clear_ahead"}}   409 when an actuator test is not allowed
+  POST   /api/health/answer {"prompt_id", "answer": "yes|no", "value"}   the observer's answer to a question
+  POST   /api/health/heartbeat             deadman (or publish /ui/health_hb); needed every 0.5 s by actuator tests
+  POST   /api/health/abort
+  GET    /api/health/snapshot              the colour camera's last JPEG
+  GET    /api/health/runs;  GET|DELETE /api/health/runs/<id>[?download=1]
+  POST   /api/health/apply_speed {"id"}    write the proposed ugv.units_per_mps to car.yaml (car stopped, test passed)
 
 Maps and map modes (map_store.py, nav_modes.py; maps in <data_dir>/maps):
 
@@ -114,6 +125,7 @@ from std_msgs.msg import Bool
 
 from geometry_msgs.msg import Twist
 from std_srvs.srv import Trigger
+from action_msgs.srv import CancelGoal
 
 from . import car_reload, config_loader
 from .pipeline_stats import Pipeline, STAGES
@@ -127,6 +139,8 @@ from .nav_modes import ALL_MODES, MODES, StackProcess, stack_command, wheels_mov
 from .depth_obstacles import DepthParams, obstacle_points, parse_cloud
 from .idle_logic import should_process
 from .ui_pack import rle
+from .health_checks import passed_today
+from .health_runner import HealthRunner
 from .ui_store import ProfileStore, TestRecorder, TestStore
 
 LOG_KEEP = 500
@@ -327,6 +341,10 @@ class UiBridge(Node):
         self._sample_timer = self.create_timer(0.2, self._sample_test)   # runs only while a test records
         self._sample_timer.cancel()
         self.create_timer(1.0, self._poll_recorder)
+        self.declare_parameter("require_health", False)   # true: no NAV goal until a health check passed today
+        self.health = HealthRunner(self, self, data_dir)
+        self._cancel_goals = self.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal_gate, 10)
         self._start_http()
         self._seed_maps()
         self._boot_timer = self.create_timer(1.0, self._boot)
@@ -550,6 +568,21 @@ class UiBridge(Node):
                 if self._estop_last:
                     self._estop_pub.publish(Bool(data=True))
                 self._drive_restore = bool(self._drive)
+
+    def _on_goal_gate(self, msg: PoseStamped) -> None:
+        """require_health: a goal without a passing health check from today is cancelled again (and the wheels
+        stopped). Off by default."""
+        if not self.get_parameter("require_health").value or passed_today(self.health.store.last_complete()):
+            return
+        self.get_logger().warn("NAV goal refused: no passing health check today (require_health is on)")
+        self._event("goal_refused", why="no passing health check today")
+        if self._cancel_goals.service_is_ready():
+            self._cancel_goals.call_async(CancelGoal.Request())     # all-zero request = cancel every goal
+        self._cmd_pub.publish(Twist())
+
+    def health_summary(self) -> dict:
+        last = self.health.store.last()
+        return {"last": last, "passed_today": passed_today(self.health.store.last_complete()), "require": bool(self.get_parameter("require_health").value)}
 
     def _on_wheels(self, msg: String) -> None:
         self._wheels = parse_payload(msg.data)
@@ -1128,6 +1161,8 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
         from urllib.parse import unquote
         parts = [unquote(p) for p in parts]
         try:
+            if parts[:1] == ["health"]:
+                return self._health(method, parts[1:], url)
             if parts[:1] == ["profiles"]:
                 if len(parts) == 1 and method == "GET":
                     return self._json(200, {"profiles": ps.list(), "current": b.current()})
@@ -1280,6 +1315,46 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
             return self._json(409, {"error": str(exc), "moving": b.moving()})
         except Exception as exc:  # noqa: BLE001 - never kill the server thread
             return self._json(500, {"error": repr(exc)})
+
+    def _health(self, method: str, parts: list, url) -> None:
+        h = self.bridge.health
+        if not parts and method == "GET":
+            return self._json(200, {**h.status(), "summary": self.bridge.health_summary()})
+        if parts == ["start"] and method == "POST":
+            return self._json(200, h.start(self._body()))
+        if parts == ["answer"] and method == "POST":
+            body = self._body()
+            return self._json(200, h.answer(body.get("prompt_id"), body.get("answer", ""), body.get("value")))
+        if parts == ["heartbeat"] and method == "POST":
+            h.heartbeat()
+            return self._json(200, {"ok": True})
+        if parts == ["abort"] and method == "POST":
+            return self._json(200, h.abort())
+        if parts == ["apply_speed"] and method == "POST":
+            return self._json(200, h.apply_speed(str(self._body().get("id", ""))))
+        if parts == ["snapshot"] and method == "GET":
+            snap = h.snapshot()
+            if snap is None:
+                return self._json(404, {"error": "no snapshot yet"})
+            self.send_response(200)
+            self.send_header("Content-Type", snap[1])
+            self.send_header("Content-Length", str(len(snap[0])))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(snap[0])
+            return None
+        if parts[:1] == ["runs"]:
+            if len(parts) == 1 and method == "GET":
+                return self._json(200, {"runs": h.store.list()})
+            if len(parts) == 2 and method == "GET":
+                d = h.store.get(parts[1])
+                if d is None:
+                    return self._json(404, {"error": "no such health run"})
+                dl = "download" in parse_qs(url.query)
+                return self._json(200, d, filename=f"health-{parts[1]}.json" if dl else None)
+            if len(parts) == 2 and method == "DELETE":
+                return self._json(200 if h.store.delete(parts[1]) else 404, {"deleted": parts[1]})
+        return self._json(404, {"error": "unknown endpoint"})
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.startswith("/api/"):
