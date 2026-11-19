@@ -49,9 +49,10 @@ from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
-from .pd_follower import DiffDriveParams, PathTracker, PDGains, diff_drive_command, pd_curvature, rotate_command, wrap
+from .pd_follower import (DiffDriveParams, PathTracker, PDGains, diff_drive_command, pd_curvature, rotate_command,
+                          spin_action, wrap)
 from .actuation import drive_from_cfg
-from .wall_avoid import ArcAvoider, AvoidParams, points_in_base
+from .wall_avoid import ArcAvoider, AvoidParams, points_in_base, spin_clear, spin_radius
 from .timing import TimingStats
 
 
@@ -92,6 +93,10 @@ class PDPathFollower(Node):
         p("avoid_release_factor", 1.3)
         p("avoid_candidates", 13)
         p("avoid_max_scan_age_s", 0.5)
+        p("spin_check_enabled", True)
+        p("spin_clear_margin_m", 0.04)
+        p("spin_creep_max_deg", 90.0)
+        p("spin_goal_wait_s", 8.0)
         cfg = config_loader.load()
         fp = config_loader.footprint(cfg)
         drive = drive_from_cfg(cfg)
@@ -103,6 +108,7 @@ class PDPathFollower(Node):
             max_left=kmax, max_right=kmax,
             n_candidates=int(self.get_parameter("avoid_candidates").value))
         self._avoider = ArcAvoider(self._avoid)
+        self._spin_r = spin_radius(fp.x_front, fp.x_rear, fp.half_width)
         self._points: list = []
         self._points_t = 0.0
         self._tf = Buffer()
@@ -154,6 +160,15 @@ class PDPathFollower(Node):
         elif not ch.overriding and was is not None:
             self.get_logger().info("wall avoid: PD arc clear again, back to the path")
         return ch.kappa
+
+    def _spin_clear(self) -> tuple[bool, float]:
+        """Is the circle the corners sweep (radius spin_r + margin) clear in the latest scan?
+        No fresh scan counts as not clear: never turn blind."""
+        if not self.get_parameter("spin_check_enabled").value:
+            return True, math.inf
+        if time.monotonic() - self._points_t > self._f("avoid_max_scan_age_s"):
+            return False, math.nan
+        return spin_clear(self._points, self._spin_r, self._f("spin_clear_margin_m"))
 
     def _on_accepted(self, goal_handle) -> None:
         # A new path (the tree replans at 1 Hz) replaces the one being driven.
@@ -217,6 +232,8 @@ class PDPathFollower(Node):
         period = 1.0 / self._f("rate_hz")
         gx, gy = tracker.pts[-1]
         anchor, anchor_t = None, self.get_clock().now()
+        blocked_since = None      # when the turn on the spot (at the goal) became blocked
+        spin_blocked = False
         while rclpy.ok():
             with self._lock:
                 superseded = self._active is not goal_handle
@@ -244,7 +261,24 @@ class PDPathFollower(Node):
                     self._stop()
                     goal_handle.succeed()
                     return self._result()
-                # skid-steer: turn on the spot to the goal heading
+                # skid-steer: turn on the spot to the goal heading, if the circle the
+                # corners sweep is free
+                clear, nearest = self._spin_clear()
+                if not clear:
+                    now_w = self.get_clock().now()
+                    if blocked_since is None:
+                        blocked_since = now_w
+                        self.get_logger().warn(
+                            f"goal heading: no room to turn on the spot (nearest scan point {nearest:.2f} m, "
+                            f"needs {self._spin_r + self._f('spin_clear_margin_m'):.2f} m): waiting")
+                    self._stop()
+                    if (now_w - blocked_since).nanoseconds * 1e-9 > self._f("spin_goal_wait_s"):
+                        self.get_logger().warn("goal position reached; goal heading skipped (no room to turn)")
+                        goal_handle.succeed()
+                        return self._result()
+                    time.sleep(period)
+                    continue
+                blocked_since = None
                 cmd = Twist()
                 cmd.angular.z = rotate_command(err, dd)
                 self._pub.publish(cmd)
@@ -271,6 +305,24 @@ class PDPathFollower(Node):
                 self.get_logger().info(
                     f"heading error {math.degrees(tr.psi_e):+.0f} deg: "
                     f"{'turning on the spot' if rotating else 'following the path again'}")
+            if rotating:
+                clear, nearest = self._spin_clear()
+                act = spin_action(tr.psi_e, clear, math.radians(self._f("spin_creep_max_deg")))
+                if act != "spin":
+                    if not spin_blocked:
+                        self.get_logger().warn(
+                            f"no room to turn on the spot (nearest scan point {nearest:.2f} m, needs "
+                            f"{self._spin_r + self._f('spin_clear_margin_m'):.2f} m): "
+                            f"{'creeping on at the minimum speed' if act == 'creep' else 'waiting'}")
+                    if act == "creep":
+                        v = dd.min_speed_mps
+                        omega = max(-self._f("max_yaw_rate_rps"), min(self._f("max_yaw_rate_rps"),
+                                    v * self._avoid_kappa(kappa)))
+                    else:
+                        v, omega = 0.0, 0.0
+                spin_blocked = act != "spin"
+            else:
+                spin_blocked = False
             cmd = Twist()
             cmd.linear.x = v
             cmd.angular.z = omega

@@ -113,3 +113,29 @@ def test_global_costmap_plans_on_the_static_map_only():
     plugins = NAV["global_costmap"]["global_costmap"]["ros__parameters"]["plugins"]
     assert "obstacle_layer" not in plugins and "static_layer" in plugins
     assert "obstacle_layer" in NAV["local_costmap"]["local_costmap"]["ros__parameters"]["plugins"]
+
+
+def test_inflation_and_guard_widths_fit_the_body():
+    f = CAR["footprint"]
+    for cm in ("local_costmap", "global_costmap"):
+        p = NAV[cm][cm]["ros__parameters"]
+        inscribed = f["half_width"] + p["footprint_padding"]
+        infl = p["inflation_layer"]["inflation_radius"]
+        assert infl >= inscribed + 0.3, cm          # a real gradient beyond the blocked cells
+    # the global one reaches the middle of a 1.2 m corridor (0.6 m from each wall) so paths stay centred
+    g = NAV["global_costmap"]["global_costmap"]["ros__parameters"]["inflation_layer"]
+    assert g["inflation_radius"] > 0.6
+    sg = rp("safety_guard")
+    assert sg["half_width_m"] >= f["half_width"] + 0.1
+    assert sg["slow_half_width_m"] > sg["half_width_m"]
+    # collision monitor: the rotation polygon covers the footprint
+    rot = ast.literal_eval(rp("collision_monitor")["VelocityStop"]["rotation"]["points"])
+    assert max(x for x, _ in rot) >= f["x_front"] and max(y for _, y in rot) >= f["half_width"]
+    assert rp("amcl")["laser_min_range"] >= f["half_width"]    # the body is never an AMCL beam
+
+
+def test_laser_and_camera_measurements():
+    # owner's measurements 2026-11-19
+    assert (CAR["laser"]["z"], CAR["camera"]["z"]) == (0.24, 1.20)
+    assert (CAR["camera"]["x"], CAR["camera"]["y"]) == (0.0, 0.0)
+    assert CAR["drive"]["track_width_m"] is None and CAR["drive"]["assumed_track_width_m"] == 0.52

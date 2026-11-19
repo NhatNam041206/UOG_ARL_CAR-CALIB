@@ -79,20 +79,32 @@ class World:
         return cls(str(d.get("name", default_name)), bounds, boxes, cyl, start)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ #
-    def segments(self) -> np.ndarray:
-        """All box edges as an (M, 4) array of x0, y0, x1, y1."""
+    def segments(self, min_height: float | None = None) -> np.ndarray:
+        """Box edges as an (M, 4) array of x0, y0, x1, y1. With min_height only
+        boxes taller than that (a LiDAR at height z does not see anything lower)."""
         segs = []
         for b in self.boxes:
+            if min_height is not None and b.height <= min_height:
+                continue
             c = b.corners()
             for i in range(4):
                 segs.append([*c[i], *c[(i + 1) % 4]])
         return np.array(segs, dtype=float).reshape(-1, 4)
 
-    def raycast(self, ox: float, oy: float, angles: np.ndarray, max_range: float) -> np.ndarray:
-        """Distance along each world-frame direction to the first obstacle (inf if none)."""
+    def raycast(self, ox: float, oy: float, angles: np.ndarray, max_range: float,
+                z: float | None = None) -> np.ndarray:
+        """Distance along each world-frame direction to the first obstacle (inf if none).
+
+        z = height of the (level) scan plane: only obstacles taller than z are hit
+        (boxes and cylinders have a height). None = every obstacle."""
         dx, dy = np.cos(angles), np.sin(angles)
         best = np.full(angles.shape, np.inf)
-        segs = self.segments()
+        cache = getattr(self, "_ray_segs", None)
+        if cache is None:
+            cache = self._ray_segs = {}
+        if z not in cache:
+            cache[z] = self.segments(z)
+        segs = cache[z]
         if len(segs):
             x0, y0, x1, y1 = (segs[:, i][None, :] for i in range(4))
             ex, ey = x1 - x0, y1 - y0
@@ -105,6 +117,8 @@ class World:
             t = np.where(ok, t, np.inf)
             best = np.minimum(best, t.min(axis=1))
         for c in self.cylinders:
+            if z is not None and c.height <= z:
+                continue
             fx, fy = ox - c.cx, oy - c.cy
             b = fx * dx + fy * dy
             disc = b * b - (fx * fx + fy * fy - c.r * c.r)
@@ -118,8 +132,9 @@ class World:
         return best
 
     # ------------------------------------------------------------------ #
-    def occupancy(self, resolution: float = 0.05) -> np.ndarray:
-        """Boolean grid, row 0 = y_min (flip vertically for a PGM)."""
+    def occupancy(self, resolution: float = 0.05, min_height: float | None = None) -> np.ndarray:
+        """Boolean grid, row 0 = y_min (flip vertically for a PGM). min_height: only
+        obstacles taller than this (what a LiDAR at that height maps)."""
         x0, y0, x1, y1 = self.bounds
         w = int(math.ceil((x1 - x0) / resolution))
         h = int(math.ceil((y1 - y0) / resolution))
@@ -129,18 +144,22 @@ class World:
         occ = np.zeros((h, w), dtype=bool)
         half = resolution / 2.0
         for b in self.boxes:
+            if min_height is not None and b.height <= min_height:
+                continue
             c, s = math.cos(b.yaw), math.sin(b.yaw)
             lx = (gx - b.cx) * c + (gy - b.cy) * s
             ly = -(gx - b.cx) * s + (gy - b.cy) * c
             occ |= (np.abs(lx) <= b.sx / 2.0 + half) & (np.abs(ly) <= b.sy / 2.0 + half)
         for cy in self.cylinders:
+            if min_height is not None and cy.height <= min_height:
+                continue
             occ |= (gx - cy.cx) ** 2 + (gy - cy.cy) ** 2 <= (cy.r + half) ** 2
         return occ
 
-    def write_map(self, out_dir: str, resolution: float = 0.05) -> str:
+    def write_map(self, out_dir: str, resolution: float = 0.05, min_height: float | None = None) -> str:
         """Write <name>.pgm + <name>.yaml for nav2 map_server; returns the yaml path."""
         os.makedirs(out_dir, exist_ok=True)
-        occ = self.occupancy(resolution)
+        occ = self.occupancy(resolution, min_height)
         img = np.where(occ, 0, 254).astype(np.uint8)[::-1, :]
         pgm = os.path.join(out_dir, f"{self.name}.pgm")
         with open(pgm, "wb") as fh:

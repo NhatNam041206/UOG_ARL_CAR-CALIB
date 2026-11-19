@@ -2,6 +2,7 @@
 import math
 
 import numpy as np
+import pytest
 import yaml
 
 from tests import _car_nav_paths as P  # noqa: F401  (sets sys.path)
@@ -118,13 +119,16 @@ def test_free_distance_straight_and_wall_ahead():
     assert free_distance(points_at(corridor(), 0, 0, 0), 0.0, PARAMS, 1.0) == 1.0
     end = [((1.0, -2.0), (1.0, 2.0))]
     f = free_distance(points_at(end, 0, 0, 0), 0.0, PARAMS, 1.0)
-    assert 0.6 <= f <= 0.8          # nose 0.185 + margin 0.05 reaches x = 1.0 after ~0.77 m
+    reach = 1.0 - (F["x_front"] + PARAMS.margin_m)       # nose + margin reaches x = 1.0 after 0.6 m
+    assert reach - 0.11 <= f <= reach + 0.01             # sampled every 0.1 m
 
 
 def test_rear_swing_counts():
-    # wall 0.05 m beside the rear on the right: a hard LEFT turn swings the rear into it
-    # (diff drive turns about the centre, so the rear still swings out)
-    wall = [((-0.3, -0.20), (0.0, -0.20))]
+    # wall 0.07 m beside the rear on the right (body half width 0.30, margin 0.05): a hard
+    # LEFT turn swings the rear into it (diff drive turns about the centre, so the rear
+    # still swings out)
+    y_wall = -(F["half_width"] + PARAMS.margin_m + 0.02)
+    wall = [((-0.5, y_wall), (-0.2, y_wall))]
     pts = points_at(wall, 0, 0, 0)
     assert free_distance(pts, KMAX, PARAMS, 1.0) < 0.3
     assert free_distance(pts, 0.0, PARAMS, 1.0) == 1.0
@@ -172,3 +176,37 @@ def test_heading_at_wall_recovers():
     for deg in (15, 25, 35):
         assert drive(corridor(), 0, 0, math.radians(deg), lambda x, y, th: 0.0, avoid=False)[0]
         assert not drive(corridor(), 0, 0, math.radians(deg), lambda x, y, th: 0.0, avoid=True)[0]
+
+
+def test_spin_circle_radius_is_the_corner_distance():
+    from car_nav.wall_avoid import spin_radius
+    assert spin_radius(F["x_front"], F["x_rear"], F["half_width"]) == \
+        math.hypot(max(F["x_front"], -F["x_rear"]), F["half_width"])
+    assert spin_radius(0.35, -0.35, 0.30) == np.float64(math.sqrt(0.35 ** 2 + 0.30 ** 2))   # 0.46 m
+
+
+def test_spin_clear_needs_the_whole_swept_circle_free():
+    from car_nav.wall_avoid import spin_clear, spin_radius
+    r = spin_radius(F["x_front"], F["x_rear"], F["half_width"])
+    m = PD["spin_clear_margin_m"]
+    # centred in a 1.8 m corridor (0.9 m to each wall) and in a 1.2 m one (0.6 m): free
+    assert spin_clear(points_at(corridor(), 0, 0, 0), r, m)[0]
+    narrow = [((-50.0, 0.6), (50.0, 0.6)), ((-50.0, -0.6), (50.0, -0.6))]
+    ok, near = spin_clear(points_at(narrow, 0, 0, 0), r, m)
+    assert ok and near == pytest.approx(0.6, abs=0.01)
+    # 0.15 m off the middle of the 1.2 m corridor: a corner would hit the wall
+    assert not spin_clear(points_at(narrow, 0, 0.15, 0), r, m)[0]
+    # a point beside the rear, outside the footprint but inside the circle, blocks (it would be
+    # swept); a point just outside the circle does not
+    assert not spin_clear([(-0.2, -0.40)], r, m)[0]
+    assert spin_clear([(-0.2, -(r + m + 0.01))], r, m)[0]
+    assert spin_clear([], r, m) == (True, math.inf)
+
+
+def test_spin_action_spins_creeps_or_waits():
+    from car_nav.pd_follower import spin_action
+    assert spin_action(2.0, True) == "spin"
+    assert spin_action(1.0, False) == "creep"          # path roughly ahead: keep following slowly
+    assert spin_action(-1.2, False) == "creep"
+    assert spin_action(2.5, False) == "wait"           # path behind: stand still
+    assert spin_action(1.0, False, creep_max_rad=0.5) == "wait"

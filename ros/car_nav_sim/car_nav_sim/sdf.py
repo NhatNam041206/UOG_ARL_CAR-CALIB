@@ -37,11 +37,11 @@ def car_sdf(car_cfg: dict, sim_cfg: dict, start: tuple[float, float, float]) -> 
     lidar = sim_cfg.get("lidar") or {}
     lx = float(laser.get("x") or 0.0)
     lyaw = float(laser.get("yaw") or 0.0)
-    lz = float(laser.get("z") or 0.42)
+    lz = float(laser.get("z") or 0.24)
     lroll = float(laser.get("roll") or 0.0)
     xf, xr, hw = float(fp["x_front"]), float(fp["x_rear"]), float(fp["half_width"])
     length, xc = xf - xr, (xf + xr) / 2.0
-    track = float(drive.get("track_width_m") or drive.get("assumed_track_width_m") or 0.22)
+    track = float(drive.get("track_width_m") or drive.get("assumed_track_width_m") or 0.52)
     axle = 0.5 * (xf - xr) - 0.07          # front / rear axle x, wheels near the body corners
     samples = int(lidar.get("samples", 720))
     inc = 2 * math.pi / samples

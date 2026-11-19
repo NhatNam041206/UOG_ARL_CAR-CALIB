@@ -5,7 +5,7 @@ world: test_floor
 goal_timeout_s: 60
 start: [1.0, 1.1, 0.0]
 goals:
-  - [7.6, 1.4, 0.0]
+  - [7.6, 1.7, 0.0]            # was y 1.4: the 0.60 m car there had 0.3 m to the 0.4 m box at (8.1, 0.6)
 actors:
   - name: crossing
     radius: 0.2

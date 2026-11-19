@@ -9,17 +9,22 @@
 # and uses 0 (or the assumed_* value) for it. Measure it and replace null.
 
 footprint:
-  # Same 0.37 x 0.27 m body as the rear-steer car, centred on base_link.
-  x_front: 0.185
-  x_rear: -0.185
-  half_width: 0.135
+  # Body 0.70 m long x 0.60 m wide (owner's measurement, 2026-11-19; the
+  # earlier 0.37 x 0.27 m was an assumption), centred on base_link.
+  # Turning on the spot the corners sweep a circle of radius
+  # sqrt(0.35^2 + 0.30^2) = 0.46 m: that, not the width, is the room the
+  # car needs to turn (pd_follower.spin_clear_radius_m uses it).
+  x_front: 0.35
+  x_rear: -0.35
+  half_width: 0.30
 
 laser:
   # RPLIDAR A1, mounted the normal way up (motor down, scan plane level):
   # roll = pitch = 0, the driver's `inverted` stays false.
-  x: null          # car centre (base_link) -> LiDAR centre, along x (m)
+  x: 0.0           # ASSUMED at the car centre (owner did not give it; measure it)
   y: 0.0
-  z: 0.42
+  z: 0.24          # height above the floor (m), owner's measurement 2026-11-19
+                   # (was 0.42). Only obstacles taller than this are in the scan.
   roll: 0.0
   pitch: 0.0
   yaw: null        # direction of the A1's 0 deg mark once mounted (rad)
@@ -27,17 +32,23 @@ laser:
 
 self_mask:
   # Scan points inside the footprint (+ margin) are the car itself.
+  # Kept at 0.03: anything farther than 0.33 m from the centre line is real.
+  # A bigger margin would hide a wall scraping the side of the car (0.30 m
+  # from the centre). The LiDAR x is only assumed (0): if scan_self_mask logs
+  # masked bearings at the front/rear after measuring laser.x, fix laser.x
+  # rather than widening this.
   margin_m: 0.03
   # Extra sectors to drop, in base_link bearing degrees (0 = ahead,
   # +90 = left), e.g. a mast leg outside the footprint: [[150, 170]].
   sectors_deg: []
 
 camera:
-  # Orbbec Astra Pro at 1.035 m, tilted about 15 deg down (positive pitch
-  # = nose down in REP-103).
-  x: null
+  # Orbbec Astra Pro at the car centre (x = y = 0), 1.20 m high (owner's
+  # measurement 2026-11-19; was 1.035). Pitch ASSUMED unchanged: about 15 deg
+  # down (positive pitch = nose down in REP-103); measure it.
+  x: 0.0
   y: 0.0
-  z: 1.035
+  z: 1.20
   roll: 0.0
   pitch_deg: 15.0
   yaw: 0.0
@@ -54,7 +65,7 @@ drive:
   # command format by the ugv-controller adapter.
   type: diff_drive
   track_width_m: null          # left wheel centre -> right wheel centre (m)
-  assumed_track_width_m: 0.22  # used while track_width_m is null
+  assumed_track_width_m: 0.52  # ASSUMED (wheel centre to wheel centre, body 0.60 wide); used while track_width_m is null
   wheel_radius_m: null         # only for the adapter (m/s <-> rad/s or rpm)
   max_wheel_speed_mps: 0.6     # never command a wheel faster than this
   cruise_speed_mps: 0.4        # Nav2 driving speed (pd_path_follower.speed_mps)

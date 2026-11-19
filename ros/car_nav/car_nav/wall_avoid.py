@@ -160,3 +160,22 @@ class ArcAvoider:
                 best = key
         self.override_k = best[2]
         return ArcChoice(best[2], True, pd_free, best[0])
+
+
+def spin_radius(x_front: float, x_rear: float, half_width: float) -> float:
+    """Radius of the circle the farthest body corner sweeps when the car turns on
+    the spot about base_link (0.46 m for a 0.70 x 0.60 m body centred on it)."""
+    return math.hypot(max(abs(x_front), abs(x_rear)), half_width)
+
+
+def spin_clear(points, radius: float, margin_m: float = 0.04) -> tuple[bool, float]:
+    """Can the car turn on the spot? (clear, nearest scan point distance from base_link).
+
+    The body corners sweep a circle of `radius` about base_link, so any scan
+    point closer than radius + margin_m is in the way, whichever way it turns.
+    Points on the car itself must already be masked (scan_self_mask)."""
+    pts = _as_array(points)
+    if pts.shape[0] == 0:
+        return True, math.inf
+    nearest = float(np.sqrt((pts[:, 0] ** 2 + pts[:, 1] ** 2).min()))
+    return nearest >= radius + margin_m, nearest

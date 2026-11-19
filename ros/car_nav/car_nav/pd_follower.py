@@ -214,3 +214,16 @@ def diff_drive_command(tr: Tracking, kappa: float, p: DiffDriveParams, rotating:
     v = max(v, p.min_speed_mps)
     omega = min(max(v * kappa, -p.max_yaw_rate_rps), p.max_yaw_rate_rps)
     return v, omega, False
+
+
+def spin_action(err: float, clear: bool, creep_max_rad: float = math.pi / 2) -> str:
+    """What to do when the follower wants to turn on the spot (heading error `err`).
+
+    "spin"  the swept circle is clear: turn.
+    "creep" not clear, but the path lies roughly ahead (|err| <= creep_max_rad):
+            keep following at the minimum speed (wall avoidance and the collision
+            monitor still act) instead of turning.
+    "wait"  not clear and the path is behind / beside the car: stand still."""
+    if clear:
+        return "spin"
+    return "creep" if abs(err) <= creep_max_rad else "wait"

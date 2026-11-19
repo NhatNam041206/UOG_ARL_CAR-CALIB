@@ -16,10 +16,12 @@ from .world import World
 
 def build(world_name: str, out_dir: str, start=None) -> tuple[str, str]:
     world = World.load(sim_config.resolve("worlds", world_name))
-    map_yaml = world.write_map(out_dir)
+    cfg = config_loader.load()
+    # the map a LiDAR at laser.z would make: only obstacles taller than that
+    map_yaml = world.write_map(out_dir, min_height=float(((cfg.get("laser") or {}).get("z")) or 0.0) or None)
     sdf_path = os.path.join(out_dir, f"{world.name}.sdf")
     with open(sdf_path, "w", encoding="utf-8") as fh:
-        fh.write(world_sdf(world, config_loader.load(), sim_config.load_sim(), start))
+        fh.write(world_sdf(world, cfg, sim_config.load_sim(), start))
     return map_yaml, sdf_path
 
 

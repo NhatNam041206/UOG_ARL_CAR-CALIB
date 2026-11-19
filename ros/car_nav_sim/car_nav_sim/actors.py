@@ -1,7 +1,7 @@
 """Moving people for the simulator (no ROS imports).
 
 A mission file may list actors: cylinders (a person seen by a LiDAR at
-0.42 m height is a ~0.4 m wide blob) that walk along a polyline at a fixed
+0.24 m height is a ~0.4 m wide blob) that walk along a polyline at a fixed
 speed. They are NOT in the map Nav2 localises on, exactly like a person on
 the real floor.
 

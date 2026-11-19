@@ -37,7 +37,7 @@ amcl:
     do_beamskip: false
     laser_likelihood_max_dist: 2.0
     laser_max_range: 12.0
-    laser_min_range: 0.15
+    laser_min_range: 0.4     # body 0.30 m to the sides / 0.35 m fore-aft of the (assumed central) LiDAR: drop anything the self mask might miss (was 0.15)
     laser_model_type: "likelihood_field"
     max_beams: 720   # every beam of the sim scan (0.5 deg); a corridor end wall (1.2 m at 6 m) gets ~23 beams
     max_particles: 2000
@@ -152,8 +152,9 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      # x_front 0.185, x_rear -0.185, half_width 0.135 (car.yaml footprint)
-      footprint: "[[0.185, 0.135], [0.185, -0.135], [-0.185, -0.135], [-0.185, 0.135]]"
+      # x_front 0.35, x_rear -0.35, half_width 0.30 (car.yaml footprint). Inscribed
+      # radius 0.30 (+0.02 padding): the inflation below must reach well past it.
+      footprint: "[[0.35, 0.30], [0.35, -0.30], [-0.35, -0.30], [-0.35, 0.30]]"
       footprint_padding: 0.02
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -172,8 +173,12 @@ local_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        # Inscribed radius is 0.32 m (half width 0.30 + padding 0.02), so 0.5 (was
+        # 0.5 for 0.155) left only 0.18 m of gradient. 0.7 reaches the middle
+        # of a 1.2 m corridor (0.6 m from each wall). Cost at 0.6 m: 252 *
+        # exp(-4 * (0.6 - 0.32)) = 82. Only the local costmap / RPP use it.
         cost_scaling_factor: 4.0
-        inflation_radius: 0.5
+        inflation_radius: 0.7
       always_send_full_costmap: true
 
 global_costmap:
@@ -184,7 +189,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.185, 0.135], [0.185, -0.135], [-0.185, -0.135], [-0.185, 0.135]]"
+      footprint: "[[0.35, 0.30], [0.35, -0.30], [-0.35, -0.30], [-0.35, 0.30]]"
       footprint_padding: 0.02
       resolution: 0.05
       track_unknown_space: true
@@ -217,8 +222,16 @@ global_costmap:
         # Slow decay over the whole 1.2 m corridor so Smac 2D keeps to its
         # middle (4.0 / 0.6 let the path run 0.3 m from a wall: campus sim
         # 2026-11-17, the car then could not turn on the spot at the goal).
-        cost_scaling_factor: 2.0
-        inflation_radius: 0.8
+        # Car 0.70 x 0.60 m (2026-11-19): inscribed radius 0.32 m (half width
+        # + padding), so the cells within 0.32 m of a wall are blocked and the
+        # middle of a 1.2 m corridor (0.6 m from each wall) is the only free
+        # lane (plus 0.28 m of it). The gradient must reach that middle:
+        # inflation_radius 0.9 (> 0.6), cost there 252 * exp(-3 * (0.6 - 0.32))
+        # = 109 (was 103 with 2.0 / 0.8 for the 0.155 m car): same steepness
+        # of the "keep to the middle" pull. A 0.46 m spin circle fits in a
+        # 1.2 m corridor only within 0.14 m of the middle.
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.9
       always_send_full_costmap: true
 
 planner_server:
@@ -255,6 +268,10 @@ behavior_server:
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
     # Spin (recovery: turn on the spot) and wait; no backup (forward only).
+    # Spin checks the (0.70 x 0.60 m) footprint against the local costmap
+    # for simulate_ahead_time before it turns, so in a place where the car's
+    # corners (0.46 m circle) would touch a wall it refuses to turn and the
+    # tree falls through to wait / replanning: no change needed.
     behavior_plugins: ["spin", "wait"]
     spin:
       plugin: "nav2_behaviors::Spin"
@@ -285,12 +302,15 @@ collision_monitor:
     enable_stamped_cmd_vel: false
     # Two zones:
     # * VelocityStop, the bumper: its shape depends on what the car is doing.
-    #   Driving forward it reaches 0.22 m past the nose (x 0.405): one scan
-    #   period 0.06 m + latency 0.25 s x 0.4 m/s = 0.10 m + braking 0.04 m
-    #   + 0.02. It is only a little wider than the car (0.15 vs 0.135) so
-    #   walls beside the path do not trigger it. Turning on the spot it is
-    #   the footprint + 3 cm: a box ahead would block the turn that gets the
-    #   car away from a wall.
+    #   Driving forward it reaches 0.22 m past the nose (x 0.57 = 0.35 + 0.22,
+    #   the same travel-distance budget as before): one scan period 0.06 m
+    #   + latency 0.25 s x 0.4 m/s = 0.10 m + braking 0.04 m + 0.02. It is
+    #   only a little wider than the car (0.315 vs 0.30) so walls beside the
+    #   path do not trigger it (a centred car in a 1.2 m corridor has 0.30 m
+    #   to each wall). Turning on the spot it is the footprint + 3 cm
+    #   (+-0.38 x +-0.33): a box ahead would block the turn that gets the car
+    #   away from a wall. It does NOT cover the whole 0.46 m circle the
+    #   corners sweep; pd_path_follower's spin check does (spin_clear_*).
     # * FootprintApproach follows the current (v, omega): the speed is scaled
     #   down so the footprint never reaches an obstacle within
     #   time_before_collision; unlike the old one-speed car this really slows
@@ -310,13 +330,13 @@ collision_monitor:
       holonomic: false
       velocity_polygons: ["rotation", "forward"]
       rotation:
-        points: "[[0.215, 0.165], [0.215, -0.165], [-0.215, -0.165], [-0.215, 0.165]]"
+        points: "[[0.38, 0.33], [0.38, -0.33], [-0.38, -0.33], [-0.38, 0.33]]"
         linear_min: -0.05
         linear_max: 0.05
         theta_min: -3.0
         theta_max: 3.0
       forward:
-        points: "[[0.405, 0.15], [0.405, -0.15], [0.0, -0.15], [0.0, 0.15]]"
+        points: "[[0.57, 0.315], [0.57, -0.315], [0.0, -0.315], [0.0, 0.315]]"
         linear_min: 0.05
         linear_max: 2.0
         theta_min: -3.0
@@ -349,12 +369,12 @@ safety_guard:
     use_sim_time: false
     enabled: true
     danger_range_m: 0.6       # stop: someone this far past the nose ...
-    half_width_m: 0.35        # ... within +- this of the centre line
+    half_width_m: 0.45        # ... within +- this of the centre line (car half width 0.30 + 0.15)
     slow_range_m: 1.5         # slow down: this far ...
-    slow_half_width_m: 0.5    # ... +- this
+    slow_half_width_m: 0.65   # ... +- this (0.20 more than the stop width; a 1.2 m corridor is +-0.6)
     slow_ratio: 0.4
     fov_deg: 120.0
-    turn_clear_m: 0.25        # turning on the spot: stop for anyone this close in front
+    turn_clear_m: 0.25        # turning on the spot: stop for anyone this close in front (the corners sweep 0.11 m past the nose)
     resume_delay_s: 0.5       # drive on when the zone has been clear this long
     min_points: 3
     scan_timeout_s: 1.0       # /scan_dynamic older than this: stop (fail safe)
@@ -481,8 +501,26 @@ pd_path_follower:
     avoid_horizon_m: 0.9          # 0.1 m driven in the 0.25 s delay + 0.8 m
     avoid_release_factor: 1.3
     avoid_candidates: 13
-    avoid_max_curvature: 2.5      # 1/m (0.4 m radius); the car could turn tighter
+    avoid_max_curvature: 2.5      # 1/m (0.4 m radius); the car could turn tighter (its 0.70 x 0.60 m body
+                                  # sweeps far more on such an arc, so most are rejected in corridors)
     avoid_max_scan_age_s: 0.5
+    # Margins for the 0.70 x 0.60 m car (2026-11-19, the footprint comes from car.yaml):
+    # avoid_margin_m 0.05 and the 0.9 m horizon (distance driven, from base_link;
+    # the nose is already in the swept footprint, so the 0.35 m nose offset needs
+    # no extra) are unchanged: speed, latency and braking did not change, and a
+    # centred car in a 1.2 m corridor has 0.30 m to each wall (0.25 m after the margin).
+    # Turning on the spot (car_nav/wall_avoid.py spin_clear): the corners sweep a
+    # circle of radius sqrt(0.35^2 + 0.30^2) = 0.46 m. The follower only turns on
+    # the spot (path heading error, goal heading) while no scan point is within
+    # 0.46 + spin_clear_margin_m of base_link; no fresh scan counts as not clear.
+    # Not clear: heading error <= spin_creep_max_deg -> drive on at min_speed_mps
+    # (wall avoidance and the collision monitor still act), otherwise stand still.
+    # At the goal: wait up to spin_goal_wait_s, then report the goal reached
+    # WITHOUT its heading (warning in the log).
+    spin_check_enabled: true
+    spin_clear_margin_m: 0.04     # 0.50 m in all: a car centred in a 1.2 m corridor (0.60 m) may be 0.10 m off
+    spin_creep_max_deg: 90.0
+    spin_goal_wait_s: 8.0
 
 cmd_vel_to_control:
   ros__parameters:
