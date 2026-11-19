@@ -210,10 +210,14 @@ def main() -> None:
     nav.declare_parameter("localizer", "amcl")  # "amcl" or "slam"
     nav.declare_parameter("start", [0.0])
     nav.declare_parameter("odom_source", "")
+    nav.declare_parameter("depth", False)
     mission_path = sim_config.resolve("missions", nav.get_parameter("mission").value)
     with open(mission_path, "r", encoding="utf-8") as fh:
         mission = yaml.safe_load(fh) or {}
     world = World.load(sim_config.resolve("worlds", mission.get("world", "test_floor")))
+    # objects that are not in the map (low boxes ...): they count for the clearance / collision score
+    # whatever their height, the car's body is in their way
+    n_extra = world.add_extras(mission)
     start_param = list(nav.get_parameter("start").value)
     start = start_param if len(start_param) == 3 else (mission.get("start") or world.start)
     car = config_loader.load()
@@ -298,7 +302,12 @@ def main() -> None:
         results.append(entry)
         nav.get_logger().info(f"goal {i + 1}: {json.dumps({k: v for k, v in entry.items() if k != 'trace'})}")
 
-    ok = bool(results) and all(r["result"] == "SUCCEEDED" and not r["collision"] for r in results)
+    # timeout_ok: true (missions where stopping in front of the obstacle IS the pass, e.g. low_box):
+    # a goal that was not reached still passes as long as nothing was hit
+    timeout_ok = bool(mission.get("timeout_ok", False))
+    ok = bool(results) and all(
+        not r["collision"] and (r["result"] == "SUCCEEDED" or (timeout_ok and r["result"] in ("TIMEOUT", "CANCELED", "FAILED")))
+        for r in results)
     report = {
         "mission": os.path.basename(mission_path),
         "world": world.name,
@@ -307,6 +316,9 @@ def main() -> None:
         "car_yaml": car.get("_path"),
         "sim_yaml": sim_config.load_sim().get("_path"),
         "truth": sim_config.load_sim().get("truth"),
+        "depth": bool(nav.get_parameter("depth").value),
+        "extra_obstacles": n_extra,
+        "timeout_ok": timeout_ok,
         "passed": ok,
         "goals": results,
     }

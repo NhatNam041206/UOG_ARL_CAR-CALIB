@@ -42,6 +42,7 @@ def _stack(context, *args, **kwargs):
     controller = a("controller")
     pose_gate = a("pose_gate").lower() == "true"
     autostart = a("autostart").lower() == "true"
+    depth = a("depth").lower() == "true"
     map_yaml = a("map")
     if not map_yaml and a("map_name"):
         map_yaml = MapStore(a("data_dir")).yaml_path(a("map_name")) or ""
@@ -109,7 +110,9 @@ def _stack(context, *args, **kwargs):
         Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="car_nav", executable="safety_guard", name="safety_guard",
-             parameters=[params], **common),
+             parameters=[params, {"depth_enabled": depth}], **common),
+        *([Node(package="car_nav", executable="depth_guard_source", name="depth_obstacles",
+                parameters=[params], remappings=remap_tf, **common)] if depth else []),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
              name="lifecycle_manager_navigation", output="screen",
              parameters=[{"use_sim_time": use_sim_time, "autostart": autostart, "node_names": NAV_NODES}]),
@@ -133,6 +136,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("pose_gate", default_value="true"),
         DeclareLaunchArgument("max_pose_age_s", default_value="1.0"),
         DeclareLaunchArgument("autostart", default_value="true"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: depth camera as a second safety guard source"),
         DeclareLaunchArgument("log_level", default_value="info"),
         OpaqueFunction(function=_stack),
     ])

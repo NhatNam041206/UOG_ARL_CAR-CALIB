@@ -15,6 +15,8 @@ car, sim.launch.py in the simulator). This file is the PERSISTENT part:
   adaptive_odom     rf2o + learned forward speed, odom -> base_link (odom_source:=adaptive, default)
   cmd_vel_to_control /cmd_vel -> "<left m/s>,<right m/s>" on /car/wheels/cmd (0 0 when /cmd_vel stops)
   ui:=true          rosbridge (ws :9090) + ui_bridge (web page http :8080)
+  depth:=true       the restartable part also runs depth_obstacles: /camera/depth/points ->
+                    /depth_obstacles, merged by safety_guard (low boxes, table tops)
 
 The RESTARTABLE part (map_server + AMCL + pose_gate | slam_toolbox | flat_origin, Nav2,
 PD follower, collision monitor, dynamic_scan, safety_guard) is nav_stack.launch.py. With
@@ -44,7 +46,7 @@ from car_nav.nav_modes import derive_mode
 
 # arguments handed on to nav_stack.launch.py
 STACK_ARGS = ("use_sim_time", "params_file", "slam_params_file", "controller", "bt_xml", "pose_gate",
-              "max_pose_age_s", "autostart", "log_level")
+              "max_pose_age_s", "autostart", "log_level", "depth")
 
 
 def _upright_tf(context, *args, **kwargs):
@@ -145,6 +147,9 @@ def generate_launch_description() -> LaunchDescription:
                               description="true: pose_gate holds back AMCL along-corridor corrections when blind"),
         DeclareLaunchArgument("max_pose_age_s", default_value="1.0",
                               description="pd_path_follower stops while the pose is older than this (s)"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: the depth camera is a second source for the safety guard "
+                                          "(low boxes, table tops); needs the Astra / simulated depth cloud"),
         DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("ui", default_value="true", description="web UI: rosbridge + ui_bridge"),
         DeclareLaunchArgument("ui_http_port", default_value="8080"),

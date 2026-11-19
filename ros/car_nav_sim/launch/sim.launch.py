@@ -19,6 +19,8 @@ Arguments:
                stored as map "<world>" on the first start so Load has something to load.
   rviz, gui    show RViz / the Gazebo window
   report_dir   where mission reports go                      [/data/sim]
+  depth        true = the simulated depth camera (sim.yaml depth:) feeds the safety guard: low boxes
+               under the LiDAR plane (a mission's extra_obstacles) are seen        [false]
   seed         LiDAR noise / dropout random seed (lite)      [1]
 """
 from __future__ import annotations
@@ -125,7 +127,8 @@ def _setup(context, *args, **kwargs):
     if backend == "lite":
         actions.append(Node(package="car_nav_sim", executable="lite_sim", name="lite_sim", output="screen",
                             parameters=[{"world": world_name, "start": start_param,
-                                         "seed": int(arg("seed")), "mission": mission}]))
+                                         "seed": int(arg("seed")), "mission": mission,
+                                         "depth": arg("depth").lower() == "true"}]))
     elif backend == "gazebo":
         gz_args = ["gz", "sim", "-r", sdf_path]
         if arg("gui").lower() != "true":
@@ -170,6 +173,7 @@ def _setup(context, *args, **kwargs):
             # the laptop's odometry often runs ~1.1 s behind (log 2026-11-12): do not stop for that
             "max_pose_age_s": arg("max_pose_age_s"),
             "ui": arg("ui"),
+            "depth": arg("depth"),
             # the mounted source: edits to web/index.html show on reload, no rebuild
             "ui_web_dir": "/ws/src/car_nav/web",
             "ui_data_dir": "/data/sim/ui",    # = run_logs/sim/ui on the laptop
@@ -193,6 +197,7 @@ def _setup(context, *args, **kwargs):
                       parameters=[{"use_sim_time": True, "mission": mission, "report_dir": arg("report_dir"),
                                    "localizer": "slam" if slam else "amcl",
                                    "odom_source": odom_source,
+                                   "depth": arg("depth").lower() == "true",
                                    "start": start_param}])
         actions.append(runner)
         if arg("exit_after_mission").lower() == "true":
@@ -219,6 +224,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("report_dir", default_value="/data/sim"),
         DeclareLaunchArgument("exit_after_mission", default_value="true"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: simulated depth camera + the safety guard uses it (lite backend)"),
         DeclareLaunchArgument("seed", default_value="1", description="LiDAR noise seed (lite backend)"),
         OpaqueFunction(function=_setup),
     ])

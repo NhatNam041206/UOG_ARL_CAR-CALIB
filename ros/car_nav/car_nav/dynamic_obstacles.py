@@ -57,6 +57,25 @@ def dynamic_beams(ranges, angle_min: float, angle_inc: float, sensor_pose: tuple
     return valid & ~static
 
 
+def dynamic_points(xy_base: np.ndarray, base_pose: tuple[float, float, float], mask: np.ndarray,
+                   origin: tuple[float, float], resolution: float) -> np.ndarray:
+    """Bool per point: True = the (N, 2) base_link point is off the static map.
+
+    base_pose: (x, y, yaw) of base_link in the map frame. Same rule as dynamic_beams
+    (a point outside the map counts as dynamic)."""
+    pts = np.asarray(xy_base, dtype=float).reshape(-1, 2)
+    c, s = math.cos(base_pose[2]), math.sin(base_pose[2])
+    x = base_pose[0] + c * pts[:, 0] - s * pts[:, 1]
+    y = base_pose[1] + s * pts[:, 0] + c * pts[:, 1]
+    ix = np.floor((x - origin[0]) / resolution).astype(int)
+    iy = np.floor((y - origin[1]) / resolution).astype(int)
+    h, w = mask.shape
+    inside = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    static = np.zeros(pts.shape[0], dtype=bool)
+    static[inside] = mask[iy[inside], ix[inside]]
+    return ~static
+
+
 def align_to_map(ranges, angle_min: float, angle_inc: float, sensor_pose: tuple[float, float, float],
                  mask: np.ndarray, origin: tuple[float, float], resolution: float,
                  search_m: float = 0.45, step_m: float = 0.075, search_rad: float = 0.12,
@@ -74,10 +93,19 @@ def align_to_map(ranges, angle_min: float, angle_inc: float, sensor_pose: tuple[
     with np.errstate(invalid="ignore"):
         ok = np.isfinite(r) & (r > 0.05) & (r <= max_range)
     r, a = r[ok], a[ok]
-    if r.shape[0] < 20:
-        return sensor_pose
     if r.shape[0] > 360:                    # every other point is plenty
         r, a = r[::2], a[::2]
+    return align_points(r, a, sensor_pose, mask, origin, resolution, search_m, step_m, search_rad, step_rad)
+
+
+def align_points(r: np.ndarray, a: np.ndarray, sensor_pose: tuple[float, float, float], mask: np.ndarray,
+                 origin: tuple[float, float], resolution: float, search_m: float = 0.45, step_m: float = 0.075,
+                 search_rad: float = 0.12, step_rad: float = 0.04) -> tuple[float, float, float]:
+    """align_to_map for points given as (range, angle) pairs in the sensor frame (at most a few
+    hundred; fewer than 20 keep the estimate). Used by the depth camera, whose points are not
+    regular beams."""
+    if r.shape[0] < 20:
+        return sensor_pose
     h, w = mask.shape
     best = (-1, 0.0, 0.0, 0.0)
     n_xy = int(round(search_m / step_m))

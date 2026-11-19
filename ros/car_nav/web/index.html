@@ -28,8 +28,8 @@
     border-color: var(--stop); color: #fff; margin-top: 4px; }
   #estop.active { background: #fff; color: var(--stop); }
   .badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; background: #2b3540; }
-  .badge.stop, .badge.estop, .badge.no_scan, .badge.hold { background: var(--stop); color: #fff; }
-  .badge.slow { background: var(--slow); color: #111; }
+  .badge.stop, .badge.estop, .badge.no_scan, .badge.no_depth, .badge.hold { background: var(--stop); color: #fff; }
+  .badge.slow, .badge.depth_stale { background: var(--slow); color: #111; }
   .badge.clear { background: var(--ok); color: #111; }
   label.slider { display: block; margin: 10px 0; }
   label.slider span { display: flex; justify-content: space-between; color: var(--muted); }
@@ -84,6 +84,7 @@
     <div id="legend">
       <span class="dot" style="background:#5b6b7a;margin-left:0"></span>LiDAR
       <span class="dot" style="background:var(--stop)"></span>not on map (person)
+      <span class="dot" style="background:#ff9f1c"></span>depth camera obstacle
       <span class="dot" style="background:var(--accent)"></span>path
     </div>
   </div>
@@ -132,6 +133,12 @@
       <span class="muted">nearest <b id="gnear">–</b></span></div>
     <label class="row"><input type="checkbox" id="p_enabled"> enabled</label>
     <div id="sliders"></div>
+    <h2>Depth camera (low boxes, table tops)</h2>
+    <div class="row">Depth <span id="dstatus" class="badge">?</span>
+      <span class="muted"><b id="dpoints">–</b> points</span></div>
+    <label class="row"><input type="checkbox" id="p_depth_enabled"> use the depth camera</label>
+    <label class="row"><input type="checkbox" id="p_depth_required"> stop when depth data is missing</label>
+    <div id="depthsliders"></div>
     <div class="row"><button id="apply">Apply</button><span id="applied" class="muted"></span></div>
     <h2>Driving</h2>
     <div id="dsliders"></div>
@@ -170,6 +177,16 @@ const SLIDERS = [
   ["turn_clear_m", "Turning on the spot: clearance", 0.0, 0.8, 0.05, "m"],
   ["resume_delay_s", "Drive on after clear for", 0.0, 5.0, 0.1, "s"],
 ];
+// depth camera as a second source of the guard (safety_zone.GuardParams depth_*)
+const DEPTH_SLIDERS = [
+  ["depth_danger_range_m", "Depth: stop distance past the nose", 0.3, 2.5, 0.05, "m"],
+  ["depth_min_height_m", "Depth: floor height (ignore below)", 0.0, 0.5, 0.01, "m"],
+  ["depth_max_height_m", "Depth: ignore above", 0.1, 1.5, 0.05, "m"],
+  ["depth_max_range_m", "Depth: max range", 0.5, 5.0, 0.1, "m"],
+  ["depth_timeout_s", "Depth: stale after", 0.2, 5.0, 0.1, "s"],
+];
+const ALL_SLIDERS = [...SLIDERS, ...DEPTH_SLIDERS];
+const BOOLS = ["enabled", "depth_enabled", "depth_required"];
 const $ = (id) => document.getElementById(id);
 const cv = $("c"), ctx = cv.getContext("2d");
 let ws = null, connected = false, mapImg = null, map = null, state = null;
@@ -243,6 +260,9 @@ function onState(s) {
   $("gstate").textContent = g.state || "?";
   $("gstate").className = "badge " + (g.state || "");
   $("gnear").textContent = g.nearest_m == null ? "–" : g.nearest_m.toFixed(2) + " m";
+  $("dstatus").textContent = g.depth_status || "?";
+  $("dstatus").className = "badge " + (g.depth_status === "ok" ? "clear" : g.depth_status === "stale" ? "slow" : "");
+  $("dpoints").textContent = (s.depth || []).length;
   if (g.params && !edited) loadParams(g.params);
   if (g.estop !== undefined && g.estop !== estop) { estop = g.estop; showEstop(); }
   $("pose").textContent = s.pose ? `x ${s.pose[0].toFixed(2)} m, y ${s.pose[1].toFixed(2)} m, ` +
@@ -252,22 +272,25 @@ function onState(s) {
 
 // ---------------------------------------------------------------- params
 function buildSliders() {
-  $("sliders").innerHTML = SLIDERS.map(([k, label, lo, hi, st, unit]) =>
+  const html = (L) => L.map(([k, label, lo, hi, st, unit]) =>
     `<label class="slider"><span>${label}<b><output id="o_${k}"></output> ${unit}</b></span>
      <input type="range" id="p_${k}" min="${lo}" max="${hi}" step="${st}"></label>`).join("");
-  for (const [k] of SLIDERS) {
+  $("sliders").innerHTML = html(SLIDERS);
+  $("depthsliders").innerHTML = html(DEPTH_SLIDERS);
+  for (const [k] of ALL_SLIDERS) {
     $("p_" + k).addEventListener("input", () => { edited = true; $("o_" + k).textContent = $("p_" + k).value;
       $("applied").textContent = "not applied"; });
   }
-  $("p_enabled").addEventListener("change", () => { edited = true; $("applied").textContent = "not applied"; });
+  for (const b of BOOLS) $("p_" + b).addEventListener("change", () => { edited = true; $("applied").textContent = "not applied"; });
 }
 function loadParams(p) {
-  for (const [k] of SLIDERS) if (k in p) { $("p_" + k).value = p[k]; $("o_" + k).textContent = p[k]; }
-  $("p_enabled").checked = !!p.enabled;
+  for (const [k] of ALL_SLIDERS) if (k in p) { $("p_" + k).value = p[k]; $("o_" + k).textContent = p[k]; }
+  for (const b of BOOLS) $("p_" + b).checked = !!p[b];
 }
 $("apply").onclick = () => {
-  const d = { enabled: $("p_enabled").checked };
-  for (const [k] of SLIDERS) d[k] = parseFloat($("p_" + k).value);
+  const d = {};
+  for (const b of BOOLS) d[b] = $("p_" + b).checked;
+  for (const [k] of ALL_SLIDERS) d[k] = parseFloat($("p_" + k).value);
   send({ op: "publish", topic: "/ui/safety_params", msg: { data: JSON.stringify(d) } });
   edited = false; $("applied").textContent = "applied";
 };
@@ -395,6 +418,8 @@ function draw() {
     for (const [x, y] of state.scan || []) { const [px, py] = toPx(x, y); ctx.fillRect(px - dotsz / 2, py - dotsz / 2, dotsz, dotsz); }
     ctx.fillStyle = "#ff4d4f";
     for (const [x, y] of state.dyn || []) { const [px, py] = toPx(x, y); ctx.fillRect(px - dotsz, py - dotsz, 2 * dotsz, 2 * dotsz); }
+    ctx.fillStyle = "#ff9f1c";     // depth camera obstacles (below / above the LiDAR plane)
+    for (const [x, y] of state.depth || []) { const [px, py] = toPx(x, y); ctx.fillRect(px - dotsz, py - dotsz, 2 * dotsz, 2 * dotsz); }
     const p = state.pose, g = state.guard || {}, gp = g.params;
     if (p) {
       const [xf, xr, hw] = state.footprint;
@@ -474,8 +499,9 @@ $("psave").onclick = async () => {
   const name = $("pname").value.trim() || $("plist").value;
   if (!name) return pmsg("type a name");
   // save what the sliders show (applied or not)
-  const guard = { enabled: $("p_enabled").checked };
-  for (const [k] of SLIDERS) guard[k] = parseFloat($("p_" + k).value);
+  const guard = {};
+  for (const b of BOOLS) guard[b] = $("p_" + b).checked;
+  for (const [k] of ALL_SLIDERS) guard[k] = parseFloat($("p_" + k).value);
   const drive = {}; for (const [k] of DSLIDERS) drive[k] = parseFloat($("p_" + k).value);
   try { const p = await api("PUT", "profiles/" + enc(name), { guard, drive, note: $("pnote").value });
         pmsg(`saved "${p.name}"`); loadProfiles(p.name); } catch (e) { pmsg(e.message); }

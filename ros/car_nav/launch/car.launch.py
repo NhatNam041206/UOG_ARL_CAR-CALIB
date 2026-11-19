@@ -38,15 +38,19 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("ugv_port", default_value="/dev/ugv"),
         DeclareLaunchArgument("motors", default_value="true",
                               description="false: the bridge only reads the IMU and sends 0 0"),
-        DeclareLaunchArgument("enable_astra", default_value="false",
-                              description="the Astra is not used by NAV2; off saves CPU"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: start the Astra and use the depth camera as a second "
+                                          "source for the safety guard (low boxes, table tops)"),
+        DeclareLaunchArgument("enable_astra", default_value=arg("depth"),
+                              description="the Astra; follows depth (false saves CPU)"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, "launch", "sensors.launch.py")),
             launch_arguments={"enable_astra": arg("enable_astra")}.items()),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, "launch", "nav.launch.py")),
             launch_arguments={"map": arg("map"), "slam": arg("slam"), "mode": arg("mode"),
-                              "map_name": arg("map_name"), "controller": arg("controller")}.items()),
+                              "map_name": arg("map_name"), "controller": arg("controller"),
+                              "depth": arg("depth")}.items()),
         Node(package="car_nav", executable="ugv_serial_bridge", name="ugv_serial_bridge", output="screen",
              parameters=[{"port": arg("ugv_port"),
                           "enable_motors": ParameterValue(arg("motors"), value_type=bool)}]),

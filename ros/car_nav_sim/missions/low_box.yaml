@@ -1,0 +1,14 @@
+# Depth camera test: a 0.3 x 0.3 m box, only 0.15 m high, lies in the aisle. It is NOT in the
+# map and the LiDAR (0.24 m) looks over it, so only the depth camera sees it.
+#   run_sim.sh mission low_box depth:=false   -> the car drives into it (collision = FAIL)
+#   run_sim.sh mission low_box depth:=true    -> the guard stops the car in front of it (PASS: no collision;
+#                                                the goal is not reached, Nav2 does not know the box)
+world: test_floor
+goal_timeout_s: 70
+start: [1.0, 1.1, 0.0]
+timeout_ok: true          # stopping before the box is the pass: a goal not reached is fine if nothing was hit
+goals:
+  - [7.6, 1.7, 0.0]           # (7.6, 1.4) is only 0.3 m from the clutter box for the 0.70 x 0.60 m car
+extra_obstacles:
+  boxes:
+    - {center: [4.5, 1.2], size: [0.3, 0.3], height: 0.15}

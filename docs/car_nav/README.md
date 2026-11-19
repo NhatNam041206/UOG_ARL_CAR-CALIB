@@ -186,6 +186,33 @@ wall (within 2 m) are "not on the map". Without a map or a fresh pose it passes 
 point (the car may then stop near walls: safe side). Something mounted on the car that the
 LiDAR sees all the time should also go into `car.yaml self_mask.sectors_deg`.
 
+### Depth camera as a second source (low boxes, table tops)
+
+The LiDAR plane is low, so objects under it (boxes, steps) or hanging over it (table tops) are
+invisible to the guard and the bumper. With `depth:=true` (`car.launch.py` also starts the Astra,
+`nav.launch.py`, `sim.launch.py`; default **false** until tested on the car) the guard also uses the depth camera:
+
+* `depth_guard_source` (`car_nav/depth_guard_source.py`, pure math in `depth_obstacles.py`):
+  `/camera/depth/points` (PointCloud2, optical frame) -> camera pose from `car.yaml camera:` ->
+  `base_link` -> keep `depth_min_height_m` (floor, 0.05) < z <= `depth_max_height_m` (0.8) and range
+  <= `depth_max_range_m` (3.0) -> 5 cm grid downsample -> drop points on map walls (`map_filter`)
+  -> **`/depth_obstacles`** (PointCloud2 in `base_link`, x/y = position, z = 0, one message per frame,
+  empty when clear) and a JSON status on `/depth_obstacles/state`. No TF waiting; a tilt margin of
+  3 cm per metre keeps the far floor out (`floor_margin_per_m`).
+* `safety_guard` judges those points with the same front zones; the stop distance is
+  `depth_danger_range_m` (1.1 m past the nose) because the camera has a **blind zone**: it looks 15 deg
+  down with a 45 deg field of view, so a low box leaves its view ~1.1-1.4 m from the camera
+  (`depth_obstacles.blind_distance()`); the car has to stop while it is still visible. Re-check this
+  number after changing the camera mount in `car.yaml`.
+* Stale depth (older than `depth_timeout_s`, or not started yet) never stops the car by itself: the
+  guard goes on with the LiDAR only, state `depth_stale` (when otherwise clear) and `depth_status: stale` in
+  `/safety_guard/state`, plus a log warning. `depth_required: true` stops the car instead (`no_depth`).
+* Depth off (`depth_enabled: false`) = exactly the LiDAR guard as before.
+* All `depth_*` values are in `nav2_params.yaml safety_guard:` and live in the web UI (own section: on/off,
+  required, stop distance, floor / ceiling height, range, stale time; orange dots = depth obstacles on the
+  map); they are part of the saved profiles. `depth_obstacles:` holds the processing details.
+* Not done: the obstacle is not fed to Nav2's costmaps, so the car stops in front of it and waits.
+
 Tested in the sim with moving people (`missions/person_*.yaml`, `car_nav_sim/actors.py`):
 someone crossing at 1 m/s, someone stepping in and standing 5 s, someone running across
 at 1.5 m/s when the car is 1 m away.

@@ -79,6 +79,18 @@ class World:
         return cls(str(d.get("name", default_name)), bounds, boxes, cyl, start)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ #
+    def add_extras(self, mission: dict | None) -> int:
+        """Add a mission's `extra_obstacles` (same boxes / cylinders keys as a world file) to this
+        World. The map is rasterised from the world FILE, so these are NOT in the map Nav2 localises
+        on: a box someone put down, or a low object the LiDAR cannot see (give it a `height`)."""
+        extra = World.from_dict({"bounds": self.bounds, **((mission or {}).get("extra_obstacles") or {})})
+        self.boxes.extend(extra.boxes)
+        self.cylinders.extend(extra.cylinders)
+        for attr in ("_segs_cache", "_box_cache", "_ray_segs"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        return len(extra.boxes) + len(extra.cylinders)
+
     def segments(self, min_height: float | None = None) -> np.ndarray:
         """Box edges as an (M, 4) array of x0, y0, x1, y1. With min_height only
         boxes taller than that (a LiDAR at height z does not see anything lower)."""
