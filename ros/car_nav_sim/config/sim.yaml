@@ -23,6 +23,19 @@ lidar:                     # RPLIDAR A1-like
   range_max_m: 12.0
   noise_std_m: 0.01
   dropout: 0.02            # share of beams returning nothing
+depth:                     # Astra Pro-like depth camera (lite backend; mounted as car.yaml camera:)
+  enabled: true            # false: never publish it (sim.launch.py depth:=true also needed)
+  topic: /camera/depth/points
+  frame: camera_depth_optical_frame
+  rate_hz: 10.0
+  width: 80                # rays (the real camera is 640 x 480; the guard thins it anyway)
+  height: 60
+  hfov_deg: 58.0
+  vfov_deg: 45.0
+  range_min_m: 0.6         # depth below / above these is not valid
+  range_max_m: 4.0
+  noise_std_m: 0.01
+  dropout: 0.01            # share of rays returning nothing
 lite:
   physics_hz: 100.0
   realtime_factor: 1.0     # >1 runs the lite backend faster than real time

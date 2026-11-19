@@ -21,6 +21,8 @@ car, sim.launch.py in the simulator). Starts:
   collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
   dynamic_scan      /scan_nav -> /scan_dynamic: points not on the map (people)
   safety_guard      cmd_vel_guarded -> cmd_vel: stop / slow for people in FRONT (web UI tunable)
+  depth_obstacles   depth:=true: /camera/depth/points -> /depth_obstacles, merged by safety_guard
+                    (things the LiDAR plane misses: low boxes, table tops)
   ui:=true          rosbridge (ws :9090) + ui_bridge (web page http :8080): map, LiDAR, pose,
                     initial pose / goal, safety guard parameters, emergency stop
   pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
@@ -149,7 +151,11 @@ def generate_launch_description() -> LaunchDescription:
         Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="car_nav", executable="safety_guard", name="safety_guard",
-             parameters=[params], **common),
+             parameters=[params, {"depth_enabled": ParameterValue(LaunchConfiguration("depth"), value_type=bool)}],
+             **common),
+        Node(package="car_nav", executable="depth_guard_source", name="depth_obstacles",
+             parameters=[params], remappings=remap_tf, condition=IfCondition(LaunchConfiguration("depth")),
+             **common),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
              name="lifecycle_manager_navigation", output="screen",
              parameters=[{"use_sim_time": use_sim_time, "autostart": autostart, "node_names": NAV_NODES}]),
@@ -173,6 +179,9 @@ def generate_launch_description() -> LaunchDescription:
                               description="true: pose_gate holds back AMCL along-corridor corrections when blind"),
         DeclareLaunchArgument("max_pose_age_s", default_value="1.0",
                               description="pd_path_follower stops while the pose is older than this (s)"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: the depth camera is a second source for the safety guard "
+                                          "(low boxes, table tops); needs the Astra / simulated depth cloud"),
         DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("ui", default_value="true", description="web UI: rosbridge + ui_bridge"),
         DeclareLaunchArgument("ui_http_port", default_value="8080"),

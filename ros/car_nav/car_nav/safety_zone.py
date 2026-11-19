@@ -12,11 +12,18 @@ walking behind the car) never stops it.
     clear  otherwise
 
 The car drives on by itself once the zone has been clear for resume_delay_s.
+
+Second source (depth camera, depth_obstacles.py): when depth_enabled, the 2D
+obstacle points of the depth camera (low boxes under the LiDAR plane, table
+tops over it) are judged with the SAME zones, except that the stop distance
+is depth_danger_range_m: the camera cannot see things closer than ~1.1 m
+(blind zone under its field of view), so it has to stop the car while the
+obstacle is still visible. decide_merged() takes the worse of the two.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields, replace
 
 import numpy as np
 
@@ -33,6 +40,14 @@ class GuardParams:
     turn_clear_m: float = 0.25        # turning on the spot: stop for anything this close to the front
     resume_delay_s: float = 0.5       # zone clear this long before driving on
     min_points: int = 3               # fewer points than this = noise
+    # ---- depth camera as a second source (off by default; nav.launch.py depth:=true switches it on)
+    depth_enabled: bool = False
+    depth_danger_range_m: float = 1.1  # stop distance past the nose for depth points (camera blind zone)
+    depth_timeout_s: float = 1.0       # depth data older than this = stale
+    depth_required: bool = False       # stale depth: True = stop the car, False = go on with the LiDAR only
+    depth_min_height_m: float = 0.05   # depth_obstacles: floor (at or below this) is not an obstacle
+    depth_max_height_m: float = 0.8    # ... above this the car passes under it
+    depth_max_range_m: float = 3.0     # ... only points this close (horizontal, from base_link)
 
     def update(self, d: dict) -> list[str]:
         """Set the fields given in d (unknown keys ignored); returns the names changed."""
@@ -57,6 +72,11 @@ class GuardParams:
         self.turn_clear_m = min(max(self.turn_clear_m, 0.0), 1.0)
         self.resume_delay_s = min(max(self.resume_delay_s, 0.0), 10.0)
         self.min_points = max(int(self.min_points), 1)
+        self.depth_danger_range_m = min(max(self.depth_danger_range_m, 0.1), 3.0)
+        self.depth_timeout_s = min(max(self.depth_timeout_s, 0.1), 30.0)
+        self.depth_min_height_m = min(max(self.depth_min_height_m, 0.0), 1.0)
+        self.depth_max_height_m = min(max(self.depth_max_height_m, self.depth_min_height_m + 0.02), 2.0)
+        self.depth_max_range_m = min(max(self.depth_max_range_m, 0.3), 6.0)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -102,3 +122,25 @@ def decide(points: np.ndarray, p: GuardParams, x_front: float, half_body: float,
     if n_slow >= p.min_points:
         return Decision("slow", nearest, n_stop, n_slow)
     return Decision("clear", nearest, n_stop, n_slow)
+
+
+def depth_params(p: GuardParams) -> GuardParams:
+    """The zones as the depth points see them: stop distance depth_danger_range_m."""
+    q = replace(p, danger_range_m=p.depth_danger_range_m)
+    q.slow_range_m = max(p.slow_range_m, p.depth_danger_range_m)
+    q.clamp()
+    return q
+
+
+def decide_merged(lidar_points: np.ndarray, depth_points: np.ndarray | None, p: GuardParams, x_front: float,
+                  half_body: float, turning_on_spot: bool = False) -> Decision:
+    """LiDAR dynamic points + depth obstacle points, the worse zone wins (stop > slow > clear).
+
+    depth_points None (or depth_enabled false) = the LiDAR decision unchanged."""
+    dec = decide(lidar_points, p, x_front, half_body, turning_on_spot)
+    if depth_points is None or not p.depth_enabled or not p.enabled:
+        return dec
+    dd = decide(depth_points, depth_params(p), x_front, half_body, turning_on_spot)
+    rank = {"stop": 2, "slow": 1, "clear": 0, "off": 0}
+    state = dd.state if rank[dd.state] > rank[dec.state] else dec.state
+    return Decision(state, min(dec.nearest_m, dd.nearest_m), dec.n_stop + dd.n_stop, dec.n_slow + dd.n_slow)

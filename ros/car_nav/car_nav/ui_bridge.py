@@ -9,7 +9,8 @@ this node does the ROS-side work:
              values 0 = free, 100 = occupied, -1 = unknown
 * /ui/state  (std_msgs/String, 5 Hz): car pose (TF map -> base_link), LiDAR
              points in the map frame (/scan_nav, and /scan_dynamic = not on
-             the map), the global plan, the safety guard state and zones.
+             the map), the depth camera's obstacle points ("depth", /depth_obstacles, map
+             frame), the global plan, the safety guard state and zones.
 
 The page publishes /initialpose, /goal_pose, /ui/estop and /ui/safety_params
 itself (see web/index.html). HTTP: http://<car>:<http_port>/ (default 8080).
@@ -52,7 +53,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
@@ -64,6 +65,7 @@ from std_msgs.msg import Bool
 
 from . import config_loader
 from .actuation import WHEELS_TOPIC, parse_payload
+from .depth_obstacles import parse_cloud
 from .ui_pack import rle
 from .ui_store import ProfileStore, TestRecorder, TestStore
 
@@ -111,6 +113,7 @@ class UiBridge(Node):
         TransformListener(self._tf, self)
         self._map_json = None
         self._scan = self._dyn = None
+        self._depth, self._depth_t = None, 0.0
         self._plan: list = []
         self._guard: dict = {}
         self._map_pub = self.create_publisher(String, "/ui/map", 1)
@@ -121,6 +124,7 @@ class UiBridge(Node):
         self.create_subscription(LaserScan, "/scan_nav", lambda m: setattr(self, "_scan", m), qos_profile_sensor_data)
         self.create_subscription(LaserScan, "/scan_dynamic", lambda m: setattr(self, "_dyn", m),
                                  qos_profile_sensor_data)
+        self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth, qos_profile_sensor_data)
         self.create_subscription(Path, "/plan", self._on_plan, 5)
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
         self.create_subscription(String, WHEELS_TOPIC, self._on_wheels, 20)
@@ -282,13 +286,31 @@ class UiBridge(Node):
         t = tf.transform
         return (t.translation.x, t.translation.y, _yaw(t.rotation))
 
+    def _on_depth(self, msg: PointCloud2) -> None:
+        self._depth, self._depth_t = msg, time.monotonic()
+
+    def _depth_to_map(self, msg: PointCloud2, pose) -> list:
+        """/depth_obstacles (base_link x, y) -> map frame, rounded, at most 400 points."""
+        offs = {f.name: f.offset for f in msg.fields}
+        n = msg.width * msg.height
+        if not n or not all(k in offs for k in "xy"):
+            return []
+        xy = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["x"]), n,
+                         msg.is_bigendian)[:, :2]
+        if len(xy) > 400:
+            xy = xy[np.linspace(0, len(xy) - 1, 400).astype(int)]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        x = pose[0] + c * xy[:, 0] - s * xy[:, 1]
+        y = pose[1] + s * xy[:, 0] + c * xy[:, 1]
+        return np.round(np.stack((x, y), axis=1), 2).tolist()
+
     def _publish_state(self) -> None:
         pose = self._lookup("base_link")
         st = dict(self._static)
         st["pose"] = None if pose is None else [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]
         st["guard"] = self._guard
         st["plan"] = self._plan
-        st["scan"] = st["dyn"] = []
+        st["scan"] = st["dyn"] = st["depth"] = []
         st["drive"] = self._drive
         st["test"] = self.test_status()
         if self._scan is not None:
@@ -297,6 +319,8 @@ class UiBridge(Node):
                 st["scan"] = scan_to_map(self._scan, sp)
                 if self._dyn is not None:
                     st["dyn"] = scan_to_map(self._dyn, sp, step=1)
+        if self._depth is not None and pose is not None and time.monotonic() - self._depth_t < 1.5:
+            st["depth"] = self._depth_to_map(self._depth, pose)
         self._state_pub.publish(String(data=json.dumps(st)))
         with self._rec_lock:
             if self._rec is not None:

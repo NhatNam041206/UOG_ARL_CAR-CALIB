@@ -11,6 +11,15 @@ points in FRONT of the car. It also stops the car
 * while the web UI's emergency stop (/ui/estop, std_msgs/Bool) is on,
 * when /scan_dynamic is older than scan_timeout_s (fail safe),
 
+Depth camera (second source, off unless depth_enabled): /depth_obstacles (depth_guard_source.py,
+2D points of things the LiDAR plane misses: low boxes, table tops) are judged with the same
+front zones, the stop distance being depth_danger_range_m (the camera has a blind zone close to
+the car). Stale depth (nothing newer than depth_timeout_s, e.g. the camera is still starting
+or died) NEVER stops the car by itself: the guard goes on with the LiDAR only and reports
+state "depth_stale" (when the LiDAR sees nothing either) plus depth_status "stale" in its JSON
+and a warning in the log. depth_required: true turns that into a stop ("no_depth").
+With depth_enabled false the behaviour is exactly the LiDAR-only guard.
+
 and drives on by itself once the zone has been clear for resume_delay_s.
 The zone sizes are ROS parameters (nav2_params.yaml safety_guard) and can be
 changed live from the web UI: /ui/safety_params (std_msgs/String, JSON such
@@ -29,11 +38,12 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import Bool, String
 
 from . import config_loader
-from .safety_zone import GuardParams, decide
+from .depth_obstacles import parse_cloud
+from .safety_zone import GuardParams, decide_merged
 from .wall_avoid import points_in_base
 
 
@@ -52,6 +62,9 @@ class SafetyGuard(Node):
         self._laser = config_loader.laser_pose(cfg)
         self._points = np.zeros((0, 2))
         self._scan_t = 0.0
+        self._depth = np.zeros((0, 2))
+        self._depth_t = -1e9
+        self._depth_status = "off"
         self._estop = False
         self._state = "clear"
         self._last_stop = -1e9
@@ -61,6 +74,7 @@ class SafetyGuard(Node):
         self._state_pub = self.create_publisher(String, "/safety_guard/state", 10)
         self.create_subscription(Twist, "cmd_vel_guarded", self._on_cmd, 10)
         self.create_subscription(LaserScan, "/scan_dynamic", self._on_scan, qos_profile_sensor_data)
+        self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth, qos_profile_sensor_data)
         self.create_subscription(Bool, "/ui/estop", self._on_estop, 10)
         self.create_subscription(String, "/ui/safety_params", self._on_ui_params, 10)
         # wall-clock timer: the state must update even if /clock stalls (a sim-time timer here
@@ -100,25 +114,58 @@ class SafetyGuard(Node):
                                       self._laser.y, self._laser.yaw, max_range=6.0)
         self._scan_t = time.monotonic()
 
+    def _on_depth(self, msg: PointCloud2) -> None:
+        offs = {f.name: f.offset for f in msg.fields}
+        n = msg.width * msg.height
+        if n and all(k in offs for k in "xy"):
+            xyz = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["x"]), n,
+                              msg.is_bigendian)
+            self._depth = xyz[:, :2]
+        else:
+            self._depth = np.zeros((0, 2))
+        self._depth_t = time.monotonic()
+
+    def _depth_points(self, now: float):
+        """(points or None, status): None = do not use depth (off or stale)."""
+        if not self._p.depth_enabled:
+            self._depth_status = "off"
+            return None
+        if now - self._depth_t > self._p.depth_timeout_s:
+            if self._depth_status != "stale":
+                self.get_logger().warn(f"depth data older than {self._p.depth_timeout_s} s or none yet: "
+                                       + ("STOPPING (depth_required)" if self._p.depth_required
+                                          else "continuing on the LiDAR only"))
+            self._depth_status = "stale"
+            return None
+        if self._depth_status == "stale":
+            self.get_logger().info("depth data is back")
+        self._depth_status = "ok"
+        return self._depth
+
     def _evaluate(self, turning: bool) -> str:
         now = time.monotonic()
         if self._estop:
             return "estop"
         if now - self._scan_t > float(self.get_parameter("scan_timeout_s").value):
             return "no_scan"
-        dec = decide(self._points, self._p, self._x_front, self._half_body, turning)
+        depth = self._depth_points(now)
+        if depth is None and self._depth_status == "stale" and self._p.depth_required and self._p.enabled:
+            return "no_depth"
+        dec = decide_merged(self._points, depth, self._p, self._x_front, self._half_body, turning)
         self._nearest = dec.nearest_m
         if dec.state == "stop":
             self._last_stop = now
             return "stop"
         if dec.state in ("clear", "slow") and now - self._last_stop < self._p.resume_delay_s:
             return "hold"      # stopped a moment ago: wait until the zone stays clear
+        if dec.state == "clear" and self._depth_status == "stale":
+            return "depth_stale"    # LiDAR-only: the car drives on, the page / log say why
         return dec.state
 
     def _set_state(self, state: str) -> None:
         if state != self._state:
             text = f"safety guard: {self._state} -> {state} (nearest {self._nearest:.2f} m)"
-            if state in ("stop", "estop", "no_scan"):
+            if state in ("stop", "estop", "no_scan", "no_depth"):
                 self.get_logger().warn(text)
             else:
                 self.get_logger().info(text)
@@ -129,7 +176,7 @@ class SafetyGuard(Node):
         turning = abs(msg.linear.x) < 0.05 and abs(msg.angular.z) > 0.05
         state = self._evaluate(turning)
         out = Twist()
-        if state in ("clear", "off"):
+        if state in ("clear", "off", "depth_stale"):
             out = msg
         elif state == "slow":
             out.linear.x = msg.linear.x * self._p.slow_ratio
@@ -143,6 +190,9 @@ class SafetyGuard(Node):
         self._state_pub.publish(String(data=json.dumps({
             "state": self._state, "estop": self._estop,
             "nearest_m": None if math.isinf(self._nearest) else round(self._nearest, 3),
+            "depth_status": self._depth_status,
+            "depth_age_s": None if self._depth_t < -1e8 else round(time.monotonic() - self._depth_t, 2),
+            "depth_points": int(self._depth.shape[0]),
             "params": self._p.as_dict(),
             "footprint": {"x_front": self._x_front, "half_width": self._half_body},
         })))

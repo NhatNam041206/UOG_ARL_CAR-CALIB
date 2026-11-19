@@ -358,6 +358,35 @@ safety_guard:
     resume_delay_s: 0.5       # drive on when the zone has been clear this long
     min_points: 3
     scan_timeout_s: 1.0       # /scan_dynamic older than this: stop (fail safe)
+    # ---- depth camera as a second source (depth_guard_source.py -> /depth_obstacles). Same zones;
+    # nav.launch.py depth:=true switches depth_enabled on. All live in the web UI too.
+    depth_enabled: false
+    depth_danger_range_m: 1.1 # stop distance past the nose for depth points: the Astra cannot see
+                              # closer than ~1.1 m (a 0.2 m box leaves its view there), so stop early
+    depth_timeout_s: 1.0      # depth data older than this = stale ...
+    depth_required: false     # ... false: go on with the LiDAR only (state depth_stale), true: stop (no_depth)
+    depth_min_height_m: 0.05  # at or below this above the floor = floor
+    depth_max_height_m: 0.8   # above this the car passes under it (table tops lower than this are obstacles)
+    depth_max_range_m: 3.0    # only depth points this close (horizontal, from base_link)
+
+depth_obstacles:
+  # car_nav/depth_guard_source.py: /camera/depth/points -> /depth_obstacles (2D points in base_link).
+  # Heights and range are the safety_guard depth_* values above (live from the web UI).
+  ros__parameters:
+    use_sim_time: false
+    topic: /camera/depth/points
+    optical: true             # the cloud is in camera_depth_optical_frame (x right, y down, z forward)
+    stride: 4                 # every 4th point of the 640x480 cloud
+    voxel_m: 0.05             # one obstacle point per 5 cm cell ...
+    min_cell_points: 2        # ... with at least this many depth points (flying pixels at edges)
+    min_range_m: 0.1
+    floor_margin_per_m: 0.03  # floor margin grows 3 cm per metre of range (pitch / floor slope error)
+    map_filter: true          # drop points on map walls (they are not people / boxes)
+    tol_m: 0.35
+    align: true
+    fallback: all             # no map / no pose: pass all points (safe) or none
+    max_tf_age_s: 0.5
+    min_period_s: 0.08
 
 dynamic_scan:
   # car_nav/dynamic_scan.py: /scan_nav -> /scan_dynamic (points not on the map)

@@ -79,20 +79,38 @@ class World:
         return cls(str(d.get("name", default_name)), bounds, boxes, cyl, start)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ #
-    def segments(self) -> np.ndarray:
-        """All box edges as an (M, 4) array of x0, y0, x1, y1."""
+    def add_extras(self, mission: dict | None) -> int:
+        """Add a mission's `extra_obstacles` (same boxes / cylinders keys as a world file) to this
+        World. The map is rasterised from the world FILE, so these are NOT in the map Nav2 localises
+        on: a box someone put down, or a low object the LiDAR cannot see (give it a `height`)."""
+        extra = World.from_dict({"bounds": self.bounds, **((mission or {}).get("extra_obstacles") or {})})
+        self.boxes.extend(extra.boxes)
+        self.cylinders.extend(extra.cylinders)
+        for attr in ("_segs_cache", "_box_cache"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        return len(extra.boxes) + len(extra.cylinders)
+
+    def segments(self, min_height: float = 0.0) -> np.ndarray:
+        """Box edges as an (M, 4) array of x0, y0, x1, y1 (only boxes taller than min_height)."""
         segs = []
         for b in self.boxes:
+            if b.height <= min_height:
+                continue
             c = b.corners()
             for i in range(4):
                 segs.append([*c[i], *c[(i + 1) % 4]])
         return np.array(segs, dtype=float).reshape(-1, 4)
 
-    def raycast(self, ox: float, oy: float, angles: np.ndarray, max_range: float) -> np.ndarray:
-        """Distance along each world-frame direction to the first obstacle (inf if none)."""
+    def raycast(self, ox: float, oy: float, angles: np.ndarray, max_range: float,
+                z: float | None = None) -> np.ndarray:
+        """Distance along each world-frame direction to the first obstacle (inf if none).
+
+        z = height of the (horizontal) ray above the floor: shapes whose top is at or below it are
+        not seen (a LiDAR at 0.42 m looks over a 0.2 m box). None = see everything."""
         dx, dy = np.cos(angles), np.sin(angles)
         best = np.full(angles.shape, np.inf)
-        segs = self.segments()
+        segs = self.segments(-1.0 if z is None else z)
         if len(segs):
             x0, y0, x1, y1 = (segs[:, i][None, :] for i in range(4))
             ex, ey = x1 - x0, y1 - y0
@@ -105,6 +123,8 @@ class World:
             t = np.where(ok, t, np.inf)
             best = np.minimum(best, t.min(axis=1))
         for c in self.cylinders:
+            if z is not None and c.height <= z:
+                continue
             fx, fy = ox - c.cx, oy - c.cy
             b = fx * dx + fy * dy
             disc = b * b - (fx * fx + fy * fy - c.r * c.r)

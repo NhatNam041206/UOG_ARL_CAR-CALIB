@@ -5,6 +5,10 @@
   speed scale, yaw efficiency)
 * publishes /scan in the LiDAR's own frame `laser`, like sllidar_ros2 on
   the car, by ray casting the world shapes
+* publishes /camera/depth/points (depth:=true): a simulated Astra, 3D ray casting from the
+  camera pose in car.yaml against the floor, boxes / cylinders with their heights and the
+  actors (sim.yaml depth:). The LiDAR (0.42 m) does not see shapes lower than 0.42 m; the
+  camera does. A mission's extra_obstacles are in this world but NOT in the map
 * publishes /odom_wheel: what wheel encoders would report (no slip), for
   adaptive_odom wheel_odom_topic:=/odom_wheel
 * moves the mission's actors (people, actors.py): in the scan, not in the
@@ -25,15 +29,17 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
 
 from car_nav import config_loader
 from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
+from car_nav.depth_obstacles import encode_xyz
 
 from . import sim_config
 from .actors import load_actors
 from .actuator_model import ActuatorModel, Pose2D, TruthParams, integrate
+from .depth_model import depth_points, pixel_rays
 from .scan_model import laser_scan_ranges
 from .world import World
 
@@ -52,6 +58,7 @@ class LiteSim(Node):
         self.declare_parameter("start", [0.0])  # [x, y, yaw]; [0.0] = world start
         self.declare_parameter("seed", 1)
         self.declare_parameter("mission", "")   # its actors: list walks in the scan
+        self.declare_parameter("depth", False)  # publish the simulated depth camera
         car = config_loader.load()
         sim = sim_config.load_sim()
         self.world = World.load(sim_config.resolve("worlds", self.get_parameter("world").value))
@@ -64,10 +71,21 @@ class LiteSim(Node):
             with open(sim_config.resolve("missions", mission), "r", encoding="utf-8") as fh:
                 mdata = yaml.safe_load(fh) or {}
         self.actors = load_actors(mdata)
+        n_extra = self.world.add_extras(mdata)   # in the world, not in the map (the map is built from the file)
         self._static_cyl = list(self.world.cylinders)
         self.actors_pub = self.create_publisher(PoseArray, "/sim/actors", 10)
         self._next_actors = 0.0
         self.laser = config_loader.laser_pose(car)
+        self.camera = config_loader.camera_pose(car)
+        dcfg = sim.get("depth") or {}
+        self.depth_on = bool(self.get_parameter("depth").value) and bool(dcfg.get("enabled", True))
+        self.depth_cfg = dcfg
+        self.depth_rays = pixel_rays(int(dcfg.get("width", 80)), int(dcfg.get("height", 60)),
+                                     float(dcfg.get("hfov_deg", 58.0)), float(dcfg.get("vfov_deg", 45.0)))
+        self.depth_period = 1.0 / float(dcfg.get("rate_hz", 10.0))
+        self.next_depth = 0.0
+        self.depth_pub = self.create_publisher(PointCloud2, str(dcfg.get("topic", "/camera/depth/points")),
+                                               qos_profile_sensor_data)
         self.model = ActuatorModel(drive_from_cfg(car), TruthParams.from_dict(sim.get("truth") or {}))
         self.enc = Pose2D(0.0, 0.0, 0.0)
         self.lidar = sim.get("lidar") or {}
@@ -89,7 +107,8 @@ class LiteSim(Node):
         self.create_subscription(String, WHEELS_TOPIC, self._on_control, 50)
         self.get_logger().info(
             f"lite sim: world {self.world.name}, start ({x:.2f}, {y:.2f}, {math.degrees(th):.0f} deg), "
-            f"truth {self.model.params}, rtf {self.rtf}"
+            f"truth {self.model.params}, rtf {self.rtf}, depth camera {'on' if self.depth_on else 'off'}, "
+            f"{n_extra} extra obstacles (not in the map)"
         )
         self._wall0 = time.monotonic()
         self.create_timer(self.dt / self.rtf, self._tick)
@@ -119,6 +138,9 @@ class LiteSim(Node):
             if self.t >= self.next_scan:
                 self.next_scan += self.scan_period
                 self._publish_scan()
+            if self.depth_on and self.t >= self.next_depth:
+                self.next_depth += self.depth_period
+                self._publish_depth()
         self.clock_pub.publish(Clock(clock=_stamp(self.t)))
         self._publish_truth()
 
@@ -149,6 +171,23 @@ class LiteSim(Node):
         msg.range_max = float(self.lidar.get("range_max_m", 12.0))
         msg.ranges = [float(v) for v in r]
         self.scan_pub.publish(msg)
+
+    def _publish_depth(self) -> None:
+        d = self.depth_cfg
+        self.world.cylinders = self._static_cyl + [a.cylinder(self.t) for a in self.actors]
+        pts = depth_points(self.world, self.pose, self.camera, self.depth_rays,
+                           float(d.get("range_min_m", 0.6)), float(d.get("range_max_m", 4.0)),
+                           float(d.get("noise_std_m", 0.01)), float(d.get("dropout", 0.01)), self.rng)
+        msg = PointCloud2()
+        msg.header.stamp = _stamp(self.t)
+        msg.header.frame_id = str(d.get("frame", "camera_depth_optical_frame"))
+        msg.height, msg.width = 1, int(pts.shape[0])
+        msg.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+                      for i, n in enumerate("xyz")]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step, msg.row_step = 12, 12 * msg.width
+        msg.data = encode_xyz(pts)
+        self.depth_pub.publish(msg)
 
     def _publish_wheel(self, v: float, w: float) -> None:
         n = float(self.model.params.encoder_noise)

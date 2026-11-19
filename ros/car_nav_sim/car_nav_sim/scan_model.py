@@ -18,7 +18,7 @@ def laser_scan_ranges(world: World, pose: Pose2D, laser, angles: np.ndarray, lid
     ox = pose.x + c * laser.x - s * laser.y
     oy = pose.y + s * laser.x + c * laser.y
     world_dirs = pose.theta + np.arctan2(by, bx)
-    r = world.raycast(ox, oy, world_dirs, float(lidar.get("range_max_m", 12.0)))
+    r = world.raycast(ox, oy, world_dirs, float(lidar.get("range_max_m", 12.0)), z=laser.z)
     noise = float(lidar.get("noise_std_m", 0.0))
     if noise > 0:
         r = r + rng.normal(0.0, noise, r.shape)

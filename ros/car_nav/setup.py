@@ -33,6 +33,7 @@ setup(
             "ugv_serial_bridge = car_nav.ugv_serial_bridge:main",
             "dynamic_scan = car_nav.dynamic_scan:main",
             "safety_guard = car_nav.safety_guard:main",
+            "depth_guard_source = car_nav.depth_guard_source:main",
             "ui_bridge = car_nav.ui_bridge:main",
         ],
     },
