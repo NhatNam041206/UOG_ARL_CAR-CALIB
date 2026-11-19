@@ -9,7 +9,9 @@ what its open tab shows, so a closed tab or no browser costs nothing:
 * /ui/map    (std_msgs/String, every 3 s and when a subscriber appears): the occupancy map, run-length
              encoded: {"w","h","res","ox","oy","rle":[value, count, ...]}
              values 0 = free, 100 = occupied, -1 = unknown
-* /ui/pose   (5 Hz)  {"pose": [x, y, yaw] | null}  car pose (TF map -> base_link)
+* /ui/pose   (5 Hz)  {"pose": [x, y, yaw] | null, "frame": "map"|"odom"|null, "localised": bool}  car pose (TF
+             map -> base_link; while map -> odom is missing (idle, no initial pose yet) odom -> base_link, so the
+             page still shows the car and the sensors, with a "not localised" notice)
 * /ui/scan   (5 Hz, 2 Hz while the car is idle)  {"scan": [[x, y]...], "dyn": [...]}  LiDAR points in the
              map frame (/scan_nav, and /scan_dynamic = not on the map)
 * /ui/depth  (5 Hz, 2 Hz idle)  {"depth": [...]}  the depth camera's obstacle points (/depth_obstacles)
@@ -47,6 +49,18 @@ Car properties (car_store.py; the Car tab). Profiles are stored in <data_dir>/ca
   DELETE /api/car/active                   back to the shipped car.yaml (same 409 rule, same restart)
   GET    /api/cars                         list;  GET|PUT|DELETE /api/cars/<name>
   POST   /api/cars/<name>/rename {"to"};  POST /api/cars/<name>/apply {"force"}
+
+Recorded runs (run_store.py, run_recorder.py: `ros2 bag record` as a child process; <data_dir>/runs/<id>/):
+
+  POST   /api/runs/start {"name","note","topics"}   start recording (409 when the disk is nearly full)
+  POST   /api/runs/stop                    stop + save (SIGINT: the bag is closed properly)
+  GET    /api/runs[/status]                list (size, note, linked tests) + recorder status + free disk
+  GET    /api/runs/<id>/download           the run folder as a .zip
+  PUT    /api/runs/<id> {"note"};  DELETE /api/runs/<id>
+
+Pages for the Logs tab are the topics /ui/pipe (rate / age / last value of each stage, 2 Hz) and
+/ui/logs (/rosout lines); both exist only while a page shows that tab. /ui/mode carries "manual"
+(teleop_mux state) and "frame" (map | odom: the frame of the pose and points sent).
 
 Maps and map modes (map_store.py, nav_modes.py; maps in <data_dir>/maps):
 
@@ -86,7 +100,9 @@ from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import LaserScan, PointCloud2
+from sensor_msgs.msg import Imu, LaserScan, PointCloud2
+from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import Log
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
@@ -100,16 +116,20 @@ from geometry_msgs.msg import Twist
 from std_srvs.srv import Trigger
 
 from . import car_reload, config_loader
+from .pipeline_stats import Pipeline, STAGES
+from .run_recorder import RunRecorder
+from .run_store import MIN_FREE_MB, RunStore
 from .car_store import ActiveCar, apply_blocker, CarProfileStore, derived as car_derived, props_from_cfg, validate_props
 from .idle_watch import IdleWatcher
 from .actuation import WHEELS_TOPIC, parse_payload
 from .map_store import MapStore, safe_map_name
 from .nav_modes import ALL_MODES, MODES, StackProcess, stack_command, wheels_moving
-from .depth_obstacles import parse_cloud
+from .depth_obstacles import DepthParams, obstacle_points, parse_cloud
 from .idle_logic import should_process
 from .ui_pack import rle
 from .ui_store import ProfileStore, TestRecorder, TestStore
 
+LOG_KEEP = 500
 START_TIMEOUT_S = 50.0     # "starting" longer than this: the stack is started again
 START_ATTEMPTS = 3
 DRIVE_KEYS = ("speed_mps", "max_yaw_rate_rps", "lat_accel_mps2", "kp", "kd")
@@ -150,6 +170,45 @@ def scan_to_map(msg: LaserScan, pose: tuple[float, float, float], max_range: flo
     return np.round(np.stack((x, y), axis=1), 2).tolist()
 
 
+def pipe_summary(kind: str, m) -> str:
+    """One short line about a message, for the Logs tab's pipeline table."""
+    try:
+        if kind == "scan":
+            r = np.asarray(m.ranges, dtype=float)
+            ok = np.isfinite(r) & (r > 0.05)
+            return f"{int(ok.sum())}/{len(r)} rays, nearest {r[ok].min():.2f} m" if ok.any() else f"0/{len(r)} rays"
+        if kind == "cloud":
+            return f"{m.width * m.height} points"
+        if kind == "imu":
+            a = m.linear_acceleration
+            return f"a {a.x:.2f} {a.y:.2f} {a.z:.2f}, gz {m.angular_velocity.z:.2f}"
+        if kind == "odom":
+            p, t = m.pose.pose.position, m.twist.twist
+            return f"x {p.x:.2f} y {p.y:.2f} yaw {math.degrees(_yaw(m.pose.pose.orientation)):.0f} | v {t.linear.x:.2f} w {t.angular.z:.2f}"
+        if kind == "pose":
+            p = m.pose.pose.position
+            return f"x {p.x:.2f} y {p.y:.2f} yaw {math.degrees(_yaw(m.pose.pose.orientation)):.0f}"
+        if kind == "path":
+            pts = m.poses
+            ln = sum(math.hypot(a.pose.position.x - b.pose.position.x, a.pose.position.y - b.pose.position.y)
+                     for a, b in zip(pts, pts[1:]))
+            return f"{len(pts)} poses, {ln:.1f} m"
+        if kind == "twist":
+            return f"v {m.linear.x:.2f} m/s, w {m.angular.z:.2f} rad/s"
+        if kind == "guard":
+            d = json.loads(m.data)
+            near = d.get("nearest_m")
+            return f"{d.get('state')}" + ("" if near is None else f", nearest {near:.2f} m") + (" ESTOP" if d.get("estop") else "")
+        if kind == "mux":
+            d = json.loads(m.data)
+            return ("MANUAL" if d.get("manual") else "off") + f" ({d.get('reason')})"
+        if kind == "string":
+            return str(m.data)[:60]
+    except Exception:  # noqa: BLE001 - a summary must never break the node
+        return ""
+    return ""
+
+
 class UiBridge(Node):
     def __init__(self) -> None:
         super().__init__("ui_bridge")
@@ -165,10 +224,25 @@ class UiBridge(Node):
         self.declare_parameter("seed_map_yaml", "")         # simulator: map added to the store once
         self.declare_parameter("seed_map_name", "")
         self.declare_parameter("seed_start", "")
+        self.declare_parameter("odom_frame", "odom")        # shown instead of the map frame while map -> odom is missing
+        self.declare_parameter("runs_min_free_mb", float(MIN_FREE_MB))
         data_dir = self.get_parameter("data_dir").value
         self._profiles = ProfileStore(data_dir)
         self._tests = TestStore(data_dir)
         self._maps = MapStore(data_dir)
+        self._runs = RunStore(data_dir)
+        self._runs.mark_unfinished()
+        self._recorder = RunRecorder(self._runs, min_free_mb=float(self.get_parameter("runs_min_free_mb").value))
+        self._pipe = Pipeline()
+        self._pipe_subs: list = []
+        self._logs_sub = None
+        self._log_ring: list = []         # last LOG_KEEP /rosout lines (kept while a page shows the Logs tab)
+        self._log_new: list = []
+        self._log_seq = 0
+        self._log_prev_subs = 0
+        self._mux: dict = {}              # /teleop_mux/state
+        self._mux_t = 0.0
+        self._frame_now = None            # frame of the poses / points sent to the page: map | odom | None
         self._cars = CarProfileStore(data_dir)
         self._car_file = ActiveCar(config_loader.shipped_path(), config_loader.override_path())
         self._car = {"state": "idle", "detail": "", "since": time.time(), "name": None}
@@ -206,11 +280,13 @@ class UiBridge(Node):
         self._map_json = None
         self._scan = self._dyn = None
         self._depth, self._depth_t = None, 0.0
+        self._camera_pose = None
+        self._depth_is_raw = False
         self._plan: list = []
         self._guard: dict = {}
         self._map_pub = self.create_publisher(String, "/ui/map", 1)
         self._pubs = {k: self.create_publisher(String, f"/ui/{k}", 2)
-                      for k in ("pose", "scan", "depth", "guard", "plan", "mode")}
+                      for k in ("pose", "scan", "depth", "guard", "plan", "mode", "pipe", "logs", "runs")}
         self._idle = IdleWatcher(self)
         self._last_pub: dict = {}          # topic -> monotonic time of the last publish
         self._cache: dict = {}             # packing cache: key -> (source message, result)
@@ -232,6 +308,7 @@ class UiBridge(Node):
         self._lazy: dict = {}      # scan / depth / plan subscriptions, only while a page (or a test) needs them
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
         self.create_subscription(String, WHEELS_TOPIC, self._on_wheels, 20)
+        self.create_subscription(String, "/teleop_mux/state", self._on_mux, 5)
         self.create_subscription(PoseStamped, "/goal_pose", lambda m: self._event(
             "goal", x=round(m.pose.position.x, 2), y=round(m.pose.position.y, 2)), 10)
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", lambda m: self._event(
@@ -249,6 +326,7 @@ class UiBridge(Node):
         self.create_timer(0.2, self._publish_ui)
         self._sample_timer = self.create_timer(0.2, self._sample_test)   # runs only while a test records
         self._sample_timer.cancel()
+        self.create_timer(1.0, self._poll_recorder)
         self._start_http()
         self._seed_maps()
         self._boot_timer = self.create_timer(1.0, self._boot)
@@ -267,7 +345,12 @@ class UiBridge(Node):
     def _sync_lazy(self) -> None:
         """Subscribe to the LiDAR / depth / plan topics only while somebody shows them (or a test records)."""
         rec = self._rec is not None
-        need = {"scan": self._want("scan") or rec, "depth": self._want("depth"), "plan": self._want("plan")}
+        depth = self._want("depth")
+        raw = depth and self.count_publishers("/depth_obstacles") == 0 \
+            and self.count_publishers("/camera/depth/points") > 0   # no guard node (depth:=false / idle): the camera itself
+        need = {"scan": self._want("scan") or rec, "depth": depth and not raw, "depth_raw": raw,
+                "plan": self._want("plan")}
+        self._sync_pipe_logs()
         for name, on in need.items():
             if on and name not in self._lazy:
                 if name == "scan":
@@ -279,6 +362,9 @@ class UiBridge(Node):
                 elif name == "depth":
                     self._lazy[name] = [self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth,
                                                                  qos_profile_sensor_data)]
+                elif name == "depth_raw":
+                    self._lazy[name] = [self.create_subscription(PointCloud2, "/camera/depth/points",
+                                                                 self._on_depth_raw, qos_profile_sensor_data)]
                 else:
                     self._lazy[name] = [self.create_subscription(Path, "/plan", self._on_plan, 5)]
             elif not on and name in self._lazy:
@@ -286,10 +372,106 @@ class UiBridge(Node):
                     self.destroy_subscription(sub)
                 if name == "scan":
                     self._scan = self._dyn = None
-                elif name == "depth":
+                elif name in ("depth", "depth_raw"):
                     self._depth = None
                 else:
                     self._plan = []
+
+    # ------------------------------------------------------- Logs tab: pipeline rates + /rosout
+    def _sync_pipe_logs(self) -> None:
+        """Subscribe to the pipeline's topics / /rosout only while a page shows the Logs tab."""
+        want_pipe, want_logs = self._want("pipe"), self._want("logs")
+        if want_pipe and not self._pipe_subs:
+            self._pipe.reset()
+            for _g, topic, kind in STAGES:
+                self._pipe_subs.append(self._pipe_sub(topic, kind))
+        elif not want_pipe and self._pipe_subs:
+            for sub in self._pipe_subs:
+                self.destroy_subscription(sub)
+            self._pipe_subs = []
+        if want_logs and self._logs_sub is None:
+            qos = QoSProfile(depth=200, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=ReliabilityPolicy.RELIABLE)
+            self._logs_sub = self.create_subscription(Log, "/rosout", self._on_log, qos)
+        elif not want_logs and self._logs_sub is not None:
+            self.destroy_subscription(self._logs_sub)
+            self._logs_sub = None
+            self._log_ring, self._log_new = [], []
+
+    def _pipe_sub(self, topic: str, kind: str):
+        types = {"scan": LaserScan, "raw": PointCloud2, "cloud": PointCloud2, "imu": Imu, "odom": Odometry,
+                 "pose": PoseWithCovarianceStamped, "path": Path, "twist": Twist, "string": String,
+                 "guard": String, "mux": String}
+        qos = qos_profile_sensor_data if kind in ("scan", "raw", "cloud", "imu") else QoSProfile(
+            depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        if kind == "raw":      # 640x480 cloud: count only, no deserialising
+            return self.create_subscription(PointCloud2, topic, lambda m, t=topic: self._pipe.hit(
+                t, time.monotonic()), qos, raw=True)
+        return self.create_subscription(types[kind], topic, lambda m, t=topic, k=kind: self._pipe.hit(
+            t, time.monotonic(), pipe_summary(k, m)), qos)
+
+    def _send_pipe(self, now: float) -> None:
+        rows = self._pipe.rows(now, lambda t: self.count_publishers(t))
+        self._send("pipe", {"stages": rows, "mode": self._mode["mode"], "state": self._mode["state"],
+                            "recording": self._recorder.recording})
+
+    def _on_log(self, m: Log) -> None:
+        line = [round(m.stamp.sec + m.stamp.nanosec * 1e-9, 3), int(m.level), m.name, m.msg]
+        self._log_seq += 1
+        self._log_ring.append(line)
+        self._log_new.append(line)
+        if len(self._log_ring) > LOG_KEEP:
+            del self._log_ring[:len(self._log_ring) - LOG_KEEP]
+        if len(self._log_new) > LOG_KEEP:
+            del self._log_new[:len(self._log_new) - LOG_KEEP]
+
+    def _send_logs(self) -> None:
+        """New /rosout lines since the last send (the whole ring when a page has just opened the tab)."""
+        subs = self._pubs["logs"].get_subscription_count()
+        if subs > self._log_prev_subs:
+            self._log_new = list(self._log_ring)
+        self._log_prev_subs = subs
+        if not self._log_new:
+            return
+        lines, self._log_new = self._log_new[-200:], []
+        self._send("logs", {"lines": lines, "seq": self._log_seq})
+
+    # ------------------------------------------------------- manual drive (teleop_mux) + runs
+    def _on_mux(self, msg: String) -> None:
+        try:
+            self._mux = json.loads(msg.data)
+            self._mux_t = time.monotonic()
+        except ValueError:
+            pass
+
+    def manual_state(self) -> dict:
+        """The mux's state for the top bar ('MANUAL'); {} when teleop_mux does not run (no map mode)."""
+        if time.monotonic() - self._mux_t > 3.0:
+            return {}
+        return {k: self._mux.get(k) for k in ("manual", "reason", "estop", "allow_reverse", "max_speed_mps",
+                                              "max_yaw_rps", "reverse_ignored")}
+
+    def _poll_recorder(self) -> None:
+        if self._recorder.recording:
+            why = self._recorder.poll()
+            if why:
+                self.get_logger().warn(f"run recording stopped: {why}")
+
+    def start_run(self, name: str, note: str = "", topics=None) -> dict:
+        meta = self._recorder.start(name or "run", note, topics)
+        self.get_logger().info(f"run {meta['id']}: recording {len(meta['topics'])} topics ({meta['storage']})")
+        self._event("run_start", run=meta["id"])
+        return {**self._recorder.status(), "topics": meta["topics"]}
+
+    def stop_run(self) -> dict:
+        done = self._recorder.stop("stopped by the user")
+        if done is None:
+            raise ValueError("not recording")
+        self.get_logger().info(f"run {done['id']} saved ({done.get('duration_s')} s)")
+        return done
+
+    def runs_info(self) -> dict:
+        return {"runs": self._runs.list(), "status": self._recorder.status()}
 
     def _load_static(self, cfg: dict) -> None:
         fp = config_loader.footprint(cfg)
@@ -655,7 +837,8 @@ class UiBridge(Node):
         with self._rec_lock:
             if self._rec is not None:
                 raise ValueError(f"already recording {self._rec.name!r}")
-            self._rec = TestRecorder(name=name, note=note, params=self.current())
+            self._rec = TestRecorder(name=name, note=note, params=self.current(),
+                                     run=(self._recorder.run or {}).get("id", ""))
         self._sample_timer.reset()
         self.get_logger().info(f"test {name!r}: recording")
         return {"recording": True, "name": name}
@@ -667,6 +850,8 @@ class UiBridge(Node):
         if rec is None:
             raise ValueError("not recording")
         tid = self._tests.save(rec)
+        if rec.run:
+            self._runs.link_test(rec.run, tid)
         self.get_logger().info(f"test {rec.name!r} saved as {tid}: {rec.summary()}")
         return {"id": tid, "summary": rec.summary()}
 
@@ -676,25 +861,55 @@ class UiBridge(Node):
             return {"recording": r is not None, "name": r.name if r else None,
                     "elapsed_s": round(time.time() - r.started, 1) if r else None}
 
-    def _lookup(self, child: str):
+    def _lookup(self, child: str, frame: str | None = None):
         try:
-            tf = self._tf.lookup_transform(self._frame, child, Time())
+            tf = self._tf.lookup_transform(frame or self._frame, child, Time())
         except Exception:  # noqa: BLE001
             return None
         t = tf.transform
         return (t.translation.x, t.translation.y, _yaw(t.rotation))
 
+    def _frame_pose(self):
+        """(frame, base_link pose) for what the page draws: the map frame when localised (map -> odom exists),
+        else the odom frame (idle, create before the first scan match, load before the initial pose), else (None, None).
+        Without this fallback nothing was drawn until a map mode had localised the car."""
+        for fr in (self._frame, str(self.get_parameter("odom_frame").value)):
+            pose = self._lookup("base_link", fr)
+            if pose is not None:
+                self._frame_now = fr
+                return fr, pose
+        self._frame_now = None
+        return None, None
+
     def _on_depth(self, msg: PointCloud2) -> None:
         self._depth, self._depth_t = msg, time.monotonic()
 
-    def _depth_to_map(self, msg: PointCloud2, pose) -> list:
-        """/depth_obstacles (base_link x, y) -> map frame, rounded, at most 400 points."""
+    def _on_depth_raw(self, msg: PointCloud2) -> None:
+        self._depth, self._depth_t = msg, time.monotonic()
+        self._depth_is_raw = True
+
+    def _depth_raw_xy(self, msg: PointCloud2) -> np.ndarray:
+        """The camera's own cloud (optical frame) -> obstacle cells in base_link, same heights as the guard."""
         offs = {f.name: f.offset for f in msg.fields}
         n = msg.width * msg.height
-        if not n or not all(k in offs for k in "xy"):
-            return []
-        xy = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["x"]), n,
-                         msg.is_bigendian)[:, :2]
+        if not n or not all(k in offs for k in "xyz"):
+            return np.zeros((0, 2))
+        if self._camera_pose is None:
+            self._camera_pose = config_loader.camera_pose(config_loader.load())
+        raw = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["z"]), n, msg.is_bigendian, 8)
+        return obstacle_points(raw, self._camera_pose, DepthParams(max_range_m=4.0))
+
+    def _depth_to_map(self, msg: PointCloud2, pose) -> list:
+        """/depth_obstacles (base_link x, y) -> map frame, rounded, at most 400 points."""
+        if "depth_raw" in self._lazy:
+            xy = self._depth_raw_xy(msg)
+        else:
+            offs = {f.name: f.offset for f in msg.fields}
+            n = msg.width * msg.height
+            if not n or not all(k in offs for k in "xy"):
+                return []
+            xy = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["x"]), n,
+                             msg.is_bigendian)[:, :2]
         if len(xy) > 400:
             xy = xy[np.linspace(0, len(xy) - 1, 400).astype(int)]
         c, s = math.cos(pose[2]), math.sin(pose[2])
@@ -716,19 +931,19 @@ class UiBridge(Node):
     def _send(self, key: str, data: dict) -> None:
         self._pubs[key].publish(String(data=json.dumps(data)))
 
-    def _scan_points(self):
-        """(scan, dyn) in the map frame; cached per scan message, so nothing is packed twice."""
+    def _scan_points(self, frame: str | None = None):
+        """(scan, dyn) in `frame` (default: map); cached per scan message, so nothing is packed twice."""
         c = self._cache.get("scan")
-        if c is not None and c[0] is self._scan and c[1] is self._dyn:
+        if c is not None and c[0] is self._scan and c[1] is self._dyn and c[3] == frame:
             return c[2]
         scan, dyn = [], []
         if self._scan is not None:
-            sp = self._lookup(self._scan.header.frame_id)
+            sp = self._lookup(self._scan.header.frame_id, frame)
             if sp is not None:
                 scan = scan_to_map(self._scan, sp)
                 if self._dyn is not None:
                     dyn = scan_to_map(self._dyn, sp, step=1)
-        self._cache["scan"] = (self._scan, self._dyn, (scan, dyn))
+        self._cache["scan"] = (self._scan, self._dyn, (scan, dyn), frame)
         return scan, dyn
 
     def _publish_ui(self) -> None:
@@ -742,27 +957,40 @@ class UiBridge(Node):
         idle = self._idle.idle()
         slow = 0.5 if idle else 0.2                    # idle: nothing moves, the picture can be slower
         now = time.monotonic()
+        fr, pose = (None, None)
+        if any(self._want(k) for k in ("pose", "scan", "depth")):
+            fr, pose = self._frame_pose()
         if self._want("pose") and self._due("pose", 0.2):
-            pose = self._lookup("base_link")
             self._send("pose", {"pose": None if pose is None else
-                                [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]})
+                                [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)],
+                                "frame": fr, "localised": fr == self._frame})
         if self._want("scan") and self._due("scan", slow):
             c = self._cache.get("scan")
-            if c is None or c[0] is not self._scan or c[1] is not self._dyn or now - self._last_pub.get("scan_s", 0) > 2:
+            if c is None or c[0] is not self._scan or c[1] is not self._dyn or c[3] != fr \
+                    or now - self._last_pub.get("scan_s", 0) > 2:
                 self._last_pub["scan_s"] = now
-                scan, dyn = self._scan_points()
-                self._send("scan", {"scan": scan, "dyn": dyn})
+                scan, dyn = self._scan_points(fr) if fr else ([], [])
+                self._send("scan", {"scan": scan, "dyn": dyn, "frame": fr})
         if self._want("depth") and self._due("depth", slow):
-            pose = self._lookup("base_link")
             fresh = self._depth is not None and pose is not None and now - self._depth_t < 1.5
-            self._send("depth", {"depth": self._depth_to_map(self._depth, pose) if fresh else []})
+            self._send("depth", {"depth": self._depth_to_map(self._depth, pose) if fresh else [], "frame": fr,
+                                 "source": "camera" if "depth_raw" in self._lazy else "guard"})
         if self._want("guard") and self._guard_raw and self._due("guard", 0.2):
             self._pubs["guard"].publish(String(data=self._guard_raw))
         if self._want("plan") and self._due("plan", 0.5):
             self._send("plan", {"plan": self._plan})
+        if self._want("pipe") and self._due("pipe", 0.5):
+            self._send_pipe(now)
+        if self._want("logs") and self._due("logs", 0.5):
+            self._send_logs()
+        if self._want("runs") and self._due("runs", 1.0):
+            self._send("runs", {"status": self._recorder.status()})
         if self._want("mode") and self._due("mode", 1.0):
             self._send("mode", {"mode": {k: self._mode[k] for k in ("mode", "map", "state", "detail")},
                                 "drive": self._drive, "test": self.test_status(), "idle": idle,
+                                "frame": self._frame_now, "manual": self.manual_state(),
+                                "run": {"recording": self._recorder.recording,
+                                        "name": (self._recorder.run or {}).get("name")},
                                 "static": self._static, "car": self.car_status(),
                                 "guard": {"state": (self._guard or {}).get("state"),
                                           "estop": bool((self._guard or {}).get("estop")),
@@ -773,9 +1001,9 @@ class UiBridge(Node):
         with self._rec_lock:
             if self._rec is None:
                 return
-        pose = self._lookup("base_link")
+        fr, pose = self._frame_pose()
         pp = None if pose is None else [round(pose[0], 3), round(pose[1], 3), round(pose[2], 4)]
-        _scan, dyn = self._scan_points()
+        _scan, dyn = self._scan_points(fr) if fr else ([], [])
         with self._rec_lock:
             if self._rec is not None:
                 self._rec.sample(pp, (self._guard or {}).get("state"), (self._guard or {}).get("nearest_m"),
@@ -986,6 +1214,41 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
                     return self._json(200 if ms.delete(name) else 404, {"deleted": name})
                 if len(parts) == 3 and parts[2] == "load" and method == "POST":
                     return self._json(202, b.request_switch("load", name, bool(self._body().get("force"))))
+            if parts[:1] == ["runs"]:
+                if len(parts) == 1 and method == "GET":
+                    return self._json(200, b.runs_info())
+                if parts[1:] == ["start"] and method == "POST":
+                    body = self._body()
+                    return self._json(200, b.start_run(body.get("name") or "run", body.get("note", ""),
+                                                       body.get("topics")))
+                if parts[1:] == ["stop"] and method == "POST":
+                    return self._json(200, b.stop_run())
+                if parts[1:] == ["status"] and method == "GET":
+                    return self._json(200, b._recorder.status())
+                rid = parts[1]
+                rec_id = (b._recorder.run or {}).get("id")
+                if len(parts) == 3 and parts[2] == "download" and method == "GET":
+                    if rid == rec_id:
+                        raise RuntimeError("this run is still recording: stop it first")
+                    if b._runs.get(rid) is None:
+                        return self._json(404, {"error": "no such run"})
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Disposition", f'attachment; filename="{rid}.zip"')
+                    self.send_header("Connection", "close")      # length unknown: the end of the stream ends the file
+                    self.end_headers()
+                    b._runs.zip_to(rid, self.wfile)
+                    return
+                if len(parts) == 2 and method == "GET":
+                    d = b._runs.get(rid)
+                    return self._json(200, d) if d else self._json(404, {"error": "no such run"})
+                if len(parts) == 2 and method == "PUT":
+                    d = b._runs.update(rid, note=self._body().get("note", ""))
+                    return self._json(200, d) if d else self._json(404, {"error": "no such run"})
+                if len(parts) == 2 and method == "DELETE":
+                    if rid == rec_id:
+                        raise RuntimeError("this run is still recording: stop it first")
+                    return self._json(200 if b._runs.delete(rid) else 404, {"deleted": rid})
             if parts[:1] == ["tests"]:
                 if len(parts) == 1 and method == "GET":
                     return self._json(200, {"tests": ts.list(), "status": b.test_status()})
