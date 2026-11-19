@@ -15,7 +15,8 @@ what its open tab shows, so a closed tab or no browser costs nothing:
 * /ui/depth  (5 Hz, 2 Hz idle)  {"depth": [...]}  the depth camera's obstacle points (/depth_obstacles)
 * /ui/guard  (5 Hz)  the safety guard state and parameters (/safety_guard/state)
 * /ui/plan   (2 Hz)  {"plan": [[x, y]...]}  the global plan
-* /ui/mode   (1 Hz)  {"mode": {...}, "drive": {...}, "test": {...}, "idle": bool, "static": {...}, "car": {...}}
+* /ui/mode   (1 Hz)  {"mode": {...}, "drive": {...}, "test": {...}, "idle": bool, "static": {...}, "car": {...},
+             "guard": {"state", "estop", "nearest_m"}}   (what the page header needs, whatever tab is open)
 
 The page publishes /initialpose, /goal_pose, /ui/estop and /ui/safety_params
 itself (see web/index.html). HTTP: http://<car>:<http_port>/ (default 8080).
@@ -702,7 +703,10 @@ class UiBridge(Node):
         if self._want("mode") and self._due("mode", 1.0):
             self._send("mode", {"mode": {k: self._mode[k] for k in ("mode", "map", "state", "detail")},
                                 "drive": self._drive, "test": self.test_status(), "idle": idle,
-                                "static": self._static, "car": self.car_status()})
+                                "static": self._static, "car": self.car_status(),
+                                "guard": {"state": (self._guard or {}).get("state"),
+                                          "estop": bool((self._guard or {}).get("estop")),
+                                          "nearest_m": (self._guard or {}).get("nearest_m")}})
 
     def _sample_test(self) -> None:
         """5 Hz while a test is recording (independent of any browser)."""
