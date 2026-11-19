@@ -41,6 +41,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth", default_value="false",
                               description="true: start the Astra and use the depth camera as a second "
                                           "source for the safety guard (low boxes, table tops)"),
+        DeclareLaunchArgument("require_health", default_value="false",
+                              description="true: refuse NAV goals until a web UI Health check passed today"),
         DeclareLaunchArgument("enable_astra", default_value=arg("depth"),
                               description="the Astra; follows depth (false saves CPU)"),
         IncludeLaunchDescription(
@@ -50,7 +52,7 @@ def generate_launch_description() -> LaunchDescription:
             PythonLaunchDescriptionSource(os.path.join(share, "launch", "nav.launch.py")),
             launch_arguments={"map": arg("map"), "slam": arg("slam"), "mode": arg("mode"),
                               "map_name": arg("map_name"), "controller": arg("controller"),
-                              "depth": arg("depth")}.items()),
+                              "depth": arg("depth"), "require_health": arg("require_health")}.items()),
         Node(package="car_nav", executable="ugv_serial_bridge", name="ugv_serial_bridge", output="screen",
              parameters=[{"port": arg("ugv_port"),
                           "enable_motors": ParameterValue(arg("motors"), value_type=bool)}]),

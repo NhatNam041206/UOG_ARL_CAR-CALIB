@@ -176,3 +176,19 @@ def test_overall_and_store(tmp_path):
     assert {r["id"] for r in st.list()} == {rid, rid2}
     assert st.last() is not None and st.delete(rid) and st.get(rid) is None
     assert st.get("../../x") is None
+
+
+def test_clearance_and_passed_today():
+    n = 720
+    r = np.full(n, 3.0)
+    ang = -math.pi + np.arange(n) * 2 * math.pi / n
+    r[np.argmin(np.abs(ang))] = 0.5                       # something 0.5 m behind the centre (rear edge at 0.35)
+    c = H.clearance_outside(r, -math.pi, 2 * math.pi / n, 0.15, 12.0, LASER, FP)
+    assert abs(c - 0.15) < 0.02
+    assert H.clearance_outside(np.full(n, math.inf), -math.pi, 2 * math.pi / n, 0.15, 12.0, LASER, FP) is None
+    assert abs(H.min_radius_outside(r, -math.pi, 2 * math.pi / n, 0.15, 12.0, LASER, FP) - 0.5) < 0.02
+    now = 1_800_000_000.0
+    assert H.passed_today({"overall": "pass", "started_ts": now - 60}, now)
+    assert not H.passed_today({"overall": "fail", "started_ts": now - 60}, now)
+    assert not H.passed_today({"overall": "pass", "started_ts": now - 3 * 86400}, now)
+    assert not H.passed_today(None, now)

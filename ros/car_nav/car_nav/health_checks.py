@@ -225,6 +225,50 @@ def eval_depth(stamps: list[float], frames: list[dict], camera, floor: dict | No
     return verdict(rules, extra)
 
 
+def _base_points(ranges, angle_min, inc, range_min, range_max, laser):
+    r = np.asarray(ranges, dtype=float)
+    idx = np.nonzero(np.isfinite(r) & (r > 0.0) & (r >= range_min) & (r <= range_max))[0]
+    if idx.size == 0:
+        return np.zeros(0), np.zeros(0)
+    ang = angle_min + idx * inc
+    rot = laser.rotation()
+    px, py = r[idx] * np.cos(ang), r[idx] * np.sin(ang)
+    return (rot[0][0] * px + rot[0][1] * py + laser.x), (rot[1][0] * px + rot[1][1] * py + laser.y)
+
+
+def clearance_outside(ranges, angle_min, inc, range_min, range_max, laser, footprint) -> float | None:
+    """Distance (m) from the footprint's edge to the nearest valid beam end OUTSIDE the footprint (the car's own
+    body is not an obstacle); None when the scan sees nothing."""
+    bx, by = _base_points(ranges, angle_min, inc, range_min, range_max, laser)
+    if bx.size == 0:
+        return None
+    dx = np.maximum(np.maximum(footprint.x_rear - bx, bx - footprint.x_front), 0.0)
+    dy = np.maximum(np.abs(by) - footprint.half_width, 0.0)
+    d = np.hypot(dx, dy)
+    d = d[d > 0.0]
+    return float(d.min()) if d.size else None
+
+
+def min_radius_outside(ranges, angle_min, inc, range_min, range_max, laser, footprint) -> float | None:
+    """Nearest valid beam end outside the footprint, as distance from base_link (to compare with the spin radius)."""
+    bx, by = _base_points(ranges, angle_min, inc, range_min, range_max, laser)
+    if bx.size == 0:
+        return None
+    out = ~((bx >= footprint.x_rear) & (bx <= footprint.x_front) & (np.abs(by) <= footprint.half_width))
+    return float(np.hypot(bx[out], by[out]).min()) if out.any() else None
+
+
+def passed_today(last: dict | None, now: float | None = None) -> bool:
+    """True when the latest stored run passed and was made today (local time)."""
+    if not last or last.get("overall") != "pass":
+        return False
+    ts = last.get("started_ts")
+    if ts is None:
+        return False
+    now = time.time() if now is None else now
+    return time.strftime("%Y-%m-%d", time.localtime(ts)) == time.strftime("%Y-%m-%d", time.localtime(now))
+
+
 # ------------------------------------------------------------------ colour camera
 def eval_color(stamps: list[float], size: tuple[int, int] | None, observer: str | None) -> dict:
     """observer: "yes" | "no" | None (no answer in time)."""
@@ -460,7 +504,7 @@ class HealthStore:
             if f.endswith(".json"):
                 d = self.get(f[:-5])
                 if d:
-                    out.append({"id": d.get("id", f[:-5]), "started": d.get("started"), "overall": d.get("overall"),
+                    out.append({"id": d.get("id", f[:-5]), "started": d.get("started"), "started_ts": d.get("started_ts"), "overall": d.get("overall"),
                                 "checks": {k: v.get("status") for k, v in (d.get("results") or {}).items()}})
         return out
 

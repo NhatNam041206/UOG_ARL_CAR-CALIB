@@ -93,7 +93,8 @@ def _ui_and_stack(context, *args, **kwargs):
                               "initial_map_name": a("map_name"),
                               "seed_map_yaml": a("ui_seed_map"),
                               "seed_map_name": a("ui_seed_name"),
-                              "seed_start": a("ui_seed_start")}]),
+                              "seed_start": a("ui_seed_start"),
+                              "require_health": a("require_health").lower() == "true"}]),
         ]
     elif mode == "idle":
         acts.append(LogInfo(msg="[car_nav] no map mode given and ui:=false: only sensors and odometry run "
@@ -153,6 +154,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("ui_seed_map", default_value="", description="simulator: map yaml to add to the store once"),
         DeclareLaunchArgument("ui_seed_name", default_value=""),
         DeclareLaunchArgument("ui_seed_start", default_value="", description="'x,y,yaw' default start pose of the seed"),
+        DeclareLaunchArgument("require_health", default_value="false",
+                              description="true: ui_bridge cancels NAV goals until a Health check passed today"),
         DeclareLaunchArgument("log_level", default_value="info"),
         OpaqueFunction(function=_ui_and_stack),
         OpaqueFunction(function=_upright_tf),
