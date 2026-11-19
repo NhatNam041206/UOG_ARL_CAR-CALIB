@@ -93,3 +93,14 @@ def test_state_dict():
     m.on_teleop(0.0, -0.1, 0.0)
     s = m.state(0.01)
     assert s["manual"] and s["reverse_ignored"] and not s["allow_reverse"]
+
+
+def test_collision_monitor_listens_to_the_mux_and_the_mux_is_launched():
+    import yaml
+    from tests._car_nav_paths import NAV2_YAML, ROOT
+    cm = yaml.safe_load(open(NAV2_YAML, encoding="utf-8"))["collision_monitor"]["ros__parameters"]
+    assert cm["cmd_vel_in_topic"] == "cmd_vel_mux" and cm["cmd_vel_out_topic"] == "cmd_vel_guarded"
+    launch = (ROOT / "ros/car_nav/launch/nav_stack.launch.py").read_text(encoding="utf-8")
+    assert 'executable="teleop_mux"' in launch
+    assert "teleop_mux = car_nav.teleop_mux:main" in (ROOT / "ros/car_nav/setup.py").read_text(encoding="utf-8")
+    assert '"/cmd_vel_mux"' in (ROOT / "ros/car_nav/car_nav/teleop_mux.py").read_text(encoding="utf-8")
