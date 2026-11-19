@@ -176,6 +176,17 @@ stays in the chain as a pass-through: it re-publishes `/scan_filtered` as
 `/scan_odom` (invalid beams set to 0 for rf2o). If the LiDAR is ever
 mounted upside down again, `roll: pi` in car.yaml is all it takes.
 
+## Depth camera and low obstacles
+
+`sim.launch.py depth:=true` (also `run_sim.sh mission low_box depth:=true`) publishes a simulated Astra on
+`/camera/depth/points` (`config/sim.yaml depth:`: 80 x 60 rays, 58 x 45 deg, 10 Hz, 0.6-4 m, noise, dropout; 3D ray
+cast from the `car.yaml` camera pose against the floor, boxes / cylinders with their `height`, actors 1.8 m) and turns
+on the depth source of the safety guard. The simulated LiDAR now respects heights: it does not see shapes lower than its
+mounting height. A mission may list `extra_obstacles:` (`boxes:` / `cylinders:` like a world file): they exist in the
+simulation and in the collision score but NOT in the map. `missions/low_box.yaml`: a 0.15 m high box in the aisle;
+`timeout_ok: true` makes "stopped in front of it, goal not reached" a pass as long as nothing is hit.
+`depth:=false` -> the car drives into it (FAIL, collision).
+
 ## Safety: the simulator cannot drive the car
 
 * Nothing in `car_nav` or `car_nav_sim` imports an MQTT client or opens a
