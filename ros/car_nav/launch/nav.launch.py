@@ -1,32 +1,25 @@
 """NAV2 navigation stack, shared by the simulator and the real car.
 
-    ros2 launch car_nav nav.launch.py map:=/path/map.yaml            # AMCL on a saved map
-    ros2 launch car_nav nav.launch.py slam:=true                     # build a map while driving
-    ros2 launch car_nav nav.launch.py odom_source:=external ...       # someone else publishes odom->base_link
+    ros2 launch car_nav nav.launch.py map:=/path/map.yaml            # load: AMCL on a stored map
+    ros2 launch car_nav nav.launch.py map_name:=lab                  # load a map of the UI's store
+    ros2 launch car_nav nav.launch.py slam:=true                     # create: build a map while driving
+    ros2 launch car_nav nav.launch.py mode:=flat                     # unknown / flat: map == odom
+    ros2 launch car_nav nav.launch.py                                # nothing yet: choose in the web UI
+    ros2 launch car_nav nav.launch.py odom_source:=external ...      # someone else publishes odom->base_link
 
 Expects base_link -> laser TF and /scan_filtered (sensors.launch.py on the
-car, sim.launch.py in the simulator). Starts:
+car, sim.launch.py in the simulator). This file is the PERSISTENT part:
 
   scan_upright      /scan_filtered -> /scan_nav (frame laser_upright) + its static TF
-                    (the LiDAR is mounted upright now: a pass-through, plus /scan_odom)
   rf2o              laser odometry, odom -> base_link   (odom_source:=rf2o)
   adaptive_odom     rf2o + learned forward speed, odom -> base_link (odom_source:=adaptive, default)
-  map_server + AMCL                                     (slam:=false)
-  pose_gate         AMCL -> map -> odom, holding back AMCL's along-corridor
-                    corrections in blind corridors (pose_gate:=true, default);
-                    pose_gate:=false lets AMCL publish map -> odom itself
-  slam_toolbox      map -> odom + /map                  (slam:=true)
-  planner (Smac 2D A*, the skid-steer car turns on the spot), controller (RPP),
-  behavior server (wait + spin), bt_navigator (spin recovery, no backup),
-  collision_monitor (cmd_vel_nav -> cmd_vel, stop zones)
-  dynamic_scan      /scan_nav -> /scan_dynamic: points not on the map (people)
-  safety_guard      cmd_vel_guarded -> cmd_vel: stop / slow for people in FRONT (web UI tunable)
-  ui:=true          rosbridge (ws :9090) + ui_bridge (web page http :8080): map, LiDAR, pose,
-                    initial pose / goal, safety guard parameters, emergency stop
-  pd_path_follower   PD path follower (controller:=pd, default): FollowPath action
-                     pd_follow_path -> cmd_vel_nav, plus LiDAR wall avoidance.
-                     controller:=rpp uses Pure Pursuit.
-  cmd_vel_to_control /cmd_vel -> "<left m/s>,<right m/s>" on /car/wheels/cmd (ROS only)
+  cmd_vel_to_control /cmd_vel -> "<left m/s>,<right m/s>" on /car/wheels/cmd (0 0 when /cmd_vel stops)
+  ui:=true          rosbridge (ws :9090) + ui_bridge (web page http :8080)
+
+The RESTARTABLE part (map_server + AMCL + pose_gate | slam_toolbox | flat_origin, Nav2,
+PD follower, collision monitor, dynamic_scan, safety_guard) is nav_stack.launch.py. With
+ui:=true ui_bridge starts it as a child process and restarts it when you change the map
+mode in the web page; with ui:=false it is included here once.
 
 Nothing here talks to the motors: on the car, the ugv-controller adapter
 turns /car/wheels/cmd into the controller's own command.
@@ -37,8 +30,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, LogInfo, OpaqueFunction
-from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -47,8 +40,11 @@ from nav2_common.launch import RewrittenYaml
 
 from car_nav import config_loader
 from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg
+from car_nav.nav_modes import derive_mode
 
-NAV_NODES = ["planner_server", "controller_server", "behavior_server", "bt_navigator", "collision_monitor"]
+# arguments handed on to nav_stack.launch.py
+STACK_ARGS = ("use_sim_time", "params_file", "slam_params_file", "controller", "bt_xml", "pose_gate",
+              "max_pose_age_s", "autostart", "log_level")
 
 
 def _upright_tf(context, *args, **kwargs):
@@ -75,85 +71,60 @@ def _upright_tf(context, *args, **kwargs):
     return msgs
 
 
+def _ui_and_stack(context, *args, **kwargs):
+    """rosbridge + ui_bridge (which starts / restarts the stack), or the stack itself without the UI."""
+    share = get_package_share_directory("car_nav")
+    a = lambda n: context.launch_configurations[n]  # noqa: E731
+    mode = derive_mode(a("mode"), a("slam"), a("map"), a("map_name"))
+    use_sim_time = a("use_sim_time").lower() == "true"
+    stack_args = [f"{k}:={a(k)}" for k in STACK_ARGS] + [f"data_dir:={a('ui_data_dir')}"]
+    acts = []
+    if a("ui").lower() == "true":
+        acts += [
+            Node(package="rosbridge_server", executable="rosbridge_websocket", name="rosbridge_websocket",
+                 output="screen",
+                 parameters=[{"port": int(a("ui_ws_port")), "use_sim_time": use_sim_time}],
+                 arguments=["--ros-args", "--log-level", "warn"]),
+            Node(package="car_nav", executable="ui_bridge", name="ui_bridge", output="screen",
+                 remappings=[("/tf", "tf"), ("/tf_static", "tf_static")],
+                 parameters=[{"use_sim_time": use_sim_time,
+                              "http_port": int(a("ui_http_port")),
+                              "rosbridge_port": int(a("ui_ws_port")),
+                              "web_dir": a("ui_web_dir"),
+                              "data_dir": a("ui_data_dir"),
+                              "stack_args": stack_args,
+                              "initial_mode": mode,
+                              "initial_map": a("map"),
+                              "initial_map_name": a("map_name"),
+                              "seed_map_yaml": a("ui_seed_map"),
+                              "seed_map_name": a("ui_seed_name"),
+                              "seed_start": a("ui_seed_start")}]),
+        ]
+    elif mode == "idle":
+        acts.append(LogInfo(msg="[car_nav] no map mode given and ui:=false: only sensors and odometry run "
+                                "(use mode:=load map:=... | mode:=create | mode:=flat)"))
+    else:
+        args = {"mode": mode, "map": a("map"), "map_name": a("map_name"), "data_dir": a("ui_data_dir")}
+        args.update({k: a(k) for k in STACK_ARGS})
+        acts.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(share, "launch", "nav_stack.launch.py")),
+            launch_arguments=args.items()))
+    return acts
+
+
 def generate_launch_description() -> LaunchDescription:
     share = get_package_share_directory("car_nav")
     use_sim_time = LaunchConfiguration("use_sim_time")
     params_file = LaunchConfiguration("params_file")
-    map_yaml = LaunchConfiguration("map")
-    slam = LaunchConfiguration("slam")
     odom_source = LaunchConfiguration("odom_source")
-    bt_xml = LaunchConfiguration("bt_xml")
     controller = LaunchConfiguration("controller")
-    autostart = LaunchConfiguration("autostart")
-    log_level = LaunchConfiguration("log_level")
     pose_gate = LaunchConfiguration("pose_gate")
-    gate_on = PythonExpression(["'", pose_gate, "' == 'true'"])
 
     params = RewrittenYaml(
         source_file=params_file,
-        param_rewrites={
-            "use_sim_time": use_sim_time,
-            "yaml_filename": map_yaml,
-            "default_nav_to_pose_bt_xml": bt_xml,
-        },
+        param_rewrites={"use_sim_time": use_sim_time},
         convert_types=True,
     )
-    common = {"output": "screen", "arguments": ["--ros-args", "--log-level", log_level]}
-    remap_tf = [("/tf", "tf"), ("/tf_static", "tf_static")]
-
-    localization = GroupAction(
-        condition=UnlessCondition(slam),
-        actions=[
-            Node(package="nav2_map_server", executable="map_server", name="map_server",
-                 parameters=[params], remappings=remap_tf, **common),
-            # with the gate, AMCL only publishes /amcl_pose; pose_gate owns map -> odom
-            Node(package="nav2_amcl", executable="amcl", name="amcl",
-                 parameters=[params, {"tf_broadcast": ParameterValue(
-                     PythonExpression(["'", pose_gate, "' != 'true'"]), value_type=bool)}],
-                 remappings=remap_tf, **common),
-            Node(package="car_nav", executable="pose_gate", name="pose_gate",
-                 parameters=[params], remappings=remap_tf, condition=IfCondition(gate_on), **common),
-            Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
-                 name="lifecycle_manager_localization", output="screen",
-                 parameters=[{"use_sim_time": use_sim_time, "autostart": autostart,
-                              "node_names": ["map_server", "amcl"]}]),
-        ],
-    )
-    slam_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory("slam_toolbox"), "launch", "online_async_launch.py")
-        ),
-        condition=IfCondition(slam),
-        launch_arguments={
-            "use_sim_time": use_sim_time,
-            "slam_params_file": LaunchConfiguration("slam_params_file"),
-            "autostart": autostart,
-        }.items(),
-    )
-
-    navigation = GroupAction(actions=[
-        Node(package="nav2_planner", executable="planner_server", name="planner_server",
-             parameters=[params], remappings=remap_tf, **common),
-        Node(package="nav2_controller", executable="controller_server", name="controller_server",
-             parameters=[params], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")], **common),
-        Node(package="nav2_behaviors", executable="behavior_server", name="behavior_server",
-             parameters=[params], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")], **common),
-        Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator",
-             parameters=[params], remappings=remap_tf, **common),
-        Node(package="car_nav", executable="pd_path_follower", name="pd_path_follower",
-             parameters=[params, {"max_pose_age_s": ParameterValue(
-                 LaunchConfiguration("max_pose_age_s"), value_type=float)}], remappings=remap_tf + [("cmd_vel", "cmd_vel_nav")],
-             condition=IfCondition(PythonExpression(["'", controller, "' == 'pd'"])), **common),
-        Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
-             parameters=[params], remappings=remap_tf, **common),
-        Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
-             parameters=[params], remappings=remap_tf, **common),
-        Node(package="car_nav", executable="safety_guard", name="safety_guard",
-             parameters=[params], **common),
-        Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
-             name="lifecycle_manager_navigation", output="screen",
-             parameters=[{"use_sim_time": use_sim_time, "autostart": autostart, "node_names": NAV_NODES}]),
-    ])
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
@@ -162,11 +133,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("slam_params_file", default_value=os.path.join(share, "config", "slam_toolbox.yaml")),
         DeclareLaunchArgument("controller", default_value="pd",
                               description="pd (PD path follower) | rpp (Nav2 Regulated Pure Pursuit)"),
-        DeclareLaunchArgument("bt_xml", default_value=PythonExpression([
-            "'", os.path.join(share, "behavior_trees", "navigate_forward_only"), "' + "
-            "('_pd' if '", controller, "' == 'pd' else '') + '.xml'"])),
-        DeclareLaunchArgument("map", default_value="", description="map yaml for AMCL (slam:=false)"),
-        DeclareLaunchArgument("slam", default_value="false"),
+        DeclareLaunchArgument("bt_xml", default_value="", description="'' = chosen from controller"),
+        DeclareLaunchArgument("mode", default_value="",
+                              description="load | create | flat | idle ('' = from slam / map / map_name, else idle)"),
+        DeclareLaunchArgument("map", default_value="", description="map yaml for mode load"),
+        DeclareLaunchArgument("map_name", default_value="", description="a map of the UI's store (<ui_data_dir>/maps)"),
+        DeclareLaunchArgument("slam", default_value="false", description="old spelling of mode:=create"),
         DeclareLaunchArgument("odom_source", default_value="adaptive",
                               description="adaptive (rf2o + learned speed) | rf2o | external"),
         DeclareLaunchArgument("pose_gate", default_value="true",
@@ -179,20 +151,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("ui_ws_port", default_value="9090"),
         DeclareLaunchArgument("ui_web_dir", default_value="", description="'' = <car_nav share>/web"),
         DeclareLaunchArgument("ui_data_dir", default_value="/data/nav/ui",
-                              description="web UI profiles and test records (keep it on a volume)"),
-        Node(package="rosbridge_server", executable="rosbridge_websocket", name="rosbridge_websocket",
-             output="screen", condition=IfCondition(LaunchConfiguration("ui")),
-             parameters=[{"port": ParameterValue(LaunchConfiguration("ui_ws_port"), value_type=int),
-                          "use_sim_time": use_sim_time}],
-             arguments=["--ros-args", "--log-level", "warn"]),
-        Node(package="car_nav", executable="ui_bridge", name="ui_bridge", output="screen",
-             condition=IfCondition(LaunchConfiguration("ui")), remappings=remap_tf,
-             parameters=[{"use_sim_time": use_sim_time,
-                          "http_port": ParameterValue(LaunchConfiguration("ui_http_port"), value_type=int),
-                          "rosbridge_port": ParameterValue(LaunchConfiguration("ui_ws_port"), value_type=int),
-                          "web_dir": LaunchConfiguration("ui_web_dir"),
-                          "data_dir": LaunchConfiguration("ui_data_dir")}]),
+                              description="web UI profiles, test records and maps (keep it on a volume)"),
+        DeclareLaunchArgument("ui_seed_map", default_value="", description="simulator: map yaml to add to the store once"),
+        DeclareLaunchArgument("ui_seed_name", default_value=""),
+        DeclareLaunchArgument("ui_seed_start", default_value="", description="'x,y,yaw' default start pose of the seed"),
         DeclareLaunchArgument("log_level", default_value="info"),
+        OpaqueFunction(function=_ui_and_stack),
         OpaqueFunction(function=_upright_tf),
         Node(package="car_nav", executable="scan_upright", name="scan_upright", output="screen",
              parameters=[{"use_sim_time": use_sim_time}]),
@@ -212,9 +176,6 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[params, {"localized_pose_topic": PythonExpression(
                  ["'/localized_pose' if '", pose_gate, "' == 'true' else '/amcl_pose'"])}],
              condition=IfCondition(PythonExpression(["'", odom_source, "' == 'adaptive'"]))),
-        localization,
-        slam_launch,
-        navigation,
         Node(package="car_nav", executable="cmd_vel_to_control", name="cmd_vel_to_control", output="screen",
              parameters=[params], remappings=[("control", WHEELS_TOPIC)]),
     ])

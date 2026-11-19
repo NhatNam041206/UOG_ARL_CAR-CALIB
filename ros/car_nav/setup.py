@@ -34,6 +34,7 @@ setup(
             "dynamic_scan = car_nav.dynamic_scan:main",
             "safety_guard = car_nav.safety_guard:main",
             "ui_bridge = car_nav.ui_bridge:main",
+            "flat_origin = car_nav.flat_origin:main",
         ],
     },
 )
