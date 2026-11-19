@@ -92,7 +92,7 @@
     const running = H && H.state === "running";
     banner.className = running ? "" : last ? last.overall : "";
     banner.textContent = running ? "health: running…" : last
-      ? `last health check: ${String(last.overall).toUpperCase()} at ${(last.started || "").slice(5, 16)}${H.summary.require && !H.summary.passed_today ? " · NAV blocked" : ""}`
+      ? `last health check: ${String(last.overall).toUpperCase()}${last.complete ? "" : " (partial)"} at ${(last.started || "").slice(5, 16)}${H.summary.require && !H.summary.passed_today ? " · NAV blocked" : ""}`
       : "health: not checked";
   }
   function selected() { return [...document.querySelectorAll("#h_list [data-c]")].filter((c) => c.checked).map((c) => c.dataset.c); }

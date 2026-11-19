@@ -391,7 +391,7 @@ class UiBridge(Node):
     def _on_goal_gate(self, msg: PoseStamped) -> None:
         """require_health: a goal without a passing health check from today is cancelled again (and the wheels
         stopped). Off by default."""
-        if not self.get_parameter("require_health").value or passed_today(self.health.store.last()):
+        if not self.get_parameter("require_health").value or passed_today(self.health.store.last_complete()):
             return
         self.get_logger().warn("NAV goal refused: no passing health check today (require_health is on)")
         self._event("goal_refused", why="no passing health check today")
@@ -401,7 +401,7 @@ class UiBridge(Node):
 
     def health_summary(self) -> dict:
         last = self.health.store.last()
-        return {"last": last, "passed_today": passed_today(last), "require": bool(self.get_parameter("require_health").value)}
+        return {"last": last, "passed_today": passed_today(self.health.store.last_complete()), "require": bool(self.get_parameter("require_health").value)}
 
     def _on_wheels(self, msg: String) -> None:
         self._wheels = parse_payload(msg.data)

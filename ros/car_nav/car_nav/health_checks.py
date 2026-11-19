@@ -259,8 +259,8 @@ def min_radius_outside(ranges, angle_min, inc, range_min, range_max, laser, foot
 
 
 def passed_today(last: dict | None, now: float | None = None) -> bool:
-    """True when the latest stored run passed and was made today (local time)."""
-    if not last or last.get("overall") != "pass":
+    """True when `last` (HealthStore.last_complete()) passed, covered every check and was made today (local time)."""
+    if not last or last.get("overall") != "pass" or not last.get("complete"):
         return False
     ts = last.get("started_ts")
     if ts is None:
@@ -509,7 +509,7 @@ class HealthStore:
             if f.endswith(".json"):
                 d = self.get(f[:-5])
                 if d:
-                    out.append({"id": d.get("id", f[:-5]), "started": d.get("started"), "started_ts": d.get("started_ts"), "overall": d.get("overall"),
+                    out.append({"id": d.get("id", f[:-5]), "started": d.get("started"), "started_ts": d.get("started_ts"), "complete": d.get("complete", False), "overall": d.get("overall"),
                                 "checks": {k: v.get("status") for k, v in (d.get("results") or {}).items()}})
         return out
 
@@ -523,3 +523,7 @@ class HealthStore:
     def last(self) -> dict | None:
         runs = self.list()
         return runs[0] if runs else None
+
+    def last_complete(self) -> dict | None:
+        """The newest run that checked EVERY device (a partial run does not count for require_health)."""
+        return next((r for r in self.list() if r.get("complete")), None)

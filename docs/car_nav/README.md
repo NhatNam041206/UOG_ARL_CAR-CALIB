@@ -221,7 +221,7 @@ the wheels are zeroed and the run ends as FAILED**. A run always ends with zero 
 
 REST (module docstring of `ui_bridge.py`): `GET /api/health`, `POST /api/health/start|answer|heartbeat|abort|apply_speed`,
 `GET /api/health/snapshot`, `GET|DELETE /api/health/runs/<id>[?download=1]`. Optional: `car.launch.py require_health:=true`
-(ui_bridge parameter `require_health`, default false) cancels NAV goals (and sends zero) until a health run PASSED today.
+(ui_bridge parameter `require_health`, default false) cancels NAV goals (and sends zero) until a run that covered EVERY check PASSED today (a partial run shows "(partial)" in the banner and does not count).
 Simulator: lite sim publishes a stand-in for the ESP32 echo on `/car/wheels/applied`; it has no colour camera and no IMU, so those two checks FAIL there.
 
 ## Map modes (Load / Create / Unknown-flat)

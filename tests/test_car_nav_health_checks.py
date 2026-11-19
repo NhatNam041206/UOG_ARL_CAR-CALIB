@@ -170,10 +170,11 @@ def test_overall_and_store(tmp_path):
     assert H.overall({"a": {"status": "pass"}, "b": {"status": "fail"}}) == "fail"
     assert H.overall({}) == "fail"
     st = H.HealthStore(str(tmp_path))
-    rid = st.save({"started": "2026-11-19 10:00:00", "overall": "pass", "results": {"imu": {"status": "pass"}}})
+    rid = st.save({"started": "2026-11-19 10:00:00", "overall": "pass", "complete": True, "results": {"imu": {"status": "pass"}}})
     rid2 = st.save({"started": "2026-11-19 10:00:00", "overall": "fail", "results": {}})
     assert rid != rid2 and st.get(rid)["id"] == rid
     assert {r["id"] for r in st.list()} == {rid, rid2}
+    assert st.last_complete()["id"] == rid
     assert st.last() is not None and st.delete(rid) and st.get(rid) is None
     assert st.get("../../x") is None
 
@@ -188,9 +189,10 @@ def test_clearance_and_passed_today():
     assert H.clearance_outside(np.full(n, math.inf), -math.pi, 2 * math.pi / n, 0.15, 12.0, LASER, FP) is None
     assert abs(H.min_radius_outside(r, -math.pi, 2 * math.pi / n, 0.15, 12.0, LASER, FP) - 0.5) < 0.02
     now = 1_800_000_000.0
-    assert H.passed_today({"overall": "pass", "started_ts": now - 60}, now)
-    assert not H.passed_today({"overall": "fail", "started_ts": now - 60}, now)
-    assert not H.passed_today({"overall": "pass", "started_ts": now - 3 * 86400}, now)
+    assert H.passed_today({"overall": "pass", "complete": True, "started_ts": now - 60}, now)
+    assert not H.passed_today({"overall": "pass", "complete": False, "started_ts": now - 60}, now)   # partial run
+    assert not H.passed_today({"overall": "fail", "complete": True, "started_ts": now - 60}, now)
+    assert not H.passed_today({"overall": "pass", "complete": True, "started_ts": now - 3 * 86400}, now)
     assert not H.passed_today(None, now)
 
 

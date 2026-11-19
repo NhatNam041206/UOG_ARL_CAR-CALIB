@@ -299,7 +299,7 @@ class HealthRunner:
             raise RuntimeError("the wheels are being driven: the IMU check needs the car standing still")
         now = time.time()
         run = {"started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), "started_ts": now, "checks": checks,
-               "params": params, "confirm": {k: bool(v) for k, v in conf.items()}, "results": {}, "current": None,
+               "complete": set(checks) == set(ALL_CHECKS), "params": params, "confirm": {k: bool(v) for k, v in conf.items()}, "results": {}, "current": None,
                "step": "", "prompt": None, "events": [], "overall": None, "finished": None, "run_id": None,
                "abort_reason": ""}
         self._abort.clear()
