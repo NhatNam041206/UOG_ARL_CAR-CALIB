@@ -1,0 +1,11 @@
+# Unknown / flat mode (nav_stack.launch.py mode:=flat): loaded AFTER nav2_params.yaml
+# on planner_server, which hosts the global costmap. No map: the global costmap is a
+# rolling window around the car (map == odom) fed by the LiDAR only.
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["obstacle_layer", "inflation_layer"]
+      rolling_window: true
+      width: 20
+      height: 20
+      track_unknown_space: false   # everything not seen is assumed free flat floor

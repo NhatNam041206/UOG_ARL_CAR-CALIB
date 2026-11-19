@@ -7,6 +7,7 @@
 #   scripts/sim/run_sim.sh rviz [args]               # 2D backend + RViz (lighter than Gazebo)
 #   scripts/sim/run_sim.sh ui [args]                 # 2D backend + the car's web UI: http://localhost:8080
 #   scripts/sim/run_sim.sh ui mission:=person_stops  # ... driving a mission (people included)
+#   scripts/sim/run_sim.sh ui mode:=flat|create      # ... starting in another map mode (all three switch in the page)
 #   scripts/sim/run_sim.sh campus [anchor] [args]    # school map in RViz, car at an anchor (AAD-1)
 #   scripts/sim/run_sim.sh campus-mission [args]     # school map mission (campus_block_left), with RViz
 #   SIM_STRESS=speed_drift scripts/sim/run_sim.sh ... # car worse than car.yaml (sweeps/stress/*.yaml)

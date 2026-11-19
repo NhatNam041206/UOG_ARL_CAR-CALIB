@@ -46,6 +46,28 @@
     border-radius: 6px; font-size: 12px; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 4px 0 10px; }
   .muted { color: var(--muted); }
+  #modebadge { font-size: 12px; }
+  .badge.m-load { background: #1f6f43; color: #fff; }
+  .badge.m-create { background: #8a5a00; color: #fff; }
+  .badge.m-flat { background: #6b3fa0; color: #fff; }
+  .badge.m-idle, .badge.m-error { background: #555; color: #fff; }
+  .badge.m-error { background: var(--stop); }
+  #banner { position: absolute; right: 12px; top: 12px; max-width: min(420px, calc(100% - 24px)); padding: 8px 12px;
+    border-radius: 6px; font-weight: 600; display: none; }
+  #banner.show { display: block; }
+  #banner.busy { background: var(--slow); color: #111; }
+  #banner.flat { background: #6b3fa0; color: #fff; }
+  #banner.create { background: #8a5a00; color: #fff; }
+  .mstatus { margin: 8px 0; padding: 6px 8px; border-radius: 6px; background: #0f151b; border: 1px solid var(--line); }
+  .mstatus.busy { border-color: var(--slow); color: var(--slow); }
+  .mstatus.error { border-color: var(--stop); color: var(--stop); }
+  .map { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 8px 0; font-size: 13px; }
+  .map.active { border-color: var(--ok); }
+  .map .row { margin: 4px 0; flex-wrap: wrap; }
+  .map input:not([type]) { width: 100%; }
+  .map .pose input { width: 30%; flex: 1; }
+  button:disabled { opacity: .45; cursor: default; }
+  [hidden] { display: none !important; }
   @media (max-width: 760px) {
     #app { flex-direction: column; }
     #view { height: 58vh; flex: none; }
@@ -58,6 +80,7 @@
   <div id="view">
     <canvas id="c"></canvas>
     <div id="hint">Connecting…</div>
+    <div id="banner"></div>
     <div id="legend">
       <span class="dot" style="background:#5b6b7a;margin-left:0"></span>LiDAR
       <span class="dot" style="background:var(--stop)"></span>not on map (person)
@@ -65,13 +88,40 @@
     </div>
   </div>
   <div id="side">
-    <div class="row"><b>Car NAV2</b><span id="conn" class="badge">offline</span></div>
+    <div class="row"><b>Car NAV2</b><span id="conn" class="badge">offline</span>
+      <span id="modebadge" class="badge m-idle">no mode</span></div>
     <button id="estop">EMERGENCY STOP</button>
+    <h2>Map</h2>
+    <div class="tools" id="modebar">
+      <button data-mode="load">Load map</button>
+      <button data-mode="create">Create map</button>
+      <button data-mode="flat">Unknown / flat</button>
+    </div>
+    <div id="mstatus" class="mstatus">–</div>
+    <div id="mp_load">
+      <div id="mlist"></div>
+    </div>
+    <div id="mp_create" hidden>
+      <p class="muted">slam_toolbox builds the map while you drive; the map grows in the view.
+        Save it when it looks complete: it then appears in <b>Load map</b>.</p>
+      <div class="row"><input id="msavename" placeholder="map name" style="flex:1">
+        <button id="msave">Save map as…</button></div>
+      <input id="msavenote" placeholder="note (optional)" style="width:100%">
+    </div>
+    <div id="mp_flat" hidden>
+      <p class="muted">No map. The car's start is the origin, odometry only; the floor is assumed
+        empty and flat. <b>Every</b> obstacle in front of the car counts for the safety guard
+        (there is no map to tell walls from people). For quick tests on an open floor.</p>
+      <div class="row"><button id="fgo">Go ahead</button>
+        <input id="fdist" value="2.0" style="width:70px"> m from here</div>
+    </div>
+    <div id="mmsg" class="muted"></div>
     <h2>Tool</h2>
     <div class="tools">
       <button data-tool="pan" class="on">Pan / zoom</button>
       <button data-tool="init">Initial pose</button>
       <button data-tool="goal">Nav goal</button>
+      <button data-tool="startpose" id="tstartpose" hidden>Start pose</button>
       <button id="follow">Follow car</button>
       <button id="fit">Fit map</button>
       <button id="zin" aria-label="Zoom in">+</button>
@@ -161,11 +211,13 @@ function setConn() {
 function hintText() {
   return { pan: "Drag to move; mouse wheel or + / − to zoom.",
            init: "Click where the car is and drag the way it faces.",
-           goal: "Click the goal and drag the direction to arrive in." }[tool];
+           goal: "Click the goal and drag the direction to arrive in.",
+           startpose: "Click the map's start pose and drag the way the car faces." }[tool];
 }
 
 // ------------------------------------------------------------------ data
 function onMap(m) {
+  if (!m.w || !m.h) { map = null; mapImg = null; return; }   // the stack is restarting: no map
   const first = !map;
   map = m;
   const img = new ImageData(m.w, m.h);
@@ -282,8 +334,12 @@ cv.addEventListener("pointerup", () => {
   if (drag && drag.tool !== "pan") {
     const th = Math.hypot(drag.ex - drag.x, drag.ey - drag.y) > 0.05
       ? Math.atan2(drag.ey - drag.y, drag.ex - drag.x) : (state && state.pose ? state.pose[2] : 0);
-    sendPose(drag.tool, drag.x, drag.y, th);
-    $("hint").textContent = drag.tool === "init" ? "Initial pose sent." : "Goal sent.";
+    if (drag.tool === "startpose") {
+      if (editing) { setEditPose(drag.x, drag.y, th); $("hint").textContent = "Start pose set: press Save."; }
+    } else {
+      sendPose(drag.tool, drag.x, drag.y, th);
+      $("hint").textContent = drag.tool === "init" ? "Initial pose sent." : "Goal sent.";
+    }
   }
   drag = null;
 });
@@ -366,7 +422,7 @@ function draw() {
   }
   if (drag && drag.tool !== "pan") {   // arrow being dragged
     const [ax, ay] = toPx(drag.x, drag.y), [bx, by] = toPx(drag.ex, drag.ey);
-    ctx.strokeStyle = drag.tool === "init" ? "#3fb950" : "#f5a623"; ctx.lineWidth = 3 * r;
+    ctx.strokeStyle = drag.tool === "goal" ? "#f5a623" : "#3fb950"; ctx.lineWidth = 3 * r;
     ctx.beginPath(); ctx.arc(ax, ay, 6 * r, 0, 2 * Math.PI); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
   requestAnimationFrame(draw);
@@ -392,7 +448,7 @@ $("dapply").onclick = () => {
   dEdited = false; $("dapplied").textContent = "applied (from the next goal)";
 };
 const _onState = onState;
-onState = (s) => { _onState(s); if (!dEdited && s.drive) loadDrive(s.drive); showTest(s.test); };
+onState = (s) => { _onState(s); if (!dEdited && s.drive) loadDrive(s.drive); showTest(s.test); showMode(s.mode); };
 
 // ------------------------------------------------------------- REST API
 async function api(method, path, body) {
@@ -486,6 +542,149 @@ async function loadTests() {
     });
   } catch (e) { $("tlist").textContent = "tests: " + e.message; }
 }
+
+
+// ------------------------------------------------------------- map modes
+let curMode = null, tab = null, editing = null, lastMapsKey = "", mapsData = [];
+const MODE_LABEL = { load: "LOAD", create: "CREATE", flat: "FLAT", idle: "NO MODE" };
+const mmsg = (t) => { $("mmsg").textContent = t; };
+function showMode(m) {
+  if (!m) return;
+  const key = `${m.mode}|${m.map}|${m.state}`;
+  const changed = !curMode || key !== `${curMode.mode}|${curMode.map}|${curMode.state}`;
+  curMode = m;
+  const busy = m.state === "switching" || m.state === "starting";
+  const label = (MODE_LABEL[m.mode] || m.mode) + (m.mode === "load" && m.map ? " · " + m.map : "");
+  $("modebadge").textContent = m.state === "error" ? "MAP MODE ERROR" : busy ? `${label} … ${m.state}` : label;
+  $("modebadge").className = "badge " + (m.state === "error" ? "m-error" : "m-" + m.mode);
+  const st = $("mstatus");
+  st.className = "mstatus" + (busy ? " busy" : m.state === "error" ? " error" : "");
+  st.textContent = busy ? `Restarting localization + Nav2 (${m.state}${m.detail ? ", " + m.detail : ""})… the car is held at 0.`
+    : m.state === "error" ? "Error: " + m.detail
+    : m.state === "idle" ? "No map mode running. Choose one."
+    : `${label} – ready`;
+  const bn = $("banner");
+  bn.className = busy ? "show busy" : m.mode === "flat" ? "show flat" : m.mode === "create" ? "show create" : "";
+  bn.textContent = busy ? "Switching map mode: restarting localization + Nav2…"
+    : m.mode === "flat" ? "FLAT MODE: no map. Odometry only, every obstacle in front counts for the guard."
+    : m.mode === "create" ? "CREATE MODE: building a map." : "";
+  showTab(tab || (m.mode === "idle" ? "load" : m.mode));
+  $("msave").disabled = !m.can_save;
+  if (changed) loadMaps();
+}
+function showTab(t) {
+  ["load", "create", "flat"].forEach((x) => { $("mp_" + x).hidden = x !== t; });
+  document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === t));
+}
+async function switchMode(mode, map) {
+  const body = { mode };
+  if (map) body.map = map;
+  try {
+    try { await api("POST", "mode", body); }
+    catch (e) {
+      if (/driven/.test(e.message) && confirm("The car is being driven. Stop it and switch anyway?"))
+        await api("POST", "mode", { ...body, force: true });
+      else throw e;
+    }
+    mmsg("");
+  } catch (e) { mmsg(e.message); }
+}
+document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => {
+  const m = b.dataset.mode;
+  tab = m; showTab(m);
+  if (m === "load") { loadMaps(); return; }                    // choose a map below
+  if (curMode && curMode.mode === m && curMode.state !== "error") return;
+  const what = m === "create" ? "Start a NEW map (slam_toolbox)? Localization + Nav2 restart."
+    : "Switch to Unknown / flat (no map, odometry only)? Localization + Nav2 restart.";
+  if (confirm(what)) { tab = null; switchMode(m); }
+});
+async function loadMaps() {
+  try {
+    const d = await api("GET", "maps");
+    mapsData = d.maps;
+    const key = JSON.stringify([d.maps, d.mode.map, d.mode.mode]);
+    if (key === lastMapsKey) return;
+    lastMapsKey = key;
+    renderMaps();
+  } catch (e) { $("mlist").textContent = "maps: " + e.message; }
+}
+const fmtPose = (p) => p ? `x ${(+p.x).toFixed(2)}, y ${(+p.y).toFixed(2)}, ${(p.yaw * 180 / Math.PI).toFixed(0)}°` : "none";
+function renderMaps() {
+  const active = curMode && curMode.mode === "load" ? curMode.map : null;
+  $("mlist").innerHTML = mapsData.map((m) => `<div class="map${m.name === active ? " active" : ""}" data-name="${esc(m.name)}">
+    <div class="row"><b>${esc(m.name)}</b>${m.name === active ? '<span class="badge m-load">loaded</span>' : ""}
+      <span class="muted">${m.width ?? "?"}×${m.height ?? "?"} @ ${m.resolution ?? "?"} m</span></div>
+    <div class="muted">${esc(m.note) || "no note"} · start pose: ${fmtPose(m.start_pose)}</div>
+    <div class="row"><button class="mload">${m.name === active ? "Reload" : "Load"}</button>
+      <button class="medit">Edit</button><button class="mdel" ${m.name === active ? "disabled" : ""}>Delete</button></div>
+    <div class="medit-box" hidden></div></div>`).join("") || "<p class='muted'>No maps yet. Use Create map, then Save.</p>";
+  $("mlist").querySelectorAll(".map").forEach((el) => {
+    const name = el.dataset.name;
+    el.querySelector(".mload").onclick = () => { tab = null; switchMode("load", name); };
+    el.querySelector(".mdel").onclick = async () => {
+      if (!confirm(`Delete map "${name}"? This cannot be undone.`)) return;
+      try { await api("DELETE", "maps/" + enc(name)); mmsg(`deleted "${name}"`); lastMapsKey = ""; loadMaps(); }
+      catch (e) { mmsg(e.message); }
+    };
+    el.querySelector(".medit").onclick = () => openEditor(el, name);
+  });
+  if (editing) { const el = [...$("mlist").children].find((x) => x.dataset.name === editing); if (el) openEditor(el, editing); }
+}
+function openEditor(el, name) {
+  const m = mapsData.find((x) => x.name === name); if (!m) return;
+  editing = name;
+  const box = el.querySelector(".medit-box"); box.hidden = false;
+  const p = m.start_pose || {};
+  box.innerHTML = `<input class="e_name" value="${esc(m.name)}" placeholder="name">
+    <input class="e_note" value="${esc(m.note)}" placeholder="note" style="margin-top:4px">
+    <div class="muted" style="margin-top:6px">Default start pose (sent as the initial pose when loaded)</div>
+    <div class="row pose"><input class="e_x" placeholder="x m" value="${p.x ?? ""}"><input class="e_y" placeholder="y m" value="${p.y ?? ""}">
+      <input class="e_yaw" placeholder="yaw °" value="${p.yaw != null ? (p.yaw * 180 / Math.PI).toFixed(0) : ""}"></div>
+    <div class="row"><button class="e_cur">From current pose</button><button class="e_pick">Pick on map</button>
+      <button class="e_clear">Clear</button></div>
+    <div class="row"><button class="e_save on">Save</button><button class="e_cancel">Close</button></div>`;
+  const q = (c) => box.querySelector(c);
+  q(".e_cur").onclick = () => {
+    if (!state || !state.pose) return mmsg("no current pose");
+    if (!curMode || curMode.mode !== "load" || curMode.map !== name) mmsg("note: the current pose is in the frame of the running map");
+    setEditPose(state.pose[0], state.pose[1], state.pose[2]);
+  };
+  q(".e_pick").onclick = () => {
+    if (!curMode || curMode.mode !== "load" || curMode.map !== name) { mmsg("Load this map first, then pick its start pose on the view."); return; }
+    $("tstartpose").hidden = false; $("tstartpose").click(); mmsg("drag on the map: position + heading");
+  };
+  q(".e_clear").onclick = () => { q(".e_x").value = q(".e_y").value = q(".e_yaw").value = ""; };
+  q(".e_cancel").onclick = () => { editing = null; box.hidden = true; $("tstartpose").hidden = true; };
+  q(".e_save").onclick = async () => {
+    const x = q(".e_x").value.trim(), y = q(".e_y").value.trim(), yaw = q(".e_yaw").value.trim();
+    const body = { note: q(".e_note").value, rename: q(".e_name").value.trim() };
+    body.start_pose = x === "" && y === "" ? null : { x: parseFloat(x), y: parseFloat(y), yaw: (parseFloat(yaw || "0")) * Math.PI / 180 };
+    try { const d = await api("PUT", "maps/" + enc(name), body); editing = null; mmsg(`saved "${d.name}"`); lastMapsKey = ""; loadMaps(); }
+    catch (e) { mmsg(e.message); }
+  };
+}
+function setEditPose(x, y, th) {
+  const box = document.querySelector(`.map[data-name="${CSS.escape(editing)}"] .medit-box`); if (!box) return;
+  box.querySelector(".e_x").value = x.toFixed(2); box.querySelector(".e_y").value = y.toFixed(2);
+  box.querySelector(".e_yaw").value = (th * 180 / Math.PI).toFixed(0);
+}
+$("msave").onclick = async () => {
+  const name = $("msavename").value.trim(); if (!name) return mmsg("type a map name");
+  const body = { name, note: $("msavenote").value };
+  try {
+    try { await api("POST", "maps/save", body); }
+    catch (e) { if (/already exists/.test(e.message) && confirm(`"${name}" exists. Overwrite it?`)) await api("POST", "maps/save", { ...body, overwrite: true }); else throw e; }
+    mmsg(`saved "${name}": it is in the Load map list now`); lastMapsKey = ""; loadMaps();
+  } catch (e) { mmsg(e.message); }
+};
+$("fgo").onclick = () => {
+  if (!state || !state.pose) return mmsg("no pose yet");
+  const d = parseFloat($("fdist").value); if (!(d > 0 && d < 9)) return mmsg("distance 0..9 m");
+  const [x, y, th] = state.pose;
+  sendPose("goal", x + d * Math.cos(th), y + d * Math.sin(th), th);
+  mmsg(`goal ${d} m ahead sent`);
+};
+setInterval(() => { if (!document.hidden) loadMaps(); }, 5000);
 
 buildSliders(); setConn(); connect(); requestAnimationFrame(draw);
 loadProfiles(); loadTests();
