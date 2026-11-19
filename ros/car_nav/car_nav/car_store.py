@@ -139,6 +139,23 @@ def derived(props: dict, guard: dict | None = None) -> dict:
     }
 
 
+def apply_blocker(moving: bool, goal_active: bool, switching: bool, mode: str, map_in_progress: bool,
+                  writable: bool, force: bool = False) -> str | None:
+    """Why "Apply to the car" must be refused (the web UI answers HTTP 409 with this text), or None.
+    Applying restarts the nav stack, so the car must be stopped and no goal / mission active."""
+    if switching:
+        return "the nav stack is restarting: wait until it is ready"
+    if moving:
+        return "the car is being driven (wheel command not 0): stop it first"
+    if goal_active:
+        return "a goal / mission is active: cancel it first"
+    if mode == "create" and map_in_progress and not force:
+        return "Create mode would lose the map being built: save it first (or force)"
+    if not writable:
+        return "car.yaml is read-only here (CAR_NAV_CONFIG_OVERRIDE is not set)"
+    return None
+
+
 # ----------------------------------------------------------------------- yaml text patch
 _SECTION = re.compile(r"^([A-Za-z_]\w*):\s*(#.*)?$")
 _KEY = re.compile(r"^(?P<ind>[ \t]+)(?P<key>[A-Za-z_]\w*):(?P<sp>[ \t]*)(?P<val>[^#\n]*?)(?P<tail>[ \t]*)(?P<cmt>#.*)?$")

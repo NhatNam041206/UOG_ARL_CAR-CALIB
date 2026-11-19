@@ -145,3 +145,19 @@ def test_derived_numbers_use_blind_distance():
     assert d["lidar_upside_down"] is False
     d2 = derived({**p, "laser_roll": 3.14159})
     assert d2["lidar_upside_down"] is True
+
+
+def test_apply_blocker_409_rule():
+    from car_nav.car_store import apply_blocker
+    ok = dict(moving=False, goal_active=False, switching=False, mode="load", map_in_progress=False, writable=True)
+    assert apply_blocker(**ok) is None
+    assert "driven" in apply_blocker(**{**ok, "moving": True})
+    assert "goal" in apply_blocker(**{**ok, "goal_active": True})
+    assert "restarting" in apply_blocker(**{**ok, "switching": True})
+    assert "read-only" in apply_blocker(**{**ok, "writable": False})
+    # Create mode with a map being built: only with force
+    assert "lose the map" in apply_blocker(**{**ok, "mode": "create", "map_in_progress": True})
+    assert apply_blocker(**{**ok, "mode": "create", "map_in_progress": True, "force": True}) is None
+    # force never overrides a moving car or a goal
+    assert apply_blocker(**{**ok, "moving": True, "force": True}) is not None
+    assert apply_blocker(**{**ok, "goal_active": True, "force": True}) is not None
