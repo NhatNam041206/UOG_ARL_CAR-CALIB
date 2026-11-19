@@ -71,3 +71,28 @@ def test_stop_escalates_until_the_child_dies():
     assert sp.stop(sigint_wait_s=0.0, term_wait_s=1.0, sleep=lambda s: None) == "sigterm"
     assert proc.sent == [signal.SIGINT, signal.SIGTERM] and not sp.running()
     assert sp.stop() == "not running"
+
+
+def test_flat_overrides_have_no_static_layer():
+    import yaml
+    from tests._car_nav_paths import ROOT
+    d = yaml.safe_load((ROOT / "ros/car_nav/config/nav2_flat_overrides.yaml").read_text(encoding="utf-8"))
+    g = d["global_costmap"]["global_costmap"]["ros__parameters"]
+    assert "static_layer" not in g["plugins"] and "obstacle_layer" in g["plugins"]
+    assert g["rolling_window"] is True and g["track_unknown_space"] is False
+    base = yaml.safe_load((ROOT / "ros/car_nav/config/nav2_params.yaml").read_text(encoding="utf-8"))
+    assert "obstacle_layer" in base["global_costmap"]["global_costmap"]["ros__parameters"]   # its settings live there
+
+
+def test_launch_files_and_executables_are_wired():
+    from tests._car_nav_paths import ROOT
+    setup = (ROOT / "ros/car_nav/setup.py").read_text(encoding="utf-8")
+    assert "flat_origin = car_nav.flat_origin:main" in setup
+    stack = (ROOT / "ros/car_nav/launch/nav_stack.launch.py").read_text(encoding="utf-8")
+    for exe in ("map_server", "amcl", "pose_gate", "flat_origin", "planner_server", "safety_guard", "dynamic_scan"):
+        assert exe in stack
+    nav = (ROOT / "ros/car_nav/launch/nav.launch.py").read_text(encoding="utf-8").split("\"\"\"", 2)[2]     # without the docstring
+    for persistent in ("scan_upright", "adaptive_odom", "cmd_vel_to_control", "ui_bridge", "rosbridge_websocket"):
+        assert persistent in nav
+    for restartable in ("planner_server", "map_server", "safety_guard", "lifecycle_manager"):
+        assert restartable not in nav          # these only live in the restartable launch file
