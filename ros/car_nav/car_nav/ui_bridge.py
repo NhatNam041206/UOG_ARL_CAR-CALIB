@@ -170,7 +170,7 @@ class UiBridge(Node):
         self._sw_lock = threading.Lock()
         self._mode = {"mode": "idle", "map": None, "state": "idle", "detail": "", "since": time.time()}
         self._stack_args = list(self.get_parameter("stack_args").value or [])
-        self._stop_cmd = False
+        self._stop_flag = False
         self._last_req = None
         self._attempt = 1
         self._ready_ok = {"nav": False, "loc": False}
@@ -205,13 +205,10 @@ class UiBridge(Node):
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 5)
         self._nav_active = self.create_client(Trigger, "/lifecycle_manager_navigation/is_active")
         self._loc_active = self.create_client(Trigger, "/lifecycle_manager_localization/is_active")
-        self.create_timer(0.1, self._hold_stop)
+        self._hold_timer = self.create_timer(0.1, self._hold_stop)     # runs only while the stack is down
+        self._hold_timer.cancel()
         self.create_timer(1.0, self._supervise)
-        self.create_subscription(LaserScan, "/scan_nav", lambda m: setattr(self, "_scan", m), qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "/scan_dynamic", lambda m: setattr(self, "_dyn", m),
-                                 qos_profile_sensor_data)
-        self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth, qos_profile_sensor_data)
-        self.create_subscription(Path, "/plan", self._on_plan, 5)
+        self._lazy: dict = {}      # scan / depth / plan subscriptions, only while a page (or a test) needs them
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
         self.create_subscription(String, WHEELS_TOPIC, self._on_wheels, 20)
         self.create_subscription(PoseStamped, "/goal_pose", lambda m: self._event(
@@ -228,11 +225,50 @@ class UiBridge(Node):
         self._pd_get = self.create_client(GetParameters, "/pd_path_follower/get_parameters")
         self._drive_timer = self.create_timer(2.0, self._read_drive)
         self.create_timer(3.0, self._publish_map)
-        self.create_timer(0.1, self._publish_ui)
-        self.create_timer(0.2, self._sample_test)
+        self.create_timer(0.2, self._publish_ui)
+        self._sample_timer = self.create_timer(0.2, self._sample_test)   # runs only while a test records
+        self._sample_timer.cancel()
         self._start_http()
         self._seed_maps()
         self._boot_timer = self.create_timer(1.0, self._boot)
+
+    @property
+    def _stop_cmd(self) -> bool:
+        return self._stop_flag
+
+    @_stop_cmd.setter
+    def _stop_cmd(self, on: bool) -> None:
+        self._stop_flag = on
+        timer = getattr(self, "_hold_timer", None)
+        if timer is not None:
+            timer.reset() if on else timer.cancel()
+
+    def _sync_lazy(self) -> None:
+        """Subscribe to the LiDAR / depth / plan topics only while somebody shows them (or a test records)."""
+        rec = self._rec is not None
+        need = {"scan": self._want("scan") or rec, "depth": self._want("depth"), "plan": self._want("plan")}
+        for name, on in need.items():
+            if on and name not in self._lazy:
+                if name == "scan":
+                    self._lazy[name] = [
+                        self.create_subscription(LaserScan, "/scan_nav", lambda m: setattr(self, "_scan", m),
+                                                 qos_profile_sensor_data),
+                        self.create_subscription(LaserScan, "/scan_dynamic", lambda m: setattr(self, "_dyn", m),
+                                                 qos_profile_sensor_data)]
+                elif name == "depth":
+                    self._lazy[name] = [self.create_subscription(PointCloud2, "/depth_obstacles", self._on_depth,
+                                                                 qos_profile_sensor_data)]
+                else:
+                    self._lazy[name] = [self.create_subscription(Path, "/plan", self._on_plan, 5)]
+            elif not on and name in self._lazy:
+                for sub in self._lazy.pop(name):
+                    self.destroy_subscription(sub)
+                if name == "scan":
+                    self._scan = self._dyn = None
+                elif name == "depth":
+                    self._depth = None
+                else:
+                    self._plan = []
 
     def _load_static(self, cfg: dict) -> None:
         fp = config_loader.footprint(cfg)
@@ -599,12 +635,14 @@ class UiBridge(Node):
             if self._rec is not None:
                 raise ValueError(f"already recording {self._rec.name!r}")
             self._rec = TestRecorder(name=name, note=note, params=self.current())
+        self._sample_timer.reset()
         self.get_logger().info(f"test {name!r}: recording")
         return {"recording": True, "name": name}
 
     def stop_test(self) -> dict:
         with self._rec_lock:
             rec, self._rec = self._rec, None
+        self._sample_timer.cancel()
         if rec is None:
             raise ValueError("not recording")
         tid = self._tests.save(rec)
@@ -677,6 +715,7 @@ class UiBridge(Node):
         if self._map_pub.get_subscription_count() > self._map_subs:
             self._publish_map()                        # a page just opened the Map tab
         self._map_subs = self._map_pub.get_subscription_count()
+        self._sync_lazy()
         if not any(self._want(k) for k in self._pubs):
             return
         idle = self._idle.idle()

@@ -167,6 +167,10 @@ services:
     command: ${ROS_NAV_COMMAND:-ros2 launch car_nav sensors.launch.py}
     environment:
       - CAR_NAV_CONFIG=/config/car.yaml
+      # The web UI's Car tab writes its changes to this copy on the data volume (the shipped file above
+      # stays read-only). It shadows the shipped file while it exists; "Back to shipped file" in the Car
+      # tab (or deleting it) goes back to ./ros/car_nav/config/car.yaml.
+      - CAR_NAV_CONFIG_OVERRIDE=/data/nav/ui/car.yaml
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       # Keep DDS discovery on this host so ROS traffic stays off the Wi-Fi.
       # Set to SUBNET temporarily to view topics from a laptop.

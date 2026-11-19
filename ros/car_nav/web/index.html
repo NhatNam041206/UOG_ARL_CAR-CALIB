@@ -872,7 +872,7 @@ async function openCarTab() {
     renderCars(d.profiles, d.applied);
     showDerived();
   } catch (e) { $("cmsg").textContent = e.message; }
-  drawCar();
+  drawCar(); requestAnimationFrame(drawCar);
 }
 function renderCars(list, applied) {
   $("clist").innerHTML = list.length ? list.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.applied ? " (applied)" : ""}${c.note ? " – " + esc(c.note) : ""}</option>`).join("")
@@ -931,6 +931,7 @@ let carWasBusy = false;
 // -- drawings (monochrome lines; metres -> pixels with a fitted scale)
 function carCtx(id) {
   const c = $(id), r = dpr(), w = c.clientWidth;
+  if (w < 120) return null;                       // not laid out yet (the resize / next input redraws)
   c.style.height = "300px"; c.width = Math.round(w * r); c.height = Math.round(300 * r);
   const h = c.height; const g = c.getContext("2d");
   g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, h);
@@ -945,7 +946,8 @@ function drawCar() {
   drawTop(p); drawSide(p);
 }
 function drawTop(p) {
-  const { g, w, h, r } = carCtx("ctop");
+  const cc = carCtx("ctop"); if (!cc) return;
+  const { g, w, h, r } = cc;
   const gp = carGuard || {};
   const reach = Math.max(p.x_front + (gp.slow_range_m || 1.5), 1.0), back = Math.min(p.x_rear, -0.4);
   const side = Math.max(p.half_width, gp.slow_half_width_m || 0.65, 0.5) + 0.1;
@@ -993,7 +995,8 @@ function drawTop(p) {
   g.fillText("front →", w - 60 * r, 16 * r);
 }
 function drawSide(p) {
-  const { g, w, h, r } = carCtx("cside");
+  const cc = carCtx("cside"); if (!cc) return;
+  const { g, w, h, r } = cc;
   const camDown = p.camera_pitch_deg + VFOV / 2, camUp = p.camera_pitch_deg - VFOV / 2;
   const floorX = camDown > 0.05 ? p.camera_x + p.camera_z / Math.tan(camDown * RAD) : null;
   const top = Math.max(p.camera_z, p.height_m || 0, p.laser_z) + 0.2;
