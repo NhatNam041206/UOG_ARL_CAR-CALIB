@@ -37,6 +37,7 @@ setup(
             "ui_bridge = car_nav.ui_bridge:main",
             "flat_origin = car_nav.flat_origin:main",
             "car_tf_publisher = car_nav.car_tf_publisher:main",
+            "teleop_mux = car_nav.teleop_mux:main",
         ],
     },
 )

@@ -104,6 +104,7 @@ class TestRecorder:
     started: float = field(default_factory=time.time)
     samples: list = field(default_factory=list)
     events: list = field(default_factory=list)
+    run: str = ""          # id of the rosbag run that was recording when the test started ('' = none)
 
     def event(self, kind: str, **data) -> None:
         self.events.append({"t": round(time.time() - self.started, 2), "kind": kind, **data})
@@ -131,7 +132,8 @@ class TestRecorder:
     def to_dict(self) -> dict:
         return {"name": self.name, "note": self.note, "verdict": "",
                 "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started)),
-                "params": self.params, "summary": self.summary(), "events": self.events, "samples": self.samples}
+                "run": self.run, "params": self.params, "summary": self.summary(), "events": self.events,
+                "samples": self.samples}
 
 
 class TestStore:
@@ -155,7 +157,8 @@ class TestStore:
             except (OSError, ValueError):
                 continue
             out.append({"id": f[:-5], "name": d.get("name"), "note": d.get("note", ""),
-                        "verdict": d.get("verdict", ""), "started": d.get("started"), "summary": d.get("summary")})
+                        "verdict": d.get("verdict", ""), "started": d.get("started"), "summary": d.get("summary"),
+                        "run": d.get("run", "")})
         return out
 
     def _path(self, tid: str) -> str:

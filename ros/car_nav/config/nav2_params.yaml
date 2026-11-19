@@ -292,7 +292,7 @@ collision_monitor:
     use_sim_time: false
     base_frame_id: base_link
     odom_frame_id: odom
-    cmd_vel_in_topic: cmd_vel_nav
+    cmd_vel_in_topic: cmd_vel_mux       # teleop_mux: Nav2's cmd_vel_nav, or the web page's manual drive (cmd_vel_teleop)
     cmd_vel_out_topic: cmd_vel_guarded   # -> safety_guard -> cmd_vel
     state_topic: collision_monitor_state
     transform_tolerance: 0.5

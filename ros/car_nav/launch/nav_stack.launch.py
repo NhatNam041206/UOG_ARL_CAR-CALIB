@@ -12,7 +12,7 @@ switch. It holds exactly what depends on the map:
   create  slam_toolbox (map -> odom, /map)
   flat    flat_origin (map -> odom = start of the mode), global costmap without static layer
   all     planner (Smac 2D), controller (RPP) / pd_path_follower, behavior server, bt_navigator,
-          collision_monitor, dynamic_scan, safety_guard, lifecycle_manager_navigation
+          teleop_mux (web page joystick, in front of the collision monitor), collision_monitor, dynamic_scan, safety_guard, lifecycle_manager_navigation
 
 Sensors, odometry (scan_upright, rf2o, adaptive_odom), cmd_vel_to_control, rosbridge
 and ui_bridge stay in nav.launch.py and keep running while this restarts.
@@ -114,6 +114,9 @@ def _stack(context, *args, **kwargs):
         Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator",
              parameters=[params], remappings=remap_tf, **common),
         *([pd_follow] if controller == "pd" else []),
+        # manual drive from the web page: /cmd_vel_nav (Nav2) or /cmd_vel_teleop -> /cmd_vel_mux -> collision monitor
+        Node(package="car_nav", executable="teleop_mux", name="teleop_mux", output="screen",
+             parameters=[{"use_sim_time": use_sim_time}]),
         Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
              parameters=[params], remappings=remap_tf, **common),
         Node(package="car_nav", executable="dynamic_scan", name="dynamic_scan",
