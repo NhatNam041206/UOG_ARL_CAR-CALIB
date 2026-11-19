@@ -161,3 +161,12 @@ def test_apply_blocker_409_rule():
     # force never overrides a moving car or a goal
     assert apply_blocker(**{**ok, "moving": True, "force": True}) is not None
     assert apply_blocker(**{**ok, "goal_active": True, "force": True}) is not None
+
+
+def test_car_tab_form_has_every_property():
+    """The page's form must offer exactly the properties the server validates (a missing one made Save fail)."""
+    import re
+    html = (P.ROOT / "ros" / "car_nav" / "web" / "index.html").read_text(encoding="utf-8")
+    block = html[html.index("const CAR_GROUPS"):html.index("const VFOV")]
+    keys = set(re.findall(r'\["([a-z_]+)", "', block))
+    assert keys == set(CAR_FIELDS)

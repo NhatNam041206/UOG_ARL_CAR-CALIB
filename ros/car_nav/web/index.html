@@ -819,7 +819,8 @@ const CAR_GROUPS = [
     ["laser_pitch", "Pitch", "°", 1, true], ["laser_yaw", "Yaw (where its 0° mark points)", "°", 1, true, true]]],
   ["Camera", [
     ["camera_x", "x ahead of centre", "m", 0.01], ["camera_y", "y left of centre", "m", 0.01],
-    ["camera_z", "Height", "m", 0.01], ["camera_pitch_deg", "Pitch down", "°", 1], ["camera_yaw", "Yaw", "°", 1, true]]],
+    ["camera_z", "Height", "m", 0.01], ["camera_roll", "Roll", "°", 1, true], ["camera_pitch_deg", "Pitch down", "°", 1],
+    ["camera_yaw", "Yaw", "°", 1, true]]],
   ["Speed", [["cruise_speed_mps", "Cruise speed", "m/s", 0.05], ["max_wheel_speed_mps", "Max wheel speed", "m/s", 0.05]]],
 ];
 const VFOV = 45;
@@ -918,15 +919,19 @@ $("creset").onclick = async () => {
   try { await api("DELETE", "car/active", {}); cmsg("back to the shipped file; restarting…"); openCarTab(); }
   catch (e) { cmsg("Not applied: " + e.message); }
 };
+let carWasBusy = false, lastCarKey = "";
 function showCarState(c) {
   if (!c || tab !== "car") return;
   const busy = c.state === "restarting";
   $("capply").disabled = busy;
-  if (busy || c.state === "done") $("cmsg").textContent = c.detail;
+  const key = c.state + "|" + c.since;
+  if (key !== lastCarKey) {                      // say it once per change, never overwrite the user's messages
+    lastCarKey = key;
+    if (busy || c.state === "done") $("cmsg").textContent = c.detail;
+  }
   if (c.state === "done" && carWasBusy) { carWasBusy = false; openCarTab(); }
   if (busy) carWasBusy = true;
 }
-let carWasBusy = false;
 
 // -- drawings (monochrome lines; metres -> pixels with a fitted scale)
 function carCtx(id) {

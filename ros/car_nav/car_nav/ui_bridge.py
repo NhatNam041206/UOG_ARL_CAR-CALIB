@@ -871,6 +871,10 @@ class _ApiHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:  # noqa: D401 - silence per-request logs
         pass
 
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-cache")      # the page is small; always check for a new version
+        super().end_headers()
+
     def _json(self, code: int, data, filename: str | None = None) -> None:
         body = json.dumps(data, indent=1).encode("utf-8")
         self.send_response(code)
