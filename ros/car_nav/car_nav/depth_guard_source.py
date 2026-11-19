@@ -40,13 +40,13 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
 from .depth_memory import MemoryParams, ObstacleMemory
-from .depth_obstacles import (DepthParams, encode_xyz, obstacle_points, parse_cloud, points_to_polar)
+from .depth_obstacles import (DepthParams, encode_xyz, obstacle_points3, parse_cloud, points_to_polar)
 from .dynamic_obstacles import align_points, dynamic_points, static_mask
 from .timing import TimingStats
 
@@ -86,6 +86,11 @@ class DepthGuardSource(Node):
         self._camera = config_loader.camera_pose(cfg)
         fp = config_loader.footprint(cfg)
         self._x_front = fp.x_front
+        laser = config_loader.laser_pose(cfg)
+        self._laser = (laser.x, laser.y, laser.yaw)
+        self._lidar_z = laser.z
+        self._scan = None
+        self._scan_t = 0.0
         self._memory = ObstacleMemory(self._camera, fp.x_rear, MemoryParams(
             max_points=int(g("memory_max_points")), voxel_m=self._params.voxel_m,
             miss_frames=int(g("memory_miss_frames")), hfov_deg=float(g("hfov_deg")), vfov_deg=float(g("vfov_deg"))))
@@ -108,6 +113,7 @@ class DepthGuardSource(Node):
         self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
         self.create_subscription(String, "/ui/safety_params", self._on_ui, 10)
+        self.create_subscription(LaserScan, "/scan_nav", self._on_scan, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, str(g("topic")), self._timing.wrap("depth.cb", self._on_cloud),
                                  qos_profile_sensor_data)
         self.create_timer(0.5, self._publish_state, clock=Clock(clock_type=ClockType.STEADY_TIME))
@@ -143,6 +149,11 @@ class DepthGuardSource(Node):
                                        "max_range_m": gp.get("depth_max_range_m")})
         if changed:
             self.get_logger().info(f"depth params changed: { {k: getattr(self._params, k) for k in changed} }")
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        """The LiDAR (all obstacles above its plane): clears remembered TALL obstacles that left."""
+        self._scan = (np.asarray(msg.ranges, dtype=float), msg.angle_min, msg.angle_increment)
+        self._scan_t = time.monotonic()
 
     def _on_ui(self, msg: String) -> None:
         try:
@@ -187,15 +198,17 @@ class DepthGuardSource(Node):
         n = msg.width * msg.height
         raw = parse_cloud(bytes(msg.data), msg.point_step, (offs["x"], offs["y"], offs["z"]), n,
                           msg.is_bigendian, max(int(self.get_parameter("stride").value), 1))
-        pts = obstacle_points(raw, self._camera, self._params, bool(self.get_parameter("optical").value))
+        pts = obstacle_points3(raw, self._camera, self._params, bool(self.get_parameter("optical").value))
         n_found = int(pts.shape[0])
+        hts = pts[:, 2]
+        pts = pts[:, :2]
         mode = "off"
         if n_found and self.get_parameter("map_filter").value:
             pose = self._base_pose(msg.header.stamp) if self._mask is not None else None
             if pose is None:
                 mode = "no_map" if self._mask is None else "no_pose"
                 if self.get_parameter("fallback").value != "all":
-                    pts = pts[:0]
+                    pts, hts = pts[:0], hts[:0]
                 self.get_logger().warn(f"depth: {mode}, passing {self.get_parameter('fallback').value} points",
                                        throttle_duration_sec=5.0)
             else:
@@ -203,15 +216,18 @@ class DepthGuardSource(Node):
                 if self.get_parameter("align").value:
                     r, a = points_to_polar(pts)
                     pose = align_points(r, a, pose, self._thin, self._origin, self._res)
-                pts = pts[dynamic_points(pts, pose, self._mask, self._origin, self._res)]
+                dyn = dynamic_points(pts, pose, self._mask, self._origin, self._res)
+                pts, hts = pts[dyn], hts[dyn]
         n_live = int(pts.shape[0])
         if not self._mem_on:
             self._memory.clear()
         else:
             od = self._odom_pose()
             if od is not None:
-                pts = self._memory.update(pts, od[:3], now, self._params.min_height_m, self._params.max_range_m,
-                                          self._protect)
+                scan = self._scan if now - self._scan_t < 0.5 else None
+                pts = self._memory.update(np.column_stack([pts, hts]), od[:3], now, self._params.min_height_m,
+                                          self._params.max_range_m, self._protect, scan, self._laser,
+                                          self._lidar_z)
             elif len(self._memory):
                 self.get_logger().warn("depth memory: no odom pose, live points only",
                                        throttle_duration_sec=5.0)

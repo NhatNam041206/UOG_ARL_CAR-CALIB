@@ -147,3 +147,29 @@ def test_params_in_yaml_and_guard():
         assert k in nav["depth_obstacles"]["ros__parameters"]
     assert GuardParams().update({"depth_memory_enabled": False, "depth_memory_timeout_s": 5}) == \
         ["depth_memory_enabled", "depth_memory_timeout_s"]
+
+
+def _scan(hit_r=None, n=720):
+    """A full-circle LiDAR scan: nothing (inf) except one beam straight ahead at hit_r."""
+    r = np.full(n, np.inf)
+    if hit_r is not None:
+        r[n // 2] = hit_r            # angle_min = -pi: index n/2 is 0 rad
+    return (r, -np.pi, 2 * np.pi / n)
+
+
+def test_lidar_clears_a_tall_obstacle_that_left_but_never_a_low_one():
+    near = 0.9
+    for height, expect_left in ((1.0, 0), (H, 1)):       # person legs (taller than the LiDAR plane) / low box
+        mem = ObstacleMemory(CAM, FP.x_rear)
+        mem.update(np.array([[near, 0.0, height]]), (0.0, 0.0, 0.0), 0.0, 0.05, 3.0)
+        for k in range(5):                               # beam straight ahead returns nothing
+            out = mem.update(np.zeros((0, 2)), (0.0, 0.0, 0.0), 1.0 + k, 0.05, 3.0, None, _scan(None),
+                             (0.0, 0.0, 0.0), 0.24)
+        assert len(out) == expect_left
+    # something still there: the beam hits at the point's range -> kept
+    mem = ObstacleMemory(CAM, FP.x_rear)
+    mem.update(np.array([[near, 0.0, 1.0]]), (0.0, 0.0, 0.0), 0.0, 0.05, 3.0)
+    for k in range(5):
+        out = mem.update(np.zeros((0, 2)), (0.0, 0.0, 0.0), 1.0 + k, 0.05, 3.0, None, _scan(near + 0.05),
+                         (0.0, 0.0, 0.0), 0.24)
+    assert len(out) == 1

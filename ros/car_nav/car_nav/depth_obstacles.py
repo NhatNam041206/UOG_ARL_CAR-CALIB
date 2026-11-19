@@ -113,11 +113,31 @@ def voxel_downsample(xy: np.ndarray, voxel_m: float, min_cell_points: int = 1) -
     return means[cnt >= min_cell_points]
 
 
+def voxel_downsample_h(xyz: np.ndarray, voxel_m: float, min_cell_points: int = 1) -> np.ndarray:
+    """Like voxel_downsample for (N, 3) points: (M, 3) = cell mean x, y and the HIGHEST z in the cell."""
+    pts = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    if pts.shape[0] == 0:
+        return pts
+    ij = np.floor(pts[:, :2] / voxel_m).astype(np.int64)
+    _, inv, cnt = np.unique(ij, axis=0, return_inverse=True, return_counts=True)
+    inv = inv.reshape(-1)
+    sums = np.zeros((cnt.shape[0], 2))
+    np.add.at(sums, inv, pts[:, :2])
+    top = np.full(cnt.shape[0], -np.inf)
+    np.maximum.at(top, inv, pts[:, 2])
+    out = np.column_stack([sums / cnt[:, None], top])
+    return out[cnt >= min_cell_points]
+
+
+def obstacle_points3(cloud_cam: np.ndarray, camera: Pose3D, p: DepthParams, optical: bool = True) -> np.ndarray:
+    """Depth points (camera frame) -> obstacle cells (M, 3) in base_link: x, y, highest z in the cell."""
+    base = cloud_to_base(finite_points(cloud_cam), camera, optical)
+    return voxel_downsample_h(height_range_filter(base, p), p.voxel_m, p.min_cell_points)
+
+
 def obstacle_points(cloud_cam: np.ndarray, camera: Pose3D, p: DepthParams, optical: bool = True) -> np.ndarray:
     """Depth points (camera frame) -> 2D obstacle points (M, 2) in base_link."""
-    base = cloud_to_base(finite_points(cloud_cam), camera, optical)
-    kept = height_range_filter(base, p)
-    return voxel_downsample(kept[:, :2], p.voxel_m, p.min_cell_points)
+    return obstacle_points3(cloud_cam, camera, p, optical)[:, :2]
 
 
 def blind_distance(camera: Pose3D, vfov_deg: float, height_m: float = 0.05) -> float:
