@@ -128,6 +128,50 @@ The ports are open to the whole network the mini-PC is on: use it on the lab's o
 In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), then open
 `http://localhost:8080`.
 
+## Map modes (Load / Create / Unknown-flat)
+
+The web page's **Map** panel (and `POST /api/mode`) switches between three ways of knowing where the car is:
+
+| Mode | Localization | Global costmap | Use |
+|---|---|---|---|
+| **Load map** | `map_server` + AMCL (+ `pose_gate`) on a stored map; the map's default start pose (if set) is sent as `/initialpose` | static map + inflation | normal runs |
+| **Create map** | `slam_toolbox` (online async, `config/slam_toolbox.yaml`); the map grows live in the view; **Save map as...** stores it | static layer on the growing `/map` | mapping a new place |
+| **Unknown / flat** | none: `flat_origin` publishes `map -> odom` so that the car's pose at the start of the mode is `(0,0,0)` (x = the way it faces); the pose is odometry only | rolling 20 x 20 m window, LiDAR obstacle layer, no static layer (`config/nav2_flat_overrides.yaml`) | quick tests on an open floor |
+
+**What restarts.** `nav.launch.py` is the persistent part: `scan_upright`, `rf2o` / `adaptive_odom` (odom), `cmd_vel_to_control`,
+rosbridge and `ui_bridge` (the sensors and `ugv_serial_bridge` come from `car.launch.py`). The restartable part is
+`launch/nav_stack.launch.py` (`map_server`/AMCL/`pose_gate` or `slam_toolbox` or `flat_origin`, the Nav2 servers, PD follower,
+collision monitor, `dynamic_scan`, `safety_guard` and their lifecycle managers). `ui_bridge` runs it as a child process
+(`ros2 launch car_nav nav_stack.launch.py mode:=... map:=...`), stops it (SIGINT to its process group, then SIGTERM / SIGKILL)
+and starts it again on a switch. Meanwhile `ui_bridge` publishes zero `/cmd_vel` (and `cmd_vel_to_control` sends `0.000,0.000`
+0.5 s after `/cmd_vel` stops anyway), and `/ui/state` carries `mode: {mode, map, state, detail}` with state
+`idle | switching | starting | ready | error` (shown in the page header and the Map panel; the view shows a banner in
+Create and flat mode). `starting` ends when `lifecycle_manager_navigation` (and in Load mode `..._localization`) report active.
+A switch is refused (HTTP 409) while the wheel command is not 0, unless forced (the page asks). After a switch the guard
+parameters and E-STOP last set in the page, and the driving sliders, are sent again.
+
+**Stored maps** are `pgm + yaml + json` (note, default start pose) in `<data_dir>/maps/` (car `/data/nav/ui/maps`,
+simulator `run_logs/sim/ui/maps`). A map saved with `map_saver_cli` can simply be copied in. **Save map as...** writes
+the occupancy grid `ui_bridge` holds from `/map` itself (no extra service needed; unknown cells grey 205, `free_thresh 0.196`)
+with the car's pose at the start of Create as the default start pose. Load: list, load, rename, note, start pose (type it,
+"From current pose", or "Pick on map": load the map, drag where the car stands and faces), delete (not the loaded map).
+
+**Safety guard in flat mode.** There is no map, so `dynamic_scan` passes every LiDAR point on (`fallback: all`): anything
+in front of the car inside the guard zone, a wall included, counts as a person and stops / slows the car. Fine on an open
+floor; do not use it to drive along walls. The page shows a "FLAT MODE" banner. The pose has no correction: it drifts like
+the odometry (rf2o + learned speed).
+
+On the car: `car.launch.py` with no map arguments starts sensors, odometry, motors and the page, and waits for you to pick a
+mode. Old command lines still work: `map:=<yaml>` (Load), `slam:=true` (Create). New: `mode:=load map_name:=<stored name>`,
+`mode:=create`, `mode:=flat`. `ui:=false` starts the stack once, without switching.
+In the simulator: `scripts/sim/run_sim.sh ui` starts in Load on the world's map (stored as `<world>` on the first start with
+the world's start as its start pose); `ui mode:=flat` / `ui mode:=create` start in the other modes; all three switch in the
+page. Missions (`run_sim.sh mission ...`) are unchanged (`ui:=false`, Load).
+
+REST (besides profiles and tests): `GET /api/maps`, `GET|PUT|DELETE /api/maps/<name>` (PUT body `note`, `start_pose`
+`{x,y,yaw}` or `null`, `rename`), `POST /api/maps/<name>/load`, `POST /api/maps/save {name, note, overwrite}`,
+`GET /api/mode`, `POST /api/mode {mode: load|create|flat|idle, map, force}`.
+
 ## Safety guard (people in front)
 
 | Layer | Reads | Does |
