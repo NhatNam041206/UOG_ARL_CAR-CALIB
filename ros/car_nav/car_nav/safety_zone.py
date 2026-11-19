@@ -25,9 +25,9 @@ import numpy as np
 class GuardParams:
     enabled: bool = True
     danger_range_m: float = 0.6       # stop: this far past the nose
-    half_width_m: float = 0.35        # stop zone half width (car 0.135)
+    half_width_m: float = 0.45        # stop zone half width (car half width 0.30)
     slow_range_m: float = 1.5         # slow down: this far past the nose
-    slow_half_width_m: float = 0.5
+    slow_half_width_m: float = 0.65
     slow_ratio: float = 0.4           # speed share while something is in the slow zone
     fov_deg: float = 120.0            # only points within +-fov/2 of straight ahead (from the nose)
     turn_clear_m: float = 0.25        # turning on the spot: stop for anything this close to the front

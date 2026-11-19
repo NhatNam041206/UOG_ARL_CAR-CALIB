@@ -55,7 +55,7 @@ def load_world(name: str) -> dict:
 def load_footprint() -> dict:
     p = _first(CAR_YAMLS)
     if not p:
-        return {"x_front": 0.185, "x_rear": -0.185, "half_width": 0.135}
+        return {"x_front": 0.35, "x_rear": -0.35, "half_width": 0.30}
     with open(p, encoding="utf-8") as fh:
         return (yaml.safe_load(fh) or {}).get("footprint") or {}
 
@@ -140,7 +140,7 @@ def render(report_path: str, out_path: str) -> dict:
     note = "" if frames else ('<p class="warn">No trace in this report, so Play has nothing to show: the '
                               'sim image was built before the trace was added. Run '
                               '<code>scripts/sim/run_sim.sh build</code>, then the mission again.</p>')
-    car = {"xf": fp.get("x_front", 0.185), "xr": fp.get("x_rear", -0.185), "hw": fp.get("half_width", 0.135)}
+    car = {"xf": fp.get("x_front", 0.35), "xr": fp.get("x_rear", -0.35), "hw": fp.get("half_width", 0.30)}
     truth = rep.get("truth") or {}
     page = TEMPLATE.format(
         title=html.escape(title), W=W, H=H, svg="\n".join(svg), rows="\n".join(rows), note=note,

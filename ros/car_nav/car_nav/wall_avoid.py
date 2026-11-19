@@ -39,9 +39,9 @@ import numpy as np
 
 @dataclass(frozen=True)
 class AvoidParams:
-    x_front: float = 0.16          # footprint (car.yaml)
-    x_rear: float = -0.37
-    half_width: float = 0.135
+    x_front: float = 0.35          # footprint (car.yaml)
+    x_rear: float = -0.35
+    half_width: float = 0.30
     margin_m: float = 0.05          # extra clearance around the body
     horizon_m: float = 1.3          # how far ahead an arc must be clear (m of base_link travel)
     step_m: float = 0.1             # sampling along the arc

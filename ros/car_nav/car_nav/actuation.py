@@ -35,7 +35,7 @@ WHEELS_TOPIC = "/car/wheels/cmd"
 @dataclass(frozen=True)
 class DriveConfig:
     # Centre-to-centre distance between the left and right wheels (m).
-    track_width_m: float = 0.22
+    track_width_m: float = 0.52
     # Fastest a wheel is allowed to turn (m/s at the tread), both ways.
     max_wheel_speed_mps: float = 0.6
     # Nav2's cruise speed (pd_path_follower.speed_mps / RPP desired_linear_vel).
