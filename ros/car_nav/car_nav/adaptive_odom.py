@@ -129,6 +129,7 @@ class AdaptiveOdom(Node):
         """New car.yaml: laser yaw and drive geometry. The learned speed ratio and the pose stay."""
         self._drive = drive_from_cfg(cfg)
         self._laser_yaw = float(config_loader.laser_pose(cfg).yaw)
+        self._prev_rf2o = None       # rf2o may be restarted (new LiDAR mount): its odometry starts again at 0
 
     # ---------------------------------------------------------------- inputs
     def _now(self) -> float:

@@ -175,7 +175,11 @@ is already restarting, in Create mode while a map is being built (unless `force`
    pose before the restart is sent to AMCL as the initial pose (the car did not move); in **Flat** mode the origin restarts at the
    current pose (goals are relative to it); **Create** mode loses the unsaved map (hence the `force`).
 
-**Not restarted** (they do not read the Car tab's values): `rf2o` / `sllidar_node` / Astra drivers, `ugv_serial_bridge` (reads `ugv.*`,
+`rf2o` reads the `laser_upright -> base_link` TF once, at its first scan, so when the Apply moved the LiDAR (x, y or yaw changed) `ui_bridge`
+stops the `rf2o_laser_odometry_node` process (SIGTERM, found in /proc) and `nav.launch.py` starts it again (`respawn=True`, 1 s);
+`adaptive_odom` drops its previous rf2o sample on the reload, and the car is stopped, so the restart does not move the pose.
+
+**Not restarted** (they do not read the Car tab's values): `sllidar_node` / Astra drivers, `ugv_serial_bridge` (reads `ugv.*`,
 which the tab does not edit: restart the container after changing those), rosbridge. The Nav2 costmap footprint and inflation values
 are in `nav2_params.yaml` (not generated from `car.yaml`): after changing the body size also change `footprint` there
 (`tests/test_car_nav_nav2_params.py` checks the two agree). The simulator's truth model (`sim.yaml truth:`) and the Gazebo world

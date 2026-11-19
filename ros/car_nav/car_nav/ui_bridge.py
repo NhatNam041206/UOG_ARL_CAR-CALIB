@@ -115,6 +115,27 @@ START_ATTEMPTS = 3
 DRIVE_KEYS = ("speed_mps", "max_yaw_rate_rps", "lat_accel_mps2", "kp", "kd")
 
 
+def stop_processes(name: str) -> int:
+    """SIGTERM every process of this computer whose command line contains `name` (Linux /proc); returns how many."""
+    import signal
+
+    n = 0
+    if not os.path.isdir("/proc"):
+        return 0
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+            if name in cmd and "ros2 launch" not in cmd:
+                os.kill(int(pid), signal.SIGTERM)
+                n += 1
+        except (OSError, ValueError):
+            continue
+    return n
+
+
 def _yaw(q) -> float:
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
@@ -804,6 +825,7 @@ class UiBridge(Node):
         if why:
             raise RuntimeError(why)
         res = {"path": self._car_file.path()}
+        old_laser = self._static.get("laser")
         if reset:
             res["backup"] = self._car_file.reset()
         else:
@@ -818,6 +840,11 @@ class UiBridge(Node):
                                f"{res.get('path')}, backup {res.get('backup')}")
         # 1) the persistent nodes re-read it in place (static TFs, scan mask, drive mapper, odometry, sim)
         self._reload_pub.publish(String(data=self._car_file.path()))
+        new_laser = self._static.get("laser")
+        if old_laser is not None and any(abs(a - b) > 1e-6 for a, b in zip(old_laser, new_laser)):
+            # rf2o keeps the laser -> base_link transform it read at its first scan: restart it (launch respawns it)
+            self.get_logger().info(f"LiDAR mount changed {old_laser} -> {new_laser}: restarting rf2o")
+            res["rf2o_restarted"] = stop_processes("rf2o_laser_odometry_node")
         cruise = float((cfg.get("drive") or {}).get("cruise_speed_mps", 0.4))
         self.set_drive({"speed_mps": cruise})
         # 2) the restartable stack (guard, follower, dynamic_scan, depth, Nav2) is started again with the new file
