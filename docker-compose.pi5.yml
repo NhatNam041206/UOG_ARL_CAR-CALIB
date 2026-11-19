@@ -152,7 +152,7 @@ services:
       # Skid-steer car: the ugv-controller ESP32-C3 (USB CDC, 303a:1001). Only
       # ugv_serial_bridge (car.launch.py) writes to it. Find the stable path
       # with `ls -l /dev/serial/by-id/` and set UGV_DEVICE in .env.
-      - ${UGV_DEVICE:-/dev/ttyACM0}:/dev/ugv
+      - "${UGV_DEVICE:-/dev/ttyACM0}:/dev/ugv:rwm"   # rwm: the bridge reads and writes the port
     # Astra Pro depth (2bc5:0403) and colour (2bc5:0501) are read over
     # libusb/libuvc, so the container needs the USB bus (char major 189),
     # but no /dev/videoN node: the lane camera stays invisible as V4L2.
