@@ -46,10 +46,12 @@ def _setup(context, *args, **kwargs):
         )))
     laser = config_loader.laser_pose(cfg)
     camera = config_loader.camera_pose(cfg)
-    actions.append(_static_tf("tf_base_to_laser", "base_link", "laser", laser))
-    actions.append(_static_tf("tf_base_to_camera", "base_link", "camera_link", camera))
+    # one node for both mounts: it publishes the changed transforms again when the web UI's Car tab
+    # applies a new car.yaml (/car_config/reload)
+    actions.append(Node(package="car_nav", executable="car_tf_publisher", name="car_tf_publisher",
+                        output="screen", parameters=[{"frames": ["laser", "camera_link"]}]))
     actions.append(LogInfo(msg=(
-        f"[car_nav] laser z={laser.z} roll={laser.roll:.3f} (upside down); "
+        f"[car_nav] laser z={laser.z} roll={laser.roll:.3f} ({'upside down' if abs(laser.roll) > 1.0 else 'upright'}); "
         f"camera z={camera.z} pitch={math.degrees(camera.pitch):.1f} deg down"
     )))
     return actions
@@ -81,8 +83,9 @@ def generate_launch_description() -> LaunchDescription:
                 "serial_port": lidar_port,
                 "serial_baudrate": 115200,  # RPLIDAR A1
                 "frame_id": "laser",
-                # Upside-down mount is handled by roll = pi in the TF only.
-                # Setting this too would cancel the correction out.
+                # The A1 is mounted upright (car.yaml roll 0). An upside-down
+                # mount would be handled by roll = pi in the TF only: setting
+                # this too would cancel the correction out.
                 "inverted": False,
                 "angle_compensate": True,
             }],

@@ -5,8 +5,8 @@
 For every goal it records: Nav2 result, time, distance driven, smallest
 clearance between the car's footprint and any obstacle (0 = collision),
 final position / heading error, and the worst localisation error (AMCL
-pose vs. true pose). It also counts how often the steering command sat at
-a servo limit. The report is written as JSON and summarised in the log;
+pose vs. true pose). It also counts how often a wheel command sat at the
+wheel speed limit and how often the car turned on the spot. The report is written as JSON and summarised in the log;
 the process exits 0 only if every goal succeeded without a collision.
 """
 from __future__ import annotations
@@ -20,9 +20,9 @@ import time
 import rclpy
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseArray, PoseStamped, PoseWithCovarianceStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 
 try:  # Jazzy nav2_msgs
     from nav2_msgs.msg import CollisionMonitorState
@@ -32,10 +32,10 @@ from std_msgs.msg import String
 import yaml
 
 from car_nav import config_loader
-from car_nav.actuation import parse_payload
+from car_nav.actuation import WHEELS_TOPIC, drive_from_cfg, parse_payload
 
 from . import sim_config
-from .world import World, footprint_polygon
+from .world import World, _point_in_polygon, _point_seg_distance, footprint_polygon
 
 
 TRACE_DT = 0.5
@@ -69,17 +69,28 @@ def _pose(nav: BasicNavigator, x: float, y: float, yaw: float) -> PoseStamped:
     return p
 
 
+def person_clearance(poly, actors) -> float:
+    """Smallest gap between the car outline and any actor circle (0 = touching, inf = none)."""
+    best = math.inf
+    segs = [(*poly[i], *poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+    for x, y, r in actors:
+        if _point_in_polygon(x, y, poly):
+            return 0.0
+        best = min(best, max(0.0, min(_point_seg_distance(x, y, sg) for sg in segs) - r))
+    return best
+
+
 class Tracker:
-    def __init__(self, world: World, footprint, steer_cfg: dict) -> None:
+    def __init__(self, world: World, footprint, drive) -> None:
         self.world = world
         self.fp = footprint
-        self.servo_min = float(steer_cfg.get("servo_min", 35))
-        self.servo_max = float(steer_cfg.get("servo_max", 140))
+        self.wheel_max = float(drive.max_wheel_speed_mps)
         self.truth = None
         self.amcl = None
         self.tf = None  # tf2 Buffer, set in main(): map -> base_link is what Nav2 drives by
         self._loc_t = -math.inf
         self.start = None  # true pose when the odom frame was born (first truth msg)
+        self.actors = []   # [(x, y, r), ...] from /sim/actors
         self.reset()
 
     def reset(self) -> None:
@@ -89,6 +100,7 @@ class Tracker:
         self.n_cmd = 0
         self.n_sat = 0
         self.n_forward = 0
+        self.n_spin = 0
         self.max_odom_drift = 0.0
         self.cm = {}  # collision monitor action -> number of state messages
         self.n_cm = 0
@@ -97,6 +109,8 @@ class Tracker:
         self._trace_t = -math.inf
         self.last_cmd = None
         self.cm_state = ""
+        self.plan = []  # latest global plan [(x, y), ...] (every 5th pose)
+        self.min_person = math.inf  # smallest gap car outline <-> any actor (person), 0 = hit
 
     def on_truth(self, msg: Odometry) -> None:
         p = msg.pose.pose
@@ -110,6 +124,8 @@ class Tracker:
         poly = footprint_polygon(x, y, th, self.fp.x_front, self.fp.x_rear, self.fp.half_width)
         clear = self.world.clearance(poly)
         self.min_clear = min(self.min_clear, clear)
+        person = person_clearance(poly, self.actors)
+        self.min_person = min(self.min_person, person)
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if t - self._loc_t >= 0.1:
             self._loc_t = t
@@ -120,9 +136,13 @@ class Tracker:
             self._trace_t = t
             e = self.estimate()
             est = [round(e[0], 2), round(e[1], 2), round(math.degrees(e[2]))] if e else None
+            plan_d = min((math.hypot(px - x, py - y) for px, py in self.plan), default=None)
             self.trace.append({
                 "t": round(t, 1), "true": [round(x, 2), round(y, 2), round(math.degrees(th))],
                 "est": est, "cmd": self.last_cmd, "cm": self.cm_state, "clear": round(clear, 2),
+                # distance from the TRUE pose to the latest global plan
+                "plan_d": None if plan_d is None else round(plan_d, 2),
+                "person": None if math.isinf(person) else round(person, 2),
             })
 
     def estimate(self):
@@ -136,6 +156,13 @@ class Tracker:
             except Exception:  # noqa: BLE001 - TF not ready yet
                 pass
         return self.amcl
+
+    def on_actors(self, msg: PoseArray) -> None:
+        self.actors = [(p.position.x, p.position.y, p.position.z) for p in msg.poses]
+
+    def on_plan(self, msg: Path) -> None:
+        pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
+        self.plan = pts[::5] + pts[-1:] if pts else []
 
     def on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         p = msg.pose.pose
@@ -163,13 +190,16 @@ class Tracker:
         parsed = parse_payload(msg.data)
         if parsed is None:
             return
-        angle, code = parsed
+        left, right = parsed
         self.last_cmd = msg.data
         self.n_cmd += 1
-        if code == 1:
+        v = 0.5 * (left + right)
+        if v > 0.01:
             self.n_forward += 1
-            if angle <= self.servo_min or angle >= self.servo_max:
+            if max(abs(left), abs(right)) >= self.wheel_max - 1e-3:
                 self.n_sat += 1
+        elif abs(right - left) > 0.01:
+            self.n_spin += 1
 
 
 def main() -> None:
@@ -180,14 +210,18 @@ def main() -> None:
     nav.declare_parameter("localizer", "amcl")  # "amcl" or "slam"
     nav.declare_parameter("start", [0.0])
     nav.declare_parameter("odom_source", "")
+    nav.declare_parameter("depth", False)
     mission_path = sim_config.resolve("missions", nav.get_parameter("mission").value)
     with open(mission_path, "r", encoding="utf-8") as fh:
         mission = yaml.safe_load(fh) or {}
     world = World.load(sim_config.resolve("worlds", mission.get("world", "test_floor")))
+    # objects that are not in the map (low boxes ...): they count for the clearance / collision score
+    # whatever their height, the car's body is in their way
+    n_extra = world.add_extras(mission)
     start_param = list(nav.get_parameter("start").value)
     start = start_param if len(start_param) == 3 else (mission.get("start") or world.start)
     car = config_loader.load()
-    tracker = Tracker(world, config_loader.footprint(car), car.get("steering") or {})
+    tracker = Tracker(world, config_loader.footprint(car), drive_from_cfg(car))
     tracker.tf = Buffer()
     # Own thread: the mission loop spins `nav` only between isTaskComplete() polls, so a
     # listener on it fell seconds behind and the "est" pose / localisation error lagged
@@ -195,8 +229,10 @@ def main() -> None:
     _tf_listener = TransformListener(tracker.tf, nav, spin_thread=True)  # noqa: F841
     nav.create_subscription(Odometry, "/sim/ground_truth", tracker.on_truth, 20)
     nav.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", tracker.on_amcl, 10)
-    nav.create_subscription(String, "/car/raspi5/control", tracker.on_control, 50)
+    nav.create_subscription(String, WHEELS_TOPIC, tracker.on_control, 50)
     nav.create_subscription(Odometry, "/odom", tracker.on_odom, 20)
+    nav.create_subscription(Path, "/plan", tracker.on_plan, 5)
+    nav.create_subscription(PoseArray, "/sim/actors", tracker.on_actors, 10)
     if CollisionMonitorState is not None:
         nav.create_subscription(CollisionMonitorState, "/collision_monitor_state", tracker.on_cm, 20)
 
@@ -248,12 +284,15 @@ def main() -> None:
             "time_s": round(sim_dt, 2),
             "distance_m": round(tracker.dist, 2),
             "min_clearance_m": round(tracker.min_clear, 3),
-            "collision": tracker.min_clear <= 0.0,
+            "collision": tracker.min_clear <= 0.0 or tracker.min_person <= 0.0,
+            # smallest gap to a moving person (actors in the mission file); null = no actors
+            "min_person_clearance_m": None if math.isinf(tracker.min_person) else round(tracker.min_person, 3),
             "final_xy_error_m": round(math.hypot(tx - gx, ty - gy), 3),
             "final_yaw_error_deg": round(math.degrees(abs(_wrap(tth - gyaw))), 1),
             "max_localization_error_m": round(tracker.max_loc_err, 3),
-            "steer_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
+            "wheel_saturated_share": round(tracker.n_sat / tracker.n_forward, 3) if tracker.n_forward else 0.0,
             "forward_share": round(tracker.n_forward / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
+            "spin_share": round(tracker.n_spin / tracker.n_cmd, 3) if tracker.n_cmd else 0.0,
             "max_odom_drift_m": round(tracker.max_odom_drift, 3),
             "collision_monitor": tracker.cm,
             "true_end_pose": [round(tx, 3), round(ty, 3), round(math.degrees(tth), 1)],
@@ -263,7 +302,12 @@ def main() -> None:
         results.append(entry)
         nav.get_logger().info(f"goal {i + 1}: {json.dumps({k: v for k, v in entry.items() if k != 'trace'})}")
 
-    ok = bool(results) and all(r["result"] == "SUCCEEDED" and not r["collision"] for r in results)
+    # timeout_ok: true (missions where stopping in front of the obstacle IS the pass, e.g. low_box):
+    # a goal that was not reached still passes as long as nothing was hit
+    timeout_ok = bool(mission.get("timeout_ok", False))
+    ok = bool(results) and all(
+        not r["collision"] and (r["result"] == "SUCCEEDED" or (timeout_ok and r["result"] in ("TIMEOUT", "CANCELED", "FAILED")))
+        for r in results)
     report = {
         "mission": os.path.basename(mission_path),
         "world": world.name,
@@ -272,6 +316,9 @@ def main() -> None:
         "car_yaml": car.get("_path"),
         "sim_yaml": sim_config.load_sim().get("_path"),
         "truth": sim_config.load_sim().get("truth"),
+        "depth": bool(nav.get_parameter("depth").value),
+        "extra_obstacles": n_extra,
+        "timeout_ok": timeout_ok,
         "passed": ok,
         "goals": results,
     }

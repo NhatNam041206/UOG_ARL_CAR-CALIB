@@ -87,3 +87,17 @@ def test_initialpose_retry_stops_when_amcl_answers_after_it():
     assert not r.due(20.0) and not r.gave_up
     r.on_initialpose(30.0)                        # a new initial pose starts a new wait
     assert r.due(32.0) and r.tries == 1
+
+
+def test_turning_on_the_spot_takes_only_the_heading():
+    from car_nav.localization_gate import compose, gate_correction
+    mo = (0.0, 0.0, 0.0)
+    # corridor along y; mid-turn the car faces across it (east), so AMCL's
+    # 1.2 m slide along the corridor is "sideways" and would be taken
+    odom = (5.0, 0.0, 0.0)
+    amcl = (5.0, 1.2, 0.03)
+    step = gate_correction(mo, odom, amcl, w=0.0, hold_position=True)
+    pose = compose(step.map_odom, odom)
+    assert abs(pose[0] - 5.0) < 1e-9 and abs(pose[1]) < 1e-9 and abs(pose[2] - 0.03) < 1e-9
+    free = gate_correction(mo, odom, amcl, w=0.0)
+    assert abs(compose(free.map_odom, odom)[1] - 1.2) < 0.01   # without the hold the slide is taken

@@ -13,9 +13,14 @@ Arguments:
                F.218, F.203, ...); '' = the world's start. Ignored with a mission.
   mission      mission name in missions/ ('' = drive by hand in RViz)
   odom_source  adaptive (rf2o + learned speed, like the car) | rf2o | truth (perfect odometry)
-  slam         true = build the map with slam_toolbox instead of AMCL on the known map
+  slam         true = build the map with slam_toolbox instead of AMCL on the known map (= mode:=create)
+  mode         load | create | flat: the map mode at start ('' = load, or create with slam:=true).
+               With ui:=true all three can be switched in the web page; the world's map is
+               stored as map "<world>" on the first start so Load has something to load.
   rviz, gui    show RViz / the Gazebo window
   report_dir   where mission reports go                      [/data/sim]
+  depth        true = the simulated depth camera (sim.yaml depth:) feeds the safety guard: low boxes
+               under the LiDAR plane (a mission's extra_obstacles) are seen        [false]
   seed         LiDAR noise / dropout random seed (lite)      [1]
 """
 from __future__ import annotations
@@ -42,6 +47,7 @@ from launch_ros.actions import Node
 from car_nav import config_loader
 from car_nav_sim import sim_config
 from car_nav_sim.make_world import build
+from car_nav_sim.world import World
 
 OUT_DIR = os.environ.get("CAR_NAV_SIM_OUT", "/tmp/car_nav_sim")
 
@@ -81,7 +87,9 @@ def _setup(context, *args, **kwargs):
     backend = arg("backend")
     mission = arg("mission")
     odom_source = arg("odom_source")
-    slam = arg("slam").lower() == "true"
+    mode = arg("mode").lower() or ("create" if arg("slam").lower() == "true" else "load")
+    slam = mode == "create"
+    ui = arg("ui").lower() == "true"
     world_name = arg("world")
     start = None
     if mission:
@@ -93,19 +101,17 @@ def _setup(context, *args, **kwargs):
         start = _start_pose(world_name, arg("start"))
     map_yaml, sdf_path = build(world_name, OUT_DIR, start)
     start_param = [float(v) for v in start] if start else [0.0]
+    start_xyyaw = start_param if len(start_param) == 3 else list(World.load(
+        sim_config.resolve("worlds", world_name)).start)
     sim_time = {"use_sim_time": True}
 
     car = config_loader.load()
-    laser = config_loader.laser_pose(car)
     actions = [
         LogInfo(msg=f"[sim] backend={backend} world={world_name} mission={mission or '(none)'} "
-                    f"odom={odom_source} slam={slam} map={map_yaml}"),
+                    f"odom={odom_source} mode={mode} map={map_yaml}"),
         LogInfo(msg=f"[sim] car.yaml={car['_path']} sim.yaml={sim_config.load_sim()['_path']}"),
-        Node(package="tf2_ros", executable="static_transform_publisher", name="tf_base_to_laser",
-             arguments=["--x", f"{laser.x}", "--y", f"{laser.y}", "--z", f"{laser.z}",
-                        "--roll", f"{laser.roll}", "--pitch", f"{laser.pitch}", "--yaw", f"{laser.yaw}",
-                        "--frame-id", "base_link", "--child-frame-id", "laser"],
-             parameters=[sim_time]),
+        Node(package="car_nav", executable="car_tf_publisher", name="car_tf_publisher", output="screen",
+             parameters=[{"use_sim_time": True, "frames": ["laser"]}]),
         # The sim's "world" frame IS the map frame (the map is rasterised from the world),
         # so RViz can draw the true pose (/sim/ground_truth, frame world) next to AMCL's.
         Node(package="tf2_ros", executable="static_transform_publisher", name="tf_map_to_world",
@@ -117,7 +123,8 @@ def _setup(context, *args, **kwargs):
     if backend == "lite":
         actions.append(Node(package="car_nav_sim", executable="lite_sim", name="lite_sim", output="screen",
                             parameters=[{"world": world_name, "start": start_param,
-                                         "seed": int(arg("seed"))}]))
+                                         "seed": int(arg("seed")), "mission": mission,
+                                         "depth": arg("depth").lower() == "true"}]))
     elif backend == "gazebo":
         gz_args = ["gz", "sim", "-r", sdf_path]
         if arg("gui").lower() != "true":
@@ -148,18 +155,30 @@ def _setup(context, *args, **kwargs):
             os.path.join(get_package_share_directory("car_nav"), "launch", "nav.launch.py")),
         launch_arguments={
             "use_sim_time": "true",
-            "map": "" if slam else map_yaml,
-            "slam": "true" if slam else "false",
+            "mode": mode,
+            # a mission (or no UI) loads the rasterised world directly; the UI loads it from its
+            # map store (seeded below) so the stored start pose is sent to AMCL
+            "map": map_yaml if (mission or not ui) else "",
+            "map_name": world_name if (ui and not mission) else "",
+            "ui_seed_map": map_yaml,
+            "ui_seed_name": world_name,
+            "ui_seed_start": ",".join(f"{v:.3f}" for v in start_xyyaw),
             "odom_source": odom_source if odom_source in ("rf2o", "adaptive") else "external",
             "controller": arg("controller"),
             "pose_gate": arg("pose_gate"),
             # the laptop's odometry often runs ~1.1 s behind (log 2026-11-12): do not stop for that
             "max_pose_age_s": arg("max_pose_age_s"),
+            "ui": arg("ui"),
+            "depth": arg("depth"),
+            # the mounted source: edits to web/index.html show on reload, no rebuild
+            "ui_web_dir": "/ws/src/car_nav/web",
+            "ui_data_dir": "/data/sim/ui",    # = run_logs/sim/ui on the laptop
         }.items(),
     ))
 
-    if not mission and not slam:
-        # Driving by hand in RViz: give AMCL the true start (the mission runner does this itself).
+    if not mission and mode == "load" and not ui:
+        # Driving by hand in RViz: give AMCL the true start (the mission runner does this itself;
+        # with the web UI the stored start pose of the map is sent on Load).
         actions.append(Node(package="car_nav_sim", executable="initial_pose", name="sim_initial_pose",
                             output="screen", parameters=[{"use_sim_time": True, "world": world_name,
                                                           "start": start_param}]))
@@ -174,6 +193,7 @@ def _setup(context, *args, **kwargs):
                       parameters=[{"use_sim_time": True, "mission": mission, "report_dir": arg("report_dir"),
                                    "localizer": "slam" if slam else "amcl",
                                    "odom_source": odom_source,
+                                   "depth": arg("depth").lower() == "true",
                                    "start": start_param}])
         actions.append(runner)
         if arg("exit_after_mission").lower() == "true":
@@ -194,10 +214,14 @@ def generate_launch_description() -> LaunchDescription:
                               description="true: hold back AMCL along-corridor corrections in blind corridors"),
         DeclareLaunchArgument("max_pose_age_s", default_value="1.5"),
         DeclareLaunchArgument("slam", default_value="false"),
+        DeclareLaunchArgument("mode", default_value="", description="load | create | flat ('' = load, create with slam:=true)"),
         DeclareLaunchArgument("rviz", default_value="false"),
+        DeclareLaunchArgument("ui", default_value="false", description="web UI (run_sim.sh ui)"),
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("report_dir", default_value="/data/sim"),
         DeclareLaunchArgument("exit_after_mission", default_value="true"),
+        DeclareLaunchArgument("depth", default_value="false",
+                              description="true: simulated depth camera + the safety guard uses it (lite backend)"),
         DeclareLaunchArgument("seed", default_value="1", description="LiDAR noise seed (lite backend)"),
         OpaqueFunction(function=_setup),
     ])

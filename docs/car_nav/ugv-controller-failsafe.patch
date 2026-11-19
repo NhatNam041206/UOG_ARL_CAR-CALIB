@@ -1,0 +1,42 @@
+--- a/main/main.c
++++ b/main/main.c
+@@ -48,6 +48,9 @@
+ 
+ #define IMU_PERIOD_US        100000   // gửi dữ liệu IMU mỗi 100 ms (10 Hz)
+ #define PIP_DURATION_US      2000000  // 2 giây
++// Failsafe: motors stop when no '<left> <right>' command arrived for this long
++// (USB unplugged, the computer or NAV2 hangs). The NAV2 bridge sends at 20 Hz.
++#define CMD_TIMEOUT_US       500000   // 0.5 giây
+ 
+ #define LEDC_TIMER      LEDC_TIMER_0
+ #define LEDC_MODE       LEDC_LOW_SPEED_MODE
+@@ -66,6 +69,7 @@
+ static int g_left_speed = 0;
+ static int g_right_speed = 0;
+ static int64_t g_boot_time_us = 0;
++static int64_t g_last_cmd_us = 0;   // last motor command (esp_timer time)
+ 
+ static uint8_t g_mpu_addr = MPU6050_ADDR_LOW;
+ static bool g_imu_ok = false;
+@@ -374,6 +378,7 @@
+     }
+ 
+     if (sscanf(line, "%d %d", &left, &right) == 2) {
++        g_last_cmd_us = esp_timer_get_time();
+         apply_speed(left, right);
+     } else {
+         usb_printf("ERR: expected '<left> <right>' (e.g. '200 -300') or 'stop'\n");
+@@ -452,6 +457,13 @@
+             }
+         }
+ 
++        // Failsafe: no motor command for CMD_TIMEOUT_US while moving -> stop
++        if ((g_left_speed != 0 || g_right_speed != 0) &&
++            esp_timer_get_time() - g_last_cmd_us > CMD_TIMEOUT_US) {
++            apply_speed(0, 0);
++            usb_printf("FAILSAFE: no command for %d ms, motors stopped\n", CMD_TIMEOUT_US / 1000);
++        }
++
+         // Thông báo PIP tắt (được đặt cờ từ timer callback)
+         if (g_pip_off_pending) {
+             g_pip_off_pending = false;

@@ -9,7 +9,7 @@ inner corner of a left turn made it steer right, sim 2026-11-14 goal 2).
 So instead it tries the drive out before it happens:
 
   1. Take the curvature the PD wants and sweep the car's footprint (nose,
-     sides AND the rear, which swings out on this rear-steered car) along
+     sides AND the rear, which swings out when the car turns about its centre) along
      that arc for horizon_m metres (the distance covered in the command
      delay plus a margin). If no scan point falls inside the swept body
      (+ margin), the PD drives: the layer does nothing, however close a
@@ -39,11 +39,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class AvoidParams:
-    x_front: float = 0.16          # footprint (car.yaml)
-    x_rear: float = -0.37
-    half_width: float = 0.135
+    x_front: float = 0.35          # footprint (car.yaml)
+    x_rear: float = -0.35
+    half_width: float = 0.30
     margin_m: float = 0.05          # extra clearance around the body
-    horizon_m: float = 1.3          # how far ahead an arc must be clear (m of front-axle travel)
+    horizon_m: float = 1.3          # how far ahead an arc must be clear (m of base_link travel)
     step_m: float = 0.1             # sampling along the arc
     release_factor: float = 1.3     # PD arc must be clear this x horizon to hand back
     max_left: float = 1.33          # candidate arcs span [-max_right, +max_left] (1/m)
@@ -160,3 +160,22 @@ class ArcAvoider:
                 best = key
         self.override_k = best[2]
         return ArcChoice(best[2], True, pd_free, best[0])
+
+
+def spin_radius(x_front: float, x_rear: float, half_width: float) -> float:
+    """Radius of the circle the farthest body corner sweeps when the car turns on
+    the spot about base_link (0.46 m for a 0.70 x 0.60 m body centred on it)."""
+    return math.hypot(max(abs(x_front), abs(x_rear)), half_width)
+
+
+def spin_clear(points, radius: float, margin_m: float = 0.04) -> tuple[bool, float]:
+    """Can the car turn on the spot? (clear, nearest scan point distance from base_link).
+
+    The body corners sweep a circle of `radius` about base_link, so any scan
+    point closer than radius + margin_m is in the way, whichever way it turns.
+    Points on the car itself must already be masked (scan_self_mask)."""
+    pts = _as_array(points)
+    if pts.shape[0] == 0:
+        return True, math.inf
+    nearest = float(np.sqrt((pts[:, 0] ** 2 + pts[:, 1] ** 2).min()))
+    return nearest >= radius + margin_m, nearest

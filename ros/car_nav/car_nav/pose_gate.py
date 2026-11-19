@@ -25,6 +25,7 @@ import time
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
@@ -58,6 +59,10 @@ class PoseGate(Node):
         p("reseed_sigma_yaw_rad", 0.05)
         p("initialpose_retry_s", 2.0)        # resend the initial pose until AMCL answers (0 = off)
         p("initialpose_retry_max", 10)
+        # skid-steer: hold AMCL's position corrections while turning on the spot
+        p("spin_hold_rate_rps", 0.3)      # |omega| above this with |v| below spin_hold_speed_mps = spinning
+        p("spin_hold_speed_mps", 0.08)
+        p("spin_hold_after_s", 1.0)       # keep holding this long after the turn
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._map, self._odom, self._base = g("global_frame"), g("odom_frame"), g("base_frame")
         self._tf = Buffer()
@@ -78,6 +83,8 @@ class PoseGate(Node):
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._timing.wrap("gate.amcl_cb", self._on_amcl), 10)
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initialpose, 10)
         self.create_subscription(Float32, "/scan_observability", self._on_obs, 10)
+        self._spin_t = -1e9
+        self.create_subscription(Odometry, "/odom", self._on_odom, 20)
         self.create_timer(1.0 / float(g("publish_rate_hz")), self._timing.wrap("gate.tf_timer", self._publish_tf))
         if self._f("initialpose_retry_s") > 0.0:
             self.create_timer(0.5, self._retry_initialpose)
@@ -86,6 +93,14 @@ class PoseGate(Node):
 
     def _f(self, name: str) -> float:
         return float(self.get_parameter(name).value)
+
+    def _on_odom(self, msg: Odometry) -> None:
+        tw = msg.twist.twist
+        if abs(tw.angular.z) > self._f("spin_hold_rate_rps") and abs(tw.linear.x) < self._f("spin_hold_speed_mps"):
+            self._spin_t = time.monotonic()
+
+    def _spinning(self) -> bool:
+        return time.monotonic() - self._spin_t <= self._f("spin_hold_after_s")
 
     def _on_obs(self, msg: Float32) -> None:
         self._w, self._w_t = float(msg.data), time.monotonic()
@@ -141,9 +156,10 @@ class PoseGate(Node):
         q = msg.pose.pose
         amcl = (q.position.x, q.position.y, _yaw(q.orientation))
         w = self._observability()
-        step = gate_correction(self._map_odom, odom, amcl, w, self._f("obs_full"))
+        spinning = self._spinning() and self._map_odom is not None
+        step = gate_correction(self._map_odom, odom, amcl, w, self._f("obs_full"), hold_position=spinning)
         self._map_odom = step.map_odom
-        held = (1.0 - step.taken) * step.along
+        held = 0.0 if spinning else (1.0 - step.taken) * step.along
         self._held_back = held
         out = PoseWithCovarianceStamped()
         out.header = msg.header

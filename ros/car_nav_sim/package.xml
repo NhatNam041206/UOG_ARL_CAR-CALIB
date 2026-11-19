@@ -3,7 +3,7 @@
 <package format="3">
   <name>car_nav_sim</name>
   <version>0.1.0</version>
-  <description>Simulator for the car_nav NAV2 mode: rear-steer car with an upside-down RPLIDAR, Gazebo Harmonic or a lightweight 2D backend, mission scoring.</description>
+  <description>Simulator for the car_nav NAV2 mode: skid-steer car with an upright RPLIDAR, Gazebo Harmonic or a lightweight 2D backend, mission scoring.</description>
   <maintainer email="noreply@example.com">car-calib</maintainer>
   <license>MIT</license>
 

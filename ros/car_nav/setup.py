@@ -14,10 +14,11 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/behavior_trees", glob("behavior_trees/*.xml")),
+        ("share/" + package_name + "/web", glob("web/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
-    description="NAV2 mode sensor bring-up for the car-calib rear-steer car",
+    description="NAV2 mode sensor bring-up for the car-calib skid-steer car",
     license="MIT",
     entry_points={
         "console_scripts": [
@@ -29,6 +30,13 @@ setup(
             "pd_path_follower = car_nav.pd_path_follower:main",
             "adaptive_odom = car_nav.adaptive_odom:main",
             "pose_gate = car_nav.pose_gate:main",
+            "ugv_serial_bridge = car_nav.ugv_serial_bridge:main",
+            "dynamic_scan = car_nav.dynamic_scan:main",
+            "safety_guard = car_nav.safety_guard:main",
+            "depth_guard_source = car_nav.depth_guard_source:main",
+            "ui_bridge = car_nav.ui_bridge:main",
+            "flat_origin = car_nav.flat_origin:main",
+            "car_tf_publisher = car_nav.car_tf_publisher:main",
         ],
     },
 )

@@ -1,4 +1,4 @@
-# Clockwise loop: every corner is a RIGHT turn (the weak side, ~27 deg servo).
+# Clockwise loop: every corner is a RIGHT turn.
 world: test_floor
 goal_timeout_s: 90
 # Goals sit on straight stretches at least ~1.3 m after a turn: the car

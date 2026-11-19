@@ -16,6 +16,13 @@ The gate sits between AMCL and the map -> odom transform:
 So in a blind corridor the pose moves forward with the odometry only, and
 at the next junction (w high) AMCL may pull it to the right place again.
 
+Skid-steer car, turning on the spot (hold_position): "along the heading"
+sweeps round with the car, so the corridor direction passes through the
+"sideways" part that is always taken; AMCL slid 1.2 m along a corridor
+during one such turn (campus sim 2026-11-17). While it turns on the spot
+(and shortly after) only AMCL's heading is taken; the position follows the
+odometry (rf2o measures a turn on the spot well).
+
 Poses are (x, y, theta) tuples; a transform A -> B is stored as the pose of
 B in A.
 """
@@ -56,7 +63,7 @@ class GateStep:
 
 
 def gate_correction(map_odom: Pose | None, odom_base: Pose, amcl: Pose, w: float,
-                    obs_full: float = 0.5) -> GateStep:
+                    obs_full: float = 0.5, hold_position: bool = False) -> GateStep:
     """One AMCL pose -> the new map -> odom.
 
     map_odom   current correction (None = none yet: take AMCL fully)
@@ -68,6 +75,9 @@ def gate_correction(map_odom: Pose | None, odom_base: Pose, amcl: Pose, w: float
         return GateStep(compose(amcl, inverse(odom_base)), amcl, 0.0, 1.0)
     cur = compose(map_odom, odom_base)
     along, lat = along_lateral(amcl[0] - cur[0], amcl[1] - cur[1], amcl[2])
+    if hold_position:
+        pose = (cur[0], cur[1], amcl[2])
+        return GateStep(compose(pose, inverse(odom_base)), pose, along, 0.0)
     g = 1.0 if obs_full <= 0.0 else min(max(w / obs_full, 0.0), 1.0)
     c, s = math.cos(amcl[2]), math.sin(amcl[2])
     a = g * along

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-nav2-simple-commander \
         ros-${ROS_DISTRO}-nav2-rviz-plugins \
         ros-${ROS_DISTRO}-slam-toolbox \
+        ros-${ROS_DISTRO}-rosbridge-server \
         ros-${ROS_DISTRO}-ros-gz \
         python3-numpy python3-yaml git build-essential libboost-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*

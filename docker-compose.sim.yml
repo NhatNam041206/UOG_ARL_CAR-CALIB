@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: docker/sim/Dockerfile
-    image: car-calib-nav-sim:latest
+    image: ${SIM_IMAGE:-car-calib-nav-sim:latest}   # SIM_IMAGE: build/run another tag side by side
     container_name: car-calib-nav-sim
     environment:
       - ROS_DOMAIN_ID=${SIM_ROS_DOMAIN_ID:-77}

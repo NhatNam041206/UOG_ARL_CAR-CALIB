@@ -5,6 +5,10 @@
 # west along the 3-tile corridor towards AAD-1.
 # Cell (row, col) centre: x = (col + 68.5) * 0.6, y = (15.5 - row) * 0.6.
 world: campus_path
+# Car 0.70 x 0.60 m (2026-11-19): a car centred in a 1.2 m (2-tile) corridor has
+# 0.30 m to each wall, the most it can have. Goals 2 and 3 are in 2-tile
+# corridors, so the pose check (tests/test_car_nav_sim.py) allows 0.3 here.
+min_goal_clearance_m: 0.29
 goal_timeout_s: 120
 start: [43.5, 26.4, -1.5708]     # col 4, row -28.5, facing south
 goals:

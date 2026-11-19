@@ -5,6 +5,9 @@
 #   scripts/sim/run_sim.sh mission loop_right odom_source:=truth
 #   scripts/sim/run_sim.sh gui [args]                # Gazebo + RViz, drive with "2D Goal Pose"
 #   scripts/sim/run_sim.sh rviz [args]               # 2D backend + RViz (lighter than Gazebo)
+#   scripts/sim/run_sim.sh ui [args]                 # 2D backend + the car's web UI: http://localhost:8080
+#   scripts/sim/run_sim.sh ui mission:=person_stops  # ... driving a mission (people included)
+#   scripts/sim/run_sim.sh ui mode:=flat|create      # ... starting in another map mode (all three switch in the page)
 #   scripts/sim/run_sim.sh campus [anchor] [args]    # school map in RViz, car at an anchor (AAD-1)
 #   scripts/sim/run_sim.sh campus-mission [args]     # school map mission (campus_block_left), with RViz
 #   SIM_STRESS=speed_drift scripts/sim/run_sim.sh ... # car worse than car.yaml (sweeps/stress/*.yaml)
@@ -110,7 +113,7 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 for i, g in enumerate(r["goals"], 1):
     print(f"  goal {i}: {g['result']:9s} t={g['time_s']:6.1f}s clear={g['min_clearance_m']:.2f}m "
-          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['steer_saturated_share']}"
+          f"end_err={g['final_xy_error_m']:.2f}m loc_err={g['max_localization_error_m']} sat={g['wheel_saturated_share']}"
           + (f"  nav2: {g['nav2_error']}" if g.get("nav2_error") else ""))
 if not any(g.get("trace") for g in r["goals"]):
     print("  (no trace in this report: the image is older than the code -> scripts/sim/run_sim.sh build)")
@@ -131,6 +134,14 @@ case "$cmd" in
     exit $rc ;;
   gui) need_display; run ros2 launch car_nav_sim sim.launch.py backend:=gazebo gui:=true rviz:=true "$@" ;;
   rviz) need_display; run ros2 launch car_nav_sim sim.launch.py backend:=lite rviz:=true "$@" ;;
+  ui)
+    # the same web UI as on the car; ports bound to 127.0.0.1 only
+    RUN_EXTRA+=(-p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090)
+    # the Car tab writes its car.yaml here (run_logs/sim/ui/car.yaml); missions never see it
+    export MSYS2_ARG_CONV_EXCL="CAR_NAV_CONFIG_OVERRIDE=${MSYS2_ARG_CONV_EXCL:+;$MSYS2_ARG_CONV_EXCL}"
+    RUN_EXTRA+=(-e CAR_NAV_CONFIG_OVERRIDE=/data/sim/ui/car.yaml)
+    echo "web UI: open http://localhost:8080 (wait ~20 s). Ctrl+C to stop."
+    run ros2 launch car_nav_sim sim.launch.py backend:=lite ui:=true exit_after_mission:=false "$@" ;;
   campus)
     need_display
     start="${1:-AAD-1}"; shift || true
