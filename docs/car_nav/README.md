@@ -38,8 +38,9 @@ the Astra colour camera as its lane camera.
 
 ## Skid-steer car (this branch)
 
-This branch targets the **skid-steer (differential drive) car**: same
-size as the rear-steer car, LiDAR mounted the normal way up. Nav2 sends
+This branch targets the **skid-steer (differential drive) car**: body
+**0.70 m long x 0.60 m wide** (owner's measurement, 2026-11-19), LiDAR
+mounted the normal way up. Nav2 sends
 `"<left m/s>,<right m/s>"` on the ROS topic `/car/wheels/cmd`; an adapter
 for the car's `ugv-controller` turns that into its own command (see
 [simulation.md](simulation.md), "Car model"). The rear-steer version
@@ -132,8 +133,8 @@ In the simulator: `scripts/sim/run_sim.sh ui` (or `ui mission:=person_stops`), t
 
 | Layer | Reads | Does |
 |---|---|---|
-| `safety_guard` | `/scan_dynamic` | **stop** while a point that is **not on the map** is in front of the car within `danger_range_m` (0.6 m past the nose, ±0.35 m); **slow** to 40 % within 1.5 m (±0.5 m); turning on the spot: stop for anything within 0.25 m in front. Only points past the nose and within ±`fov_deg`/2 (120°) count, so what is mounted behind the LiDAR, or someone behind the car, never stops it. Drives on by itself 0.5 s after the zone is clear. Stops if `/scan_dynamic` is older than 1 s. |
-| collision monitor `VelocityStop` + `FootprintApproach` | `/scan_nav` (everything) | bumper 0.22 m past the nose, slow down so the footprint never reaches anything within 1.2 s |
+| `safety_guard` | `/scan_dynamic` | **stop** while a point that is **not on the map** is in front of the car within `danger_range_m` (0.6 m past the nose, ±0.45 m); **slow** to 40 % within 1.5 m (±0.65 m); turning on the spot: stop for anything within 0.25 m in front. Only points past the nose and within ±`fov_deg`/2 (120°) count, so what is mounted behind the LiDAR, or someone behind the car, never stops it. Drives on by itself 0.5 s after the zone is clear. Stops if `/scan_dynamic` is older than 1 s. |
+| collision monitor `VelocityStop` + `FootprintApproach` | `/scan_nav` (everything) | bumper 0.22 m past the nose (x 0.57 from the centre), slow down so the footprint never reaches anything within 1.2 s |
 
 `/scan_dynamic` comes from `car_nav/dynamic_scan.py`: the scan is first slid onto the
 map walls (±0.45 m, ±7°) to absorb pose error, then the points more than 0.35 m from any
@@ -150,14 +151,30 @@ at 1.5 m/s when the car is 1 m away.
 `base_link` is the floor point at the **centre** of the car, midway between
 the left and right wheels; the car turns about it and can turn on the spot.
 The LiDAR is upright (`roll: 0`, the driver's `inverted` stays false).
+
+| Measured by the owner (2026-11-19) | Value |
+|---|---|
+| Body | 0.70 m long x 0.60 m wide (`footprint`: x_front 0.35, x_rear -0.35, half_width 0.30) |
+| LiDAR height | 0.24 m (`laser.z`); it only sees obstacles taller than this |
+| Camera | at the car centre (x = y = 0), 1.20 m high (`camera.z`) |
+
+Assumed, not measured: LiDAR along the car (`laser.x: 0`, centre), camera
+pitch (15° down), track width (`assumed_track_width_m` 0.52 m).
+
+Turning on the spot the corners sweep a circle of radius
+sqrt(0.35² + 0.30²) = **0.46 m**; the PD follower only turns on the spot
+while no scan point is within 0.46 + 0.04 m of the centre (it creeps on at
+the minimum speed or waits otherwise). A car centred in a 1.2 m corridor
+has 0.30 m to each wall and 0.14 m to spare for the turn.
 Values left as `null` are not measured yet; the launch prints a warning and
 uses 0 (or the `assumed_*` value). The file is mounted into the container,
 so editing it on the Pi and restarting `car-calib-ros-nav` is enough. No
 rebuild is needed.
 
-Still to measure: `drive.track_width_m` (0.22 m assumed), `laser.x`,
-`laser.yaw` (where the A1's 0° mark points), `camera.x`,
-`speed.command_latency_s` (0.25 s assumed).
+Still to measure: `drive.track_width_m` (0.52 m assumed), `laser.x`
+(0 assumed), `laser.yaw` (where the A1's 0° mark points), camera pitch (15°
+assumed), `speed.command_latency_s` (0.25 s assumed), and the body height
+(does anything of the car reach the LiDAR plane at 0.24 m?).
 
 ## Build and deploy (the Pi has no internet)
 

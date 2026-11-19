@@ -114,9 +114,9 @@ without rebuilding.
 
 ## Car model (skid-steer)
 
-This branch is for the **skid-steer (differential drive) car**: same
-0.37 x 0.27 m body as the old rear-steer car, LiDAR mounted the normal way
-up. The rear-steer version stays on `claude/project-thread-t304ze`.
+This branch is for the **skid-steer (differential drive) car**: 0.70 x 0.60 m
+body (owner's measurement 2026-11-19; the old rear-steer car was 0.37 x 0.27 m),
+LiDAR at 0.24 m, mounted the normal way up. The rear-steer version stays on `claude/project-thread-t304ze`.
 
 * `base_link` = floor point at the **centre of the car**, midway between the
   left and right wheels: the point a skid-steer car turns about. The car can
@@ -127,7 +127,7 @@ up. The rear-steer version stays on `claude/project-thread-t304ze`.
   wheels down together, so the curvature is kept and only the speed drops.
   Reverse is never sent (`drive.allow_reverse: false`). On the car an
   adapter turns this into the ugv-controller's own command.
-* `drive.track_width_m` is **not measured yet**: 0.22 m is assumed
+* `drive.track_width_m` is **not measured yet**: 0.52 m is assumed
   (`assumed_track_width_m`), the launch warns about it.
 * Truth in `sim.yaml`: latency 0.25 s, wheel accel/decel limits,
   `speed_scale` (real/commanded forward speed), `left_gain`/`right_gain`
@@ -152,7 +152,11 @@ up. The rear-steer version stays on `claude/project-thread-t304ze`.
   error), kp 1.5 / kd 2.0, `ff_ahead_m` 0.1 = distance driven in the
   latency), then `diff_drive_command()`: speed 0.4 m/s, lower in tight
   curves (yaw ≤ 1.5 rad/s) and over the last 0.6 m; above 52° heading error
-  it **turns on the spot** until below 14°. At the goal it turns on the spot
+  it **turns on the spot** until below 14°, but only while the circle the
+  corners sweep (radius 0.46 m + 0.04 m margin) is free in the latest scan
+  (`wall_avoid.spin_clear`): otherwise it creeps on at 0.08 m/s if the path is
+  within 90° ahead, or waits; at the goal it waits up to 8 s and then reports
+  the goal reached without its heading. At the goal it turns on the spot
   to the goal heading (`yaw_goal_tolerance` 0.25 rad; xy tolerance 0.2 m).
   `controller:=rpp` = Regulated Pure Pursuit with rotate-to-heading.
 * Wall avoidance (`car_nav/wall_avoid.py`) unchanged in idea: the footprint
@@ -160,13 +164,24 @@ up. The rear-steer version stays on `claude/project-thread-t304ze`.
   ±`avoid_max_curvature` (2.5 1/m), horizon 0.9 m. Not used while turning
   on the spot.
 * Collision monitor: `VelocityStop` (velocity polygon) is a bumper reaching
-  0.22 m past the nose when driving forward, and only the footprint + 3 cm
+  0.22 m past the nose (x 0.57) when driving forward, and only the footprint + 3 cm
   when turning on the spot (a box ahead would block the turn away from a
   wall). `FootprintApproach` now really slows the car (variable speed).
 * Behaviour tree recovery: clear costmaps / spin 90° / wait (round robin);
   no BackUp.
 * Pose gate, static-map-only global costmap, AMCL settings: unchanged from
   the rear-steer branch.
+
+* The simulated LiDAR is a level scan plane at `laser.z` (0.24 m): world
+  boxes / cylinders (`height:` in the world file, default 1.0 m) lower than
+  that are not hit by the ray cast and are left out of the map AMCL uses, as a
+  real LiDAR at that height would. They still count for the collision
+  scoring (`min_clearance_m`): the car body is lower than the plane.
+* Missions: goals need clearance > 0.4 m around the 0.70 x 0.60 m body
+  (`tests/test_car_nav_sim.py`). A car centred in a 1.2 m corridor has only
+  0.3 m to each wall, so `campus_block_left.yaml` sets
+  `min_goal_clearance_m: 0.29`. The person missions' goal moved from
+  (7.6, 1.4) to (7.6, 1.7): the old one was 0.3 m from a box.
 
 ## LiDAR mounted upright: `/scan_nav`
 
