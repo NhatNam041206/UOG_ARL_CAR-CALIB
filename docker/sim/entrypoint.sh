@@ -2,6 +2,12 @@
 set -e
 source "/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
 source /opt/car_nav_ws/setup.bash
+# Rebuild-free: the mounted ros/car_nav and ros/car_nav_sim are built into an overlay (seconds, only when
+# they changed), so new nodes / launch files / data files need no `docker compose build`.
+export CAR_NAV_OVERLAY_PKGS="${CAR_NAV_OVERLAY_PKGS:-car_nav car_nav_sim}"
+export CAR_NAV_OVERLAY_DIR="${CAR_NAV_OVERLAY_DIR:-/data/sim/.overlay}"
+source /opt/car_nav_overlay.sh
+car_nav_overlay || echo "[overlay] failed unexpectedly: using the code baked into the image" >&2
 if [[ "${SIM_VIEW:-}" == "browser" ]]; then
   # Virtual screen + VNC + noVNC: open http://localhost:6080/vnc.html on the host.
   export DISPLAY=:99 QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1

@@ -86,6 +86,7 @@ RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
 
 COPY --from=builder /opt/car_nav_ws /opt/car_nav_ws
 COPY docker/ros/entrypoint.sh /entrypoint.sh
+COPY docker/common/car_nav_overlay.sh /opt/car_nav_overlay.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data/nav
 
 ENTRYPOINT ["/entrypoint.sh"]

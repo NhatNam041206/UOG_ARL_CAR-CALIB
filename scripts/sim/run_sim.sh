@@ -20,6 +20,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 COMPOSE=(docker compose -f docker-compose.sim.yml)
 mkdir -p run_logs/sim
+# host Python for the report summary: python3 on Linux/WSL/macOS, python in Git Bash on Windows
+PY=
+for c in python3 python; do "$c" -c "" >/dev/null 2>&1 && { PY=$c; break; }; done   # (a Windows python3 stub exists but fails)
+[[ -n "$PY" ]] || { echo "no python3/python on the host (needed to summarise the report)" >&2; exit 5; }
 
 # SIM_CPUS=<n>: limit the sim container to n CPUs (emulates a slower computer such as
 # the Pi 5 or an overloaded laptop). Off by default; only adds a CPU quota.
@@ -108,7 +112,7 @@ mission() {
   if [[ -z "$rep" || "$rep" == "$before" ]]; then
     echo "FAIL $name: no report written (see the log above)"; return 1
   fi
-  python3 - "$rep" <<'PY' || return 1
+  "$PY" - "$rep" <<'PY' || return 1
 import json, sys
 r = json.load(open(sys.argv[1]))
 for i, g in enumerate(r["goals"], 1):

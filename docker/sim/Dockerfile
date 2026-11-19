@@ -56,9 +56,9 @@ RUN apt-get update && rosdep update --rosdistro ${ROS_DISTRO} \
          --skip-keys "sllidar_ros2 astra_camera cmake_modules rf2o_laser_odometry" \
     && rm -rf /var/lib/apt/lists/*
 
-# --symlink-install: the installed Python code and launch files point into
-# /ws/src, which docker-compose.sim.yml mounts from the repo, so editing them
-# on the laptop needs no rebuild (only new files / new executables do).
+# The packages baked here are the fallback. At start the entrypoint builds the
+# repo's mounted ros/car_nav + ros/car_nav_sim into an overlay (car_nav_overlay.sh),
+# so edits, new nodes and new launch/data files need no rebuild of this image.
 COPY ros/car_nav /ws/src/car_nav
 COPY ros/car_nav_sim /ws/src/car_nav_sim
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && . /opt/car_nav_ws/setup.sh \
@@ -67,6 +67,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && . /opt/car_nav_ws/setup.sh \
     && rm -rf /ws/log
 
 COPY docker/sim/entrypoint.sh /entrypoint.sh
+COPY docker/common/car_nav_overlay.sh /opt/car_nav_overlay.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data/sim
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["ros2", "launch", "car_nav_sim", "sim.launch.py", "mission:=loop_left"]
