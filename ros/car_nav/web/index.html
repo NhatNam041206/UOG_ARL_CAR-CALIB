@@ -241,7 +241,7 @@ let ws = null, connected = false, mapImg = null, map = null;
 let tool = "pan", follow = false, estop = false, edited = false, dEdited = false;
 let view = { cx: 0, cy: 0, scale: 60 };
 let drag = null, needFit = false;
-const D = { pose: null, scan: [], dyn: [], depth: [], plan: [], guard: {}, mode: null, drive: null, static: null, car: null };
+const D = { pose: null, frame: null, scan: [], dyn: [], depth: [], plan: [], guard: {}, mode: null, drive: null, static: null, car: null };
 
 // ------------------------------------------------------------ tabs + subscriptions
 // What each tab needs. Nothing else is subscribed, so a closed tab costs nothing on the car.
@@ -257,7 +257,7 @@ if (!TABS[tab]) tab = "map";
 const subs = new Set();
 function wantedTopics() {
   if (document.hidden) return new Set();          // page in the background: nothing at all
-  return new Set(["mode", ...TABS[tab].topics.filter((t) => t !== "depth" || (D.guard.params || {}).depth_enabled !== false)]);
+  return new Set(["mode", ...TABS[tab].topics]);
 }
 function syncSubs() {
   if (!connected) return;
@@ -267,6 +267,7 @@ function syncSubs() {
     send({ op: "subscribe", topic: "/ui/" + t, type: "std_msgs/msg/String", queue_length: 1 });
     subs.add(t);
   }
+  if (window.onSyncSubs) window.onSyncSubs();       // ops.js: topics that are not /ui/ pages (teleop state)
 }
 function showTab(t) {
   tab = t;
@@ -279,6 +280,7 @@ function showTab(t) {
   if (t === "drive") loadProfiles();
   syncSubs();
   setConn();
+  refreshBanner();
   invalidate();
 }
 document.querySelectorAll("#tabs [data-tab]").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
@@ -299,22 +301,25 @@ function connect() {
     send({ op: "advertise", topic: "/ui/estop", type: "std_msgs/msg/Bool" });
     send({ op: "advertise", topic: "/ui/safety_params", type: "std_msgs/msg/String" });
     send({ op: "advertise", topic: "/ui/drive_params", type: "std_msgs/msg/String" });
+    if (window.onUiOpen) window.onUiOpen();
     syncSubs();
   };
-  ws.onclose = () => { connected = false; subs.clear(); setConn(); setTimeout(connect, 2000); };
+  ws.onclose = () => { connected = false; subs.clear(); setConn(); if (window.onUiClose) window.onUiClose(); setTimeout(connect, 2000); };
   ws.onerror = () => {};
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.op !== "publish" || !m.topic.startsWith("/ui/")) return;
+    if (m.op !== "publish") return;
     const d = JSON.parse(m.msg.data);
+    if (!m.topic.startsWith("/ui/")) { if (window.onUiTopic) window.onUiTopic(m.topic, d); return; }
     switch (m.topic) {
       case "/ui/map": onMap(d); break;
-      case "/ui/pose": D.pose = d.pose; onPose(); break;
+      case "/ui/pose": D.pose = d.pose; setFrame(d.frame); onPose(); break;
       case "/ui/scan": D.scan = d.scan; D.dyn = d.dyn; invalidate(); break;
-      case "/ui/depth": D.depth = d.depth; $("dpoints").textContent = D.depth.length; invalidate(); break;
+      case "/ui/depth": D.depth = d.depth; D.depthSrc = d.source; $("dpoints").textContent = D.depth.length; invalidate(); break;
       case "/ui/plan": D.plan = d.plan; invalidate(); break;
       case "/ui/guard": onGuard(d); break;
       case "/ui/mode": onModeMsg(d); break;
+      default: if (window.onUiTopic) window.onUiTopic(m.topic, d);
     }
   };
 }
@@ -371,7 +376,7 @@ function onGuard(g) {
 function onPose() {
   const p = D.pose;
   $("pose").textContent = p ? `x ${p[0].toFixed(2)} m, y ${p[1].toFixed(2)} m, heading ${(p[2] / RAD).toFixed(0)}°`
-    : "pose – (set the initial pose)";
+      + (D.frame === "odom" ? " (odom frame, not on the map)" : "") : "pose – (no odometry yet)";
   if (follow && p) { view.cx = p[0]; view.cy = p[1]; }
   invalidate();
 }
@@ -380,6 +385,7 @@ function onModeMsg(d) {
   showMode(d.mode);
   if (!dEdited && d.drive) loadDrive(d.drive);
   showTest(d.test);
+  if (window.onOpsMode) window.onOpsMode(d);
   if (d.guard) {
     if (!subs.has("guard")) setGuardBadge(d.guard.state);   // the 5 Hz guard topic is not subscribed on this tab
     if (d.guard.estop !== estop) { estop = d.guard.estop; showEstop(); }
@@ -530,7 +536,9 @@ function draw() {
   if (mapImg) {
     const [x0, y1] = toPx(map.ox, map.oy + map.h * map.res);
     ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = D.frame === "odom" ? 0.3 : 1;     // not localised: the car is not on this map
     ctx.drawImage(mapImg, x0, y1, map.w * map.res * view.scale * r, map.h * map.res * view.scale * r);
+    ctx.globalAlpha = 1;
   }
   if (view.scale > 15) {     // 1 m grid
     const [ax, ay] = toM(0, 0), [bx, by] = toM(cv.clientWidth, cv.clientHeight);
@@ -539,7 +547,7 @@ function draw() {
     for (let y = Math.floor(by); y <= ay; y++) { const [, py] = toPx(0, y); ctx.moveTo(0, py); ctx.lineTo(cv.width, py); }
     ctx.stroke();
   }
-  if (D.plan.length > 1) {
+  if (D.plan.length > 1 && D.frame !== "odom") {
     ctx.lineWidth = 2.5 * r; ctx.strokeStyle = "#111";
     ctx.beginPath(); D.plan.forEach(([x, y], i) => { const [px, py] = toPx(x, y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
     ctx.stroke();
@@ -649,7 +657,7 @@ async function loadTests() {
       return `<div class="box test" data-id="${esc(t.id)}">
         <div class="row"><b>${esc(t.name)}</b><span class="muted">${esc(t.started)}</span></div>
         <div class="muted">${s.duration_s}s · ${s.distance_m} m · stops ${s.guard_stops} · nearest person
-          ${s.min_person_distance_m ?? "–"} m · goals ${s.goals}</div>
+          ${s.min_person_distance_m ?? "–"} m · goals ${s.goals}${t.run ? " · full bag: run " + esc(t.run) : ""}</div>
         <div class="row"><select class="verdict"><option value="">verdict…</option>
           ${["ok", "too cautious", "too late", "false stop", "failed"].map((v) =>
             `<option ${t.verdict === v ? "selected" : ""}>${v}</option>`).join("")}</select>
@@ -672,6 +680,29 @@ async function loadTests() {
 }
 
 // ------------------------------------------------------------- map modes
+let modeBanner = "";
+// The page draws in the map frame when the car is localised (map -> odom exists). Without it (no map mode,
+// or Load before the initial pose) the car and its sensor points are drawn in the odom frame (start = 0, 0).
+function setFrame(f) {
+  if (f === D.frame) return;
+  D.frame = f;
+  if (f === "odom" && !map) { view.cx = 0; view.cy = 0; view.scale = Math.max(view.scale, 60); }
+  refreshBanner(); invalidate();
+}
+function notLocalised() { return D.frame === "odom" || (D.pose == null && connected && curMode && curMode.mode === "idle"); }
+function refreshBanner() {
+  const bn = $("banner");
+  let t = modeBanner;
+  if (D.frame === "odom" && TABS[tab].view) {
+    const idle = curMode && curMode.mode === "idle";
+    t = (idle ? "NO MAP MODE" : "NOT LOCALISED") + ": no map, so the car, LiDAR and depth points are drawn around the car's odometry start (0, 0)"
+      + (idle ? ". Choose a map mode to plan and drive." : ". Set the initial pose on the map.") + (t ? "  |  " + t : "");
+  } else if (D.frame == null && TABS[tab].view && connected && curMode && curMode.state !== "switching") {
+    t = "NO POSE: no odometry yet (is the LiDAR running?)" + (t ? "  |  " + t : "");
+  }
+  bn.className = t ? "show" : "";
+  bn.textContent = t;
+}
 let curMode = null, mapTab = null, editing = null, lastMapsKey = "", mapsData = [];
 const MODE_LABEL = { load: "Load", create: "Create", flat: "Flat", idle: "no map mode" };
 const mmsg = (t) => { $("mmsg").textContent = t; };
@@ -689,11 +720,10 @@ function showMode(m) {
     : m.state === "error" ? "Error: " + m.detail
     : m.state === "idle" ? "No map mode running. Choose one."
     : `${label} – ready`;
-  const bn = $("banner");
-  bn.className = busy || m.mode === "flat" || m.mode === "create" ? "show" : "";
-  bn.textContent = busy ? "Switching: restarting localization + Nav2…"
+  modeBanner = busy ? "Switching: restarting localization + Nav2…"
     : m.mode === "flat" ? "FLAT MODE: no map. Odometry only, every obstacle in front counts for the guard."
     : m.mode === "create" ? "CREATE MODE: building a map." : "";
+  refreshBanner();
   showMapPanel(mapTab || (m.mode === "idle" ? "load" : m.mode));
   $("msave").disabled = !m.can_save;
   if (changed && tab === "map") loadMaps();
@@ -1048,5 +1078,6 @@ function drawSide(p) {
 // ---------------------------------------------------------------- start
 buildSliders(); setConn(); connect(); showTab(tab);
 </script>
+<script src="ops.js"></script>
 </body>
 </html>
