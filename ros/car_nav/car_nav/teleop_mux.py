@@ -54,7 +54,7 @@ class TeleopMuxNode(Node):
         self.create_subscription(Bool, "/ui/estop", self._on_estop, 10)
         qos = QoSProfile(depth=5, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(GoalStatusArray, "/navigate_to_pose/_action/status", self._on_status, qos)
-        self.create_timer(0.05, self._tick)
+        self.create_timer(0.05, self._tick, clock=STEADY)   # wall time: the deadman is wall time too (sim time can run slow)
         self.get_logger().info(f"teleop_mux: /cmd_vel_teleop + /cmd_vel_nav -> /cmd_vel_mux (max {g('max_speed_mps')} m/s, "
                                f"{g('max_yaw_rps')} rad/s, reverse {'on' if g('allow_reverse') else 'off'})")
 
