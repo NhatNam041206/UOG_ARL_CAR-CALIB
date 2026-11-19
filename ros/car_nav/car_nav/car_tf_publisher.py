@@ -48,7 +48,7 @@ class CarTfPublisher(Node):
         super().__init__("car_tf_publisher")
         self.declare_parameter("frames", ["laser"])
         self._frames = [str(f) for f in self.get_parameter("frames").value]
-        self._bc = StaticTransformBroadcaster(self)
+        self._bc = None
         self._publish(config_loader.load())
         car_reload.watch(self, self._publish)
 
@@ -62,6 +62,11 @@ class CarTfPublisher(Node):
             q = rpy_to_quat(r, p, yaw)
             t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = q
             out.append(t)
+        # rclpy's StaticTransformBroadcaster ignores a transform of a child frame it has sent before, and a
+        # transient-local publisher keeps its old message for late joiners: replace the whole publisher.
+        if self._bc is not None:
+            self.destroy_publisher(self._bc.pub_tf)
+        self._bc = StaticTransformBroadcaster(self)
         self._bc.sendTransform(out)
         self.get_logger().info("static TF base_link -> " + ", ".join(
             f"{t.child_frame_id} ({t.transform.translation.x:.3f}, {t.transform.translation.y:.3f}, "
