@@ -42,12 +42,14 @@ class GuardParams:
     min_points: int = 3               # fewer points than this = noise
     # ---- depth camera as a second source (off by default; nav.launch.py depth:=true switches it on)
     depth_enabled: bool = False
-    depth_danger_range_m: float = 1.1  # stop distance past the nose for depth points (camera blind zone)
+    depth_danger_range_m: float = 1.3  # stop distance past the nose for depth points (camera blind zone)
     depth_timeout_s: float = 1.0       # depth data older than this = stale
     depth_required: bool = False       # stale depth: True = stop the car, False = go on with the LiDAR only
     depth_min_height_m: float = 0.05   # depth_obstacles: floor (at or below this) is not an obstacle
     depth_max_height_m: float = 0.8    # ... above this the car passes under it
     depth_max_range_m: float = 3.0     # ... only points this close (horizontal, from base_link)
+    depth_memory_enabled: bool = True  # remember obstacles that left the camera's view (blind zone)
+    depth_memory_timeout_s: float = 30.0   # forget after this (not in the zone in front of the car)
 
     def update(self, d: dict) -> list[str]:
         """Set the fields given in d (unknown keys ignored); returns the names changed."""
@@ -77,6 +79,7 @@ class GuardParams:
         self.depth_min_height_m = min(max(self.depth_min_height_m, 0.0), 1.0)
         self.depth_max_height_m = min(max(self.depth_max_height_m, self.depth_min_height_m + 0.02), 2.0)
         self.depth_max_range_m = min(max(self.depth_max_range_m, 0.3), 6.0)
+        self.depth_memory_timeout_s = min(max(self.depth_memory_timeout_s, 1.0), 600.0)
 
     def as_dict(self) -> dict:
         return asdict(self)

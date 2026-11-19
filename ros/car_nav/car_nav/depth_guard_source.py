@@ -9,7 +9,9 @@ for the processing and the camera's blind zone).
                               frame (x right, y down, z forward: camera_depth_optical_frame,
                               what astra_camera publishes). The camera pose comes from car.yaml
                               (camera:), not from TF, so nothing here ever waits for a transform.
-  out  /depth_obstacles       sensor_msgs/PointCloud2, frame base_link, fields x y z (float32);
+  out  /depth_obstacles       sensor_msgs/PointCloud2, frame base_link, live points + remembered ones
+                              (depth_memory.py: obstacles that left the camera's view stay while the
+                              car is next to them; the guard's depth_memory_enabled / _timeout_s), fields x y z (float32);
                               x, y = obstacle position, z = 0 (2D points, one per 5 cm cell).
                               One message per input frame, empty when nothing is in the way
                               (so the guard can tell "nothing" from "camera dead").
@@ -22,6 +24,7 @@ for the processing and the camera's blind zone).
 * map_filter (default true): points that lie on a map wall (cell within tol_m of an occupied or
   unknown cell, after the scan-style alignment onto the walls) are dropped, so walls are not
   "people". No map or no pose: fallback "all" passes every point (safe, may stop near walls).
+* {"depth_memory_clear": true} on /ui/safety_params forgets every remembered obstacle.
 * Does nothing (no processing) while the guard's depth_enabled is false.
 """
 from __future__ import annotations
@@ -42,6 +45,7 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from . import config_loader
+from .depth_memory import MemoryParams, ObstacleMemory
 from .depth_obstacles import (DepthParams, encode_xyz, obstacle_points, parse_cloud, points_to_polar)
 from .dynamic_obstacles import align_points, dynamic_points, static_mask
 from .timing import TimingStats
@@ -69,11 +73,24 @@ class DepthGuardSource(Node):
         p("fallback", "all")        # no map / no pose: pass "all" points (safe) or "none"
         p("max_tf_age_s", 0.5)
         p("min_period_s", 0.08)     # process at most ~12 frames / s
+        p("odom_frame", "odom")
+        p("hfov_deg", 58.0)
+        p("vfov_deg", 45.0)
+        p("memory_max_points", 600)
+        p("memory_miss_frames", 3)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._params = DepthParams(voxel_m=float(g("voxel_m")), min_cell_points=int(g("min_cell_points")),
                                    min_range_m=float(g("min_range_m")),
                                    floor_margin_per_m=float(g("floor_margin_per_m")))
-        self._camera = config_loader.camera_pose(config_loader.load())
+        cfg = config_loader.load()
+        self._camera = config_loader.camera_pose(cfg)
+        fp = config_loader.footprint(cfg)
+        self._x_front = fp.x_front
+        self._memory = ObstacleMemory(self._camera, fp.x_rear, MemoryParams(
+            max_points=int(g("memory_max_points")), voxel_m=self._params.voxel_m,
+            miss_frames=int(g("memory_miss_frames")), hfov_deg=float(g("hfov_deg")), vfov_deg=float(g("vfov_deg"))))
+        self._mem_on, self._mem_timeout = True, 30.0
+        self._protect = (self._x_front + 1.8, 0.5)      # (x_max, half width) in base_link: never expires by time
         self._enabled = True        # until the guard says otherwise (its depth_enabled)
         self._mask = self._thin = None
         self._origin = (0.0, 0.0)
@@ -90,6 +107,7 @@ class DepthGuardSource(Node):
                              reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
         self.create_subscription(String, "/safety_guard/state", self._on_guard, 10)
+        self.create_subscription(String, "/ui/safety_params", self._on_ui, 10)
         self.create_subscription(PointCloud2, str(g("topic")), self._timing.wrap("depth.cb", self._on_cloud),
                                  qos_profile_sensor_data)
         self.create_timer(0.5, self._publish_state, clock=Clock(clock_type=ClockType.STEADY_TIME))
@@ -114,11 +132,34 @@ class DepthGuardSource(Node):
         except ValueError:
             return
         self._enabled = bool(gp.get("depth_enabled", True))
+        self._mem_on = bool(gp.get("depth_memory_enabled", True))
+        self._mem_timeout = float(gp.get("depth_memory_timeout_s", 30.0))
+        self._memory.p.timeout_s = self._mem_timeout
+        if "depth_danger_range_m" in gp and "slow_range_m" in gp:
+            self._protect = (self._x_front + max(float(gp["depth_danger_range_m"]), float(gp["slow_range_m"])),
+                             float(gp.get("slow_half_width_m", 0.5)))
         changed = self._params.update({"min_height_m": gp.get("depth_min_height_m"),
                                        "max_height_m": gp.get("depth_max_height_m"),
                                        "max_range_m": gp.get("depth_max_range_m")})
         if changed:
             self.get_logger().info(f"depth params changed: { {k: getattr(self._params, k) for k in changed} }")
+
+    def _on_ui(self, msg: String) -> None:
+        try:
+            if json.loads(msg.data).get("depth_memory_clear"):
+                self._memory.clear()
+                self.get_logger().info("depth memory cleared (web UI)")
+        except (ValueError, AttributeError):
+            pass
+
+    def _odom_pose(self):
+        """base_link in the odom frame (latest TF, never waits); None if not available / old."""
+        try:
+            tf = self._tf.lookup_transform(str(self.get_parameter("odom_frame").value), "base_link", Time())
+        except Exception:  # noqa: BLE001
+            return None
+        tr = tf.transform.translation
+        return tr.x, tr.y, _yaw(tf.transform.rotation), Time.from_msg(tf.header.stamp)
 
     def _base_pose(self, stamp):
         """base_link in the map frame (latest TF, never waits); None if unknown or old."""
@@ -163,6 +204,17 @@ class DepthGuardSource(Node):
                     r, a = points_to_polar(pts)
                     pose = align_points(r, a, pose, self._thin, self._origin, self._res)
                 pts = pts[dynamic_points(pts, pose, self._mask, self._origin, self._res)]
+        n_live = int(pts.shape[0])
+        if not self._mem_on:
+            self._memory.clear()
+        else:
+            od = self._odom_pose()
+            if od is not None:
+                pts = self._memory.update(pts, od[:3], now, self._params.min_height_m, self._params.max_range_m,
+                                          self._protect)
+            elif len(self._memory):
+                self.get_logger().warn("depth memory: no odom pose, live points only",
+                                       throttle_duration_sec=5.0)
         out = PointCloud2()
         out.header.stamp = msg.header.stamp
         out.header.frame_id = "base_link"
@@ -174,7 +226,7 @@ class DepthGuardSource(Node):
         out.data = encode_xyz(np.hstack([pts, np.zeros((pts.shape[0], 1))]))
         self._pub.publish(out)
         self._last_frame = now
-        self._stat = {"n_cloud": n, "n_points": n_found, "n_dynamic": int(pts.shape[0]), "map": mode,
+        self._stat = {"n_cloud": n, "n_points": n_found, "n_dynamic": n_live, "n_memory": len(self._memory), "map": mode,
                       "proc_ms": round((time.perf_counter() - t0) * 1e3, 1)}
 
     def _publish_state(self) -> None:

@@ -381,13 +381,15 @@ safety_guard:
     # ---- depth camera as a second source (depth_guard_source.py -> /depth_obstacles). Same zones;
     # nav.launch.py depth:=true switches depth_enabled on. All live in the web UI too.
     depth_enabled: false
-    depth_danger_range_m: 1.1 # stop distance past the nose for depth points: the Astra cannot see
-                              # closer than ~1.1 m (a 0.2 m box leaves its view there), so stop early
+    depth_danger_range_m: 1.3 # stop distance past the nose for depth points: the Astra cannot see
+                              # the floor closer than ~1.3 m past the nose, a low box leaves its view ~1 m, so stop early
     depth_timeout_s: 1.0      # depth data older than this = stale ...
     depth_required: false     # ... false: go on with the LiDAR only (state depth_stale), true: stop (no_depth)
     depth_min_height_m: 0.05  # at or below this above the floor = floor
     depth_max_height_m: 0.8   # above this the car passes under it (table tops lower than this are obstacles)
     depth_max_range_m: 3.0    # only depth points this close (horizontal, from base_link)
+    depth_memory_enabled: true  # remember obstacles that left the camera view (see depth_memory.py)
+    depth_memory_timeout_s: 30.0 # forget them after this, except in the zone in front of the car
 
 depth_obstacles:
   # car_nav/depth_guard_source.py: /camera/depth/points -> /depth_obstacles (2D points in base_link).
@@ -407,6 +409,11 @@ depth_obstacles:
     fallback: all             # no map / no pose: pass all points (safe) or none
     max_tf_age_s: 1.0         # the sim odometry can lag ~1 s; older pose = fallback (all points)
     min_period_s: 0.08
+    odom_frame: odom
+    hfov_deg: 58.0            # camera field of view (memory: free space is only seen inside it)
+    vfov_deg: 45.0
+    memory_max_points: 600
+    memory_miss_frames: 3     # frames of seen free space in a row before a remembered point is dropped
 
 dynamic_scan:
   # car_nav/dynamic_scan.py: /scan_nav -> /scan_dynamic (points not on the map)

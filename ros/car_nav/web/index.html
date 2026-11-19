@@ -138,7 +138,9 @@
       <span class="muted"><b id="dpoints">–</b> points</span></div>
     <label class="row"><input type="checkbox" id="p_depth_enabled"> use the depth camera</label>
     <label class="row"><input type="checkbox" id="p_depth_required"> stop when depth data is missing</label>
+    <label class="row"><input type="checkbox" id="p_depth_memory_enabled"> remember obstacles that left the camera view</label>
     <div id="depthsliders"></div>
+    <div class="row"><button id="dmclear">Forget remembered depth obstacles</button></div>
     <div class="row"><button id="apply">Apply</button><span id="applied" class="muted"></span></div>
     <h2>Driving</h2>
     <div id="dsliders"></div>
@@ -184,9 +186,10 @@ const DEPTH_SLIDERS = [
   ["depth_max_height_m", "Depth: ignore above", 0.1, 1.5, 0.05, "m"],
   ["depth_max_range_m", "Depth: max range", 0.5, 5.0, 0.1, "m"],
   ["depth_timeout_s", "Depth: stale after", 0.2, 5.0, 0.1, "s"],
+  ["depth_memory_timeout_s", "Depth: forget memory after", 2, 120, 1, "s"],
 ];
 const ALL_SLIDERS = [...SLIDERS, ...DEPTH_SLIDERS];
-const BOOLS = ["enabled", "depth_enabled", "depth_required"];
+const BOOLS = ["enabled", "depth_enabled", "depth_required", "depth_memory_enabled"];
 const $ = (id) => document.getElementById(id);
 const cv = $("c"), ctx = cv.getContext("2d");
 let ws = null, connected = false, mapImg = null, map = null, state = null;
@@ -287,6 +290,7 @@ function loadParams(p) {
   for (const [k] of ALL_SLIDERS) if (k in p) { $("p_" + k).value = p[k]; $("o_" + k).textContent = p[k]; }
   for (const b of BOOLS) $("p_" + b).checked = !!p[b];
 }
+$("dmclear").onclick = () => send({ op: "publish", topic: "/ui/safety_params", msg: { data: JSON.stringify({ depth_memory_clear: true }) } });
 $("apply").onclick = () => {
   const d = {};
   for (const b of BOOLS) d[b] = $("p_" + b).checked;
