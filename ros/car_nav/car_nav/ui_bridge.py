@@ -90,6 +90,8 @@ from .depth_obstacles import parse_cloud
 from .ui_pack import rle
 from .ui_store import ProfileStore, TestRecorder, TestStore
 
+START_TIMEOUT_S = 50.0     # "starting" longer than this: the stack is started again
+START_ATTEMPTS = 3
 DRIVE_KEYS = ("speed_mps", "max_yaw_rate_rps", "lat_accel_mps2", "kp", "kd")
 
 
@@ -145,6 +147,8 @@ class UiBridge(Node):
         self._mode = {"mode": "idle", "map": None, "state": "idle", "detail": "", "since": time.time()}
         self._stack_args = list(self.get_parameter("stack_args").value or [])
         self._stop_cmd = False
+        self._last_req = None
+        self._attempt = 1
         self._ready_ok = {"nav": False, "loc": False}
         self._default_applied = False
         cfg = config_loader.load()
@@ -402,9 +406,11 @@ class UiBridge(Node):
         self._mode = {**self._mode, "state": "switching", "detail": f"to {mode}", "since": time.time()}
         return self.mode_status()
 
-    def _switch_worker(self, mode: str, map_name, ymap, send_pose: bool) -> None:
+    def _switch_worker(self, mode: str, map_name, ymap, send_pose: bool, attempt: int = 1) -> None:
         if not self._sw_lock.acquire(blocking=False):
             return
+        self._last_req = (mode, map_name, ymap, send_pose)
+        self._attempt = attempt
         try:
             self._set_mode(self._mode["mode"], self._mode["map"], "switching", f"to {mode}")
             self._stop_cmd = True                          # zero /cmd_vel while the stack is down
@@ -459,8 +465,16 @@ class UiBridge(Node):
             self._set_mode(self._mode["mode"], self._mode["map"], "error", f"stack process exited ({code})")
             return
         if st == "starting":
-            if time.time() - self._mode["since"] > 120:
-                self._set_mode(self._mode["mode"], self._mode["map"], "error", "Nav2 did not become active in 120 s")
+            if time.time() - self._mode["since"] > START_TIMEOUT_S and not self._sw_lock.locked():
+                # a lifecycle transition answer got lost (seen on slow computers): start the stack again
+                if self._attempt < START_ATTEMPTS and self._last_req:
+                    self.get_logger().warn(f"Nav2 not active after {START_TIMEOUT_S:.0f} s: restarting the stack "
+                                           f"(attempt {self._attempt + 1} of {START_ATTEMPTS})")
+                    threading.Thread(target=self._switch_worker, args=(*self._last_req, self._attempt + 1),
+                                     daemon=True).start()
+                else:
+                    self._set_mode(self._mode["mode"], self._mode["map"], "error",
+                                   f"Nav2 did not become active ({START_ATTEMPTS} x {START_TIMEOUT_S:.0f} s)")
                 return
             self._check_ready()
         if self._pose_try is not None and self._mode["mode"] == "load":
